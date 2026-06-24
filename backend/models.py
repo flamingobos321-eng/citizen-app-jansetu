@@ -70,8 +70,38 @@ class User(BaseModel):
 RELATION_TYPES = [
     "Father", "Mother", "Son", "Daughter", "Brother", "Sister",
     "Husband", "Wife", "Grandfather", "Grandmother",
+    "Grandson", "Granddaughter",
     "Uncle", "Aunt", "Nephew", "Niece", "Cousin", "Other",
 ]
+
+# Inverse relationship mapping. Some inverses are gender dependent — second tuple
+# entry is used when viewer's gender is "female"/"f", first otherwise.
+INVERSE_RELATION = {
+    "Father": ("Son", "Daughter"),
+    "Mother": ("Son", "Daughter"),
+    "Son": ("Father", "Mother"),
+    "Daughter": ("Father", "Mother"),
+    "Brother": ("Brother", "Sister"),
+    "Sister": ("Brother", "Sister"),
+    "Husband": ("Wife", "Wife"),
+    "Wife": ("Husband", "Husband"),
+    "Grandfather": ("Grandson", "Granddaughter"),
+    "Grandmother": ("Grandson", "Granddaughter"),
+    "Grandson": ("Grandfather", "Grandmother"),
+    "Granddaughter": ("Grandfather", "Grandmother"),
+    "Uncle": ("Nephew", "Niece"),
+    "Aunt": ("Nephew", "Niece"),
+    "Nephew": ("Uncle", "Aunt"),
+    "Niece": ("Uncle", "Aunt"),
+    "Cousin": ("Cousin", "Cousin"),
+    "Other": ("Other", "Other"),
+}
+
+
+def inverse_relation(rel_type: str, viewer_gender: Optional[str] = None) -> str:
+    pair = INVERSE_RELATION.get(rel_type, ("Other", "Other"))
+    g = (viewer_gender or "").strip().lower()
+    return pair[1] if g in ("female", "f") else pair[0]
 
 
 class Relationship(BaseModel):

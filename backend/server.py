@@ -21,7 +21,7 @@ from models import (
     Issue, IssueCreate, IssueAssign, IssueUpdateStatus, IssueFeedback,
     Visit, VisitCreate, Notification, NotificationCreate,
     DevWork, DevWorkCreate,
-    Relationship, RelationshipCreate, RELATION_TYPES,
+    Relationship, RelationshipCreate, RELATION_TYPES, inverse_relation,
     ServiceInteraction, ServiceInteractionCreate,
     ISSUE_CATEGORIES, ISSUE_STATUSES, DEV_STATUSES, VISIT_STATUSES,
     now_iso, new_id,
@@ -808,8 +808,16 @@ async def person_profile(person_id: str, _: dict = Depends(get_current_user)):
     rels = await db.relationships.find({"$or": [{"person_a": person_id}, {"person_b": person_id}]}, {"_id": 0}).to_list(500)
     other_ids = [r["person_b"] if r["person_a"] == person_id else r["person_a"] for r in rels]
     others = {u["id"]: u async for u in db.users.find({"id": {"$in": other_ids}}, {"_id": 0, "password_hash": 0})}
+    viewer_gender = person.get("gender")
     for r in rels:
-        r["other"] = others.get(r["person_b"] if r["person_a"] == person_id else r["person_a"])
+        is_a = r["person_a"] == person_id
+        other_id = r["person_b"] if is_a else r["person_a"]
+        r["other"] = others.get(other_id)
+        # display_type = the other person's relation TO me (the viewer).
+        # Stored: person_a is `type` of person_b.
+        # If I am person_b → other (person_a) has relation `type` to me → display_type = type.
+        # If I am person_a → other (person_b) is the inverse of `type` to me (depends on my gender).
+        r["display_type"] = r["type"] if not is_a else inverse_relation(r["type"], viewer_gender)
     interactions = await db.interactions.find({"person_id": person_id}, {"_id": 0}).sort("occurred_at", -1).to_list(500)
     issues = await db.issues.find({"citizen_id": person_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return {"person": person, "relationships": rels, "interactions": interactions, "issues": issues}
@@ -830,8 +838,18 @@ async def update_person(person_id: str, payload: dict, _: dict = Depends(require
 async def create_relationship(payload: RelationshipCreate, _: dict = Depends(require_roles("pa", "admin"))):
     if payload.type not in RELATION_TYPES:
         raise HTTPException(400, "Invalid relation type")
+    if payload.person_a == payload.person_b:
+        raise HTTPException(400, "Cannot create a relationship with the same person")
     if not await db.users.find_one({"id": payload.person_a}) or not await db.users.find_one({"id": payload.person_b}):
         raise HTTPException(404, "Person not found")
+    # Prevent exact duplicate edge (same direction + same type)
+    existing = await db.relationships.find_one({
+        "person_a": payload.person_a,
+        "person_b": payload.person_b,
+        "type": payload.type,
+    })
+    if existing:
+        raise HTTPException(409, "This relationship already exists")
     r = Relationship(**payload.model_dump())
     await db.relationships.insert_one(r.model_dump())
     return r.model_dump()
