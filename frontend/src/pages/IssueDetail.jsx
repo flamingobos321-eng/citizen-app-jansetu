@@ -83,7 +83,7 @@ export default function IssueDetail() {
 
   return (
     <div className="max-w-5xl animate-fade-up">
-      <Link to={isStaff || user?.role === "worker" ? "/app/issues" : "/app/my-issues"} className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-4" data-testid="back-issues">
+      <Link to={canAssign || isMLA || isAssignee ? "/app/issues" : "/app/my-issues"} className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-4" data-testid="back-issues">
         <ArrowLeft size={16} /> Back to issues
       </Link>
 
