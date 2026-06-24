@@ -864,11 +864,13 @@ async def create_interaction(payload: ServiceInteractionCreate, user: dict = Dep
 async def celebrations(days: int = 7, _: dict = Depends(require_roles("pa", "politician", "admin"))):
     from datetime import date
     today = date.today()
-    citizens = await db.users.find({"role": "citizen", "status": {"$ne": "deceased"}}, {"_id": 0, "password_hash": 0}).to_list(5000)
+    citizens_alive = await db.users.find({"role": "citizen", "status": {"$ne": "deceased"}}, {"_id": 0, "password_hash": 0}).to_list(5000)
+    citizens_dead = await db.users.find({"role": "citizen", "status": "deceased"}, {"_id": 0, "password_hash": 0}).to_list(5000)
 
-    def _bucket(field):
+    def _bucket(field, deceased_only=False):
         out = {"today": [], "upcoming": []}
-        for c in citizens:
+        pool = citizens_dead if deceased_only else citizens_alive
+        for c in pool:
             s = c.get(field)
             if not s or len(s) < 10:
                 continue
@@ -886,7 +888,7 @@ async def celebrations(days: int = 7, _: dict = Depends(require_roles("pa", "pol
                     pass
         return out
 
-    return {"birthdays": _bucket("dob"), "anniversaries": _bucket("anniversary")}
+    return {"birthdays": _bucket("dob"), "anniversaries": _bucket("anniversary"), "remembrance": _bucket("date_of_death", deceased_only=True)}
 
 
 

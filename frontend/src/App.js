@@ -20,6 +20,7 @@ import StaffDashboard from "./pages/StaffDashboard";
 import CitizensList from "./pages/CitizensList";
 import AdminAreas from "./pages/AdminAreas";
 import AdminStaff from "./pages/AdminStaff";
+import Celebrations from "./pages/Celebrations";
 
 function Guard({ children }) {
   const { user, loading } = useAuth();
@@ -56,6 +57,7 @@ export default function App() {
           <Route path="/app/visits" element={<Guard><Visits /></Guard>} />
           <Route path="/app/devworks" element={<Guard><DevWorks /></Guard>} />
           <Route path="/app/citizens" element={<Guard><CitizensList /></Guard>} />
+          <Route path="/app/celebrations" element={<Guard><Celebrations /></Guard>} />
           <Route path="/app/areas" element={<Guard><AdminAreas /></Guard>} />
           <Route path="/app/staff" element={<Guard><AdminStaff /></Guard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
