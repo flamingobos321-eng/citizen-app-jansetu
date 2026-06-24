@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { SectionTitle, StatCard, EmptyState } from "../components/Common";
 import { Button } from "../components/ui/button";
@@ -56,9 +57,9 @@ function Section({ title, icon: Icon, items, renderRow }) {
 
 function PersonRow({ p, extra, areaName, onUpdated, deceased }) {
   return (
-    <div className="flex items-center justify-between gap-3 flex-wrap" data-testid={`celeb-row-${p.id}`}>
+      <div className="flex items-center justify-between gap-3 flex-wrap" data-testid={`celeb-row-${p.id}`}>
       <div className="min-w-0">
-        <div className="font-semibold text-sm text-gray-900">{p.name} {deceased && <span className="pill pill-neutral ml-2">Deceased</span>}</div>
+        <Link to={`/app/persons/${p.id}`} className="font-semibold text-sm text-[#0A1128] hover:underline">{p.name}</Link> {deceased && <span className="pill pill-neutral ml-2">Deceased</span>}
         <div className="text-xs text-gray-500 mt-0.5">{extra} · {p.mobile || "no mobile"} · Ward {areaName(p.ward_id)} · Village {areaName(p.village_id)}</div>
       </div>
       <div className="flex items-center gap-2">

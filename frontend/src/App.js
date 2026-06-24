@@ -21,6 +21,7 @@ import CitizensList from "./pages/CitizensList";
 import AdminAreas from "./pages/AdminAreas";
 import AdminStaff from "./pages/AdminStaff";
 import Celebrations from "./pages/Celebrations";
+import PersonProfile from "./pages/PersonProfile";
 
 function Guard({ children }) {
   const { user, loading } = useAuth();
@@ -58,6 +59,7 @@ export default function App() {
           <Route path="/app/devworks" element={<Guard><DevWorks /></Guard>} />
           <Route path="/app/citizens" element={<Guard><CitizensList /></Guard>} />
           <Route path="/app/celebrations" element={<Guard><Celebrations /></Guard>} />
+          <Route path="/app/persons/:id" element={<Guard><PersonProfile /></Guard>} />
           <Route path="/app/areas" element={<Guard><AdminAreas /></Guard>} />
           <Route path="/app/staff" element={<Guard><AdminStaff /></Guard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
