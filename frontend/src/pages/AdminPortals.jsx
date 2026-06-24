@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { api, fileUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { SectionTitle, EmptyState } from "../components/Common";
@@ -190,17 +191,20 @@ function EditDialog({ initial, onClose, onSaved }) {
     }
   };
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl animate-fade-up" onClick={(e) => e.stopPropagation()} data-testid="portal-edit-dialog">
-        <div className="flex items-center justify-between mb-5">
-          <div>
+      <div className="bg-white rounded-lg max-w-3xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()} data-testid="portal-edit-dialog">
+        {/* Sticky header */}
+        <div className="flex items-center justify-between p-5 sm:p-6 border-b border-gray-100 shrink-0">
+          <div className="min-w-0">
             <h3 className="font-heading text-xl font-bold text-gray-900 flex items-center gap-2"><Globe size={18} /> {isNew ? "New Portal" : "Edit Portal"}</h3>
             <div className="text-xs text-gray-500 mt-0.5">All fields below control the white-label branding for this constituency.</div>
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100"><X size={18} /></button>
+          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100 shrink-0" aria-label="Close"><X size={18} /></button>
         </div>
 
+        {/* Scrollable body — min-h-0 is required so flexbox lets this child shrink and scroll */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-5 sm:p-6">
         <div className="grid sm:grid-cols-2 gap-4">
           <F label="Slug (URL)" required hint="e.g. pune-cantonment">
             <Input data-testid="portal-slug" value={form.slug} onChange={(e) => set("slug", e.target.value)} placeholder="pune-cantonment" />
@@ -278,15 +282,18 @@ function EditDialog({ initial, onClose, onSaved }) {
             </div>
           </div>
         </div>
+        </div>
 
-        <div className="mt-6 flex justify-end gap-2">
+        {/* Sticky footer */}
+        <div className="flex justify-end gap-2 p-4 sm:p-5 border-t border-gray-100 shrink-0 bg-white rounded-b-lg">
           <button onClick={onClose} className="px-4 py-2 text-sm font-semibold rounded-md border border-gray-200 hover:bg-gray-50">Cancel</button>
           <button onClick={save} disabled={saving} data-testid="portal-save" className="px-4 py-2 text-sm font-semibold rounded-md bg-[#0A1128] text-white hover:opacity-90 disabled:opacity-50">
             {saving ? "Saving…" : (isNew ? "Create Portal" : "Save Changes")}
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
