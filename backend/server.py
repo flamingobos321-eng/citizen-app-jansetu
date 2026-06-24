@@ -467,6 +467,8 @@ async def approve_visit(visit_id: str, user: dict = Depends(require_roles("polit
     v = await db.visits.find_one({"id": visit_id})
     if not v:
         raise HTTPException(404, "Not found")
+    if v.get("status") == "Published":
+        return {**{k: v[k] for k in v if k != "_id"}}
     await db.visits.update_one({"id": visit_id}, {"$set": {"status": "Published", "approved_by": user["id"], "approved_at": now_iso()}})
     visit = Visit(**{**v, "status": "Published", "approved_by": user["id"], "approved_at": now_iso()})
     await _publish_visit_notification(visit, user)
