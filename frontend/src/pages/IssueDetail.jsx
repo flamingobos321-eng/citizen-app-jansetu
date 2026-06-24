@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, fileUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { StatusPill, SectionTitle } from "../components/Common";
 import { Button } from "../components/ui/button";
@@ -138,8 +138,8 @@ export default function IssueDetail() {
               <h3 className="font-heading font-semibold text-gray-900 mb-3">Before — Citizen evidence ({issue.photos.length})</h3>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {issue.photos.map((p) => (
-                  <a key={p} href={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} target="_blank" rel="noreferrer" data-testid={`issue-photo-${p}`}>
-                    <img src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} alt="" className="w-full h-32 object-cover rounded-md border border-gray-200 hover:opacity-90 transition" />
+                  <a key={p} href={fileUrl(p)} target="_blank" rel="noreferrer" data-testid={`issue-photo-${p}`}>
+                    <img src={fileUrl(p)} alt="" className="w-full h-32 object-cover rounded-md border border-gray-200 hover:opacity-90 transition" />
                   </a>
                 ))}
               </div>
@@ -151,8 +151,8 @@ export default function IssueDetail() {
               <h3 className="font-heading font-semibold text-gray-900 mb-3">After — Completion proof ({issue.completion_photos.length})</h3>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {issue.completion_photos.map((p) => (
-                  <a key={p} href={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} target="_blank" rel="noreferrer" data-testid={`completion-photo-${p}`}>
-                    <img src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} alt="" className="w-full h-32 object-cover rounded-md border border-[#10B981] hover:opacity-90 transition" />
+                  <a key={p} href={fileUrl(p)} target="_blank" rel="noreferrer" data-testid={`completion-photo-${p}`}>
+                    <img src={fileUrl(p)} alt="" className="w-full h-32 object-cover rounded-md border border-[#10B981] hover:opacity-90 transition" />
                   </a>
                 ))}
               </div>
@@ -361,7 +361,7 @@ export default function IssueDetail() {
                   <Label className="text-xs font-bold uppercase tracking-[0.1em] text-gray-500">Completion photos (recommended)</Label>
                   <div className="flex flex-wrap gap-2 mt-2">
                     {completionPhotos.map((p) => (
-                      <img key={p} src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} alt="" className="w-16 h-16 object-cover rounded border border-[#10B981]" />
+                      <img key={p} src={fileUrl(p)} alt="" className="w-16 h-16 object-cover rounded border border-[#10B981]" />
                     ))}
                     <label className="w-16 h-16 rounded border-2 border-dashed border-gray-300 flex items-center justify-center text-xs text-gray-500 cursor-pointer hover:border-[#0A1128]">
                       {uploadingDone ? "..." : "+ Add"}

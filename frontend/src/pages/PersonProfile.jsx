@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, fileUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { SectionTitle, StatusPill } from "../components/Common";
 import {
@@ -74,7 +74,7 @@ export default function PersonProfile() {
       {/* HEADER */}
       <div className="bg-white border border-gray-200 rounded-lg p-6 flex items-start gap-6 flex-wrap">
         <div className="w-20 h-20 rounded-full bg-[#0A1128] text-white flex items-center justify-center text-2xl font-heading font-bold">
-          {p.profile_photo ? <img src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p.profile_photo}`} alt="" className="w-full h-full object-cover rounded-full" /> : p.name?.[0]}
+          {p.profile_photo ? <img src={fileUrl(p.profile_photo)} alt="" className="w-full h-full object-cover rounded-full" /> : p.name?.[0]}
         </div>
         <div className="flex-1 min-w-[260px]">
           <div className="flex items-center gap-2 flex-wrap">

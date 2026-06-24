@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, fileUrl } from "../lib/api";
 import { SectionTitle } from "../components/Common";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -121,7 +121,7 @@ export default function RaiseIssue() {
           <div className="flex flex-wrap gap-3">
             {form.photos.map((p) => (
               <div key={p} className="relative w-24 h-24 rounded-md border border-gray-200 overflow-hidden">
-                <img src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} alt="" className="w-full h-full object-cover" />
+                <img src={fileUrl(p)} alt="" className="w-full h-full object-cover" />
                 <button onClick={() => removePhoto(p)} className="absolute top-1 right-1 bg-white rounded-full p-0.5 border border-gray-300" data-testid={`remove-photo-${p}`}>
                   <X size={12} />
                 </button>

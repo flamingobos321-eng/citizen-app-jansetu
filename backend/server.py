@@ -80,12 +80,71 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     return user
 
 
+async def get_current_user_flexible(
+    authorization: Optional[str] = Header(None),
+    t: Optional[str] = Query(None),
+) -> dict:
+    """Like get_current_user but also accepts ?t=<token> for <img> tags / file downloads
+    which cannot set custom headers."""
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
+    elif t:
+        token = t
+    if not token:
+        raise HTTPException(401, "Missing token")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    except jwt.PyJWTError:
+        raise HTTPException(401, "Invalid token")
+    user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(401, "User not found")
+    return user
+
+
 def require_roles(*roles):
     async def _dep(user: dict = Depends(get_current_user)):
         if user["role"] not in roles:
             raise HTTPException(403, "Forbidden")
         return user
     return _dep
+
+
+STAFF_ROLES = ("worker", "pa", "politician", "admin")
+
+
+def is_staff(user: dict) -> bool:
+    return user.get("role") in STAFF_ROLES
+
+
+async def can_access_file(user: dict, path: str) -> bool:
+    """Permission check for /api/files/{path}.
+
+    - Staff (worker/pa/politician/admin): all files.
+    - Citizen: own profile photo, photos on their own issues, photos on approved (public) dev works.
+    - Worker: additionally, photos on issues assigned to them.
+    """
+    role = user.get("role")
+    if role in ("pa", "politician", "admin"):
+        return True
+    # Own profile photo (any role)
+    if await db.users.find_one({"id": user["id"], "profile_photo": path}, {"id": 1}):
+        return True
+    # Approved dev work photos are public to all logged-in users
+    if await db.devworks.find_one({"photos": path, "approved": True}, {"id": 1}):
+        return True
+    # Issue photos — owning citizen or assigned worker
+    issue = await db.issues.find_one(
+        {"$or": [{"photos": path}, {"completion_photos": path}]},
+        {"citizen_id": 1, "assigned_to": 1},
+    )
+    if issue:
+        if user["id"] == issue.get("citizen_id"):
+            return True
+        if role == "worker" and user["id"] == issue.get("assigned_to"):
+            return True
+    return False
 
 
 # ----------------- Code generation -----------------
@@ -238,6 +297,9 @@ async def create_staff(payload: StaffCreate, _: dict = Depends(require_roles("ad
 
 @api.get("/users")
 async def list_users(role: Optional[str] = None, user: dict = Depends(get_current_user)):
+    # Staff-only directory. Citizens never need a full user listing.
+    if not is_staff(user):
+        raise HTTPException(403, "Forbidden")
     q = {}
     if role:
         q["role"] = role
@@ -277,6 +339,9 @@ async def delete_area(area_id: str, _: dict = Depends(require_roles("admin"))):
 # ----------------- HOUSEHOLDS -----------------
 @api.get("/households")
 async def list_households(search: Optional[str] = None, user: dict = Depends(get_current_user)):
+    # Staff-only listing. Citizens look up their own via /households/{id} with their household_id.
+    if not is_staff(user):
+        raise HTTPException(403, "Forbidden")
     q = {}
     if search:
         # also match member mobile/name
@@ -307,6 +372,9 @@ async def reset_demo(_: dict = Depends(require_roles("admin"))):
 
 @api.get("/households/{hh_id}")
 async def household_detail(hh_id: str, user: dict = Depends(get_current_user)):
+    # Staff can view any household; a citizen can only view their own household.
+    if not is_staff(user) and user.get("household_id") != hh_id:
+        raise HTTPException(403, "Forbidden")
     hh = await db.households.find_one({"id": hh_id}, {"_id": 0})
     if not hh:
         raise HTTPException(404, "Not found")
@@ -391,6 +459,16 @@ async def issue_detail(issue_id: str, user: dict = Depends(get_current_user)):
     issue = await db.issues.find_one({"id": issue_id}, {"_id": 0})
     if not issue:
         raise HTTPException(404, "Not found")
+    # Access policy: staff (pa/politician/admin) — all; assigned worker — yes;
+    # owning citizen — yes; everyone else — 403.
+    role = user.get("role")
+    allowed = (
+        role in ("pa", "politician", "admin")
+        or (role == "worker" and user["id"] == issue.get("assigned_to"))
+        or user["id"] == issue.get("citizen_id")
+    )
+    if not allowed:
+        raise HTTPException(403, "Forbidden")
     citizen = await db.users.find_one({"id": issue["citizen_id"]}, {"_id": 0, "password_hash": 0})
     return {"issue": issue, "citizen": citizen}
 
@@ -765,7 +843,9 @@ async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_cur
 
 
 @api.get("/files/{path:path}")
-async def serve_file(path: str):
+async def serve_file(path: str, user: dict = Depends(get_current_user_flexible)):
+    if not await can_access_file(user, path):
+        raise HTTPException(403, "Forbidden")
     rec = await db.files.find_one({"storage_path": path, "is_deleted": False})
     if rec and rec.get("in_db") and rec.get("data_b64"):
         import base64
@@ -801,23 +881,30 @@ async def relation_types():
 
 
 @api.get("/persons/{person_id}")
-async def person_profile(person_id: str, _: dict = Depends(get_current_user)):
+async def person_profile(person_id: str, user: dict = Depends(get_current_user)):
+    # Citizens may only view their own person profile; staff may view any.
+    if not is_staff(user) and user["id"] != person_id:
+        raise HTTPException(403, "Forbidden")
     person = await db.users.find_one({"id": person_id}, {"_id": 0, "password_hash": 0})
     if not person:
         raise HTTPException(404, "Person not found")
     rels = await db.relationships.find({"$or": [{"person_a": person_id}, {"person_b": person_id}]}, {"_id": 0}).to_list(500)
     other_ids = [r["person_b"] if r["person_a"] == person_id else r["person_a"] for r in rels]
     others = {u["id"]: u async for u in db.users.find({"id": {"$in": other_ids}}, {"_id": 0, "password_hash": 0})}
-    viewer_gender = person.get("gender")
     for r in rels:
         is_a = r["person_a"] == person_id
         other_id = r["person_b"] if is_a else r["person_a"]
-        r["other"] = others.get(other_id)
-        # display_type = the other person's relation TO me (the viewer).
+        other = others.get(other_id)
+        r["other"] = other
+        # display_type = how the OTHER person relates TO the viewer.
         # Stored: person_a is `type` of person_b.
-        # If I am person_b → other (person_a) has relation `type` to me → display_type = type.
-        # If I am person_a → other (person_b) is the inverse of `type` to me (depends on my gender).
-        r["display_type"] = r["type"] if not is_a else inverse_relation(r["type"], viewer_gender)
+        # If viewer is person_b → other (person_a) has relation `type` to me → display_type = type.
+        # If viewer is person_a → other (person_b) has the inverse of `type` to me;
+        #   the inverse label depends on the OTHER person's gender (not the viewer's).
+        if not is_a:
+            r["display_type"] = r["type"]
+        else:
+            r["display_type"] = inverse_relation(r["type"], (other or {}).get("gender"))
     interactions = await db.interactions.find({"person_id": person_id}, {"_id": 0}).sort("occurred_at", -1).to_list(500)
     issues = await db.issues.find({"citizen_id": person_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return {"person": person, "relationships": rels, "interactions": interactions, "issues": issues}

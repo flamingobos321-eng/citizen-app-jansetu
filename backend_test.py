@@ -1,712 +1,608 @@
-#!/usr/bin/env python3
-"""Backend API tests for JANSETU Family Relationship Module."""
+"""
+JANSETU Backend Security Fixes Testing
+Tests three specific areas: C1 (access control), M1 (inverse gender), M5 (file access)
+"""
 import requests
 import json
-import sys
+from typing import Dict, Optional
 
-# Backend URL from frontend/.env
 BASE_URL = "https://family-bonds-23.preview.emergentagent.com/api"
 
 # Test credentials
-ADMIN_EMAIL = "admin@jansetu.in"
-ADMIN_PASSWORD = "admin123"
-PA_EMAIL = "pa@jansetu.in"
-PA_PASSWORD = "pa123"
-WORKER_EMAIL = "worker1@jansetu.in"
-WORKER_PASSWORD = "worker123"
+ADMIN_CREDS = {"email": "admin@jansetu.in", "password": "admin123"}
+PA_CREDS = {"email": "pa@jansetu.in", "password": "pa123"}
+WORKER_CREDS = {"email": "worker1@jansetu.in", "password": "worker123"}
 
-# Global tokens
-admin_token = None
-pa_token = None
-worker_token = None
-
-# Test data
-test_relationship_id = None
-test_person_a_id = None
-test_person_b_id = None
+# Global tokens storage
+tokens = {}
+test_data = {}
 
 
-def print_test(name):
-    """Print test name."""
-    print(f"\n{'='*80}")
-    print(f"TEST: {name}")
-    print('='*80)
-
-
-def print_result(passed, message):
-    """Print test result."""
+def log_test(name: str, passed: bool, details: str = ""):
+    """Log test result"""
     status = "✅ PASS" if passed else "❌ FAIL"
-    print(f"{status}: {message}")
-    return passed
+    print(f"{status}: {name}")
+    if details:
+        print(f"   {details}")
 
 
-def login_staff(email, password):
-    """Login as staff and return token."""
-    try:
-        response = requests.post(
-            f"{BASE_URL}/auth/staff/login",
-            json={"email": email, "password": password},
-            timeout=10
-        )
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("token")
+def login_staff(role: str, creds: Dict) -> str:
+    """Login staff and return token"""
+    resp = requests.post(f"{BASE_URL}/auth/staff/login", json=creds)
+    if resp.status_code != 200:
+        raise Exception(f"Failed to login {role}: {resp.status_code} {resp.text}")
+    data = resp.json()
+    return data["token"]
+
+
+def get_citizen_token() -> tuple[str, dict]:
+    """Get a citizen token via OTP flow. Returns (token, user_data)"""
+    # First, get a list of citizens from admin
+    admin_token = tokens.get("admin")
+    if not admin_token:
+        raise Exception("Admin token not available")
+    
+    resp = requests.get(
+        f"{BASE_URL}/users?role=citizen",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    if resp.status_code != 200:
+        raise Exception(f"Failed to get citizens: {resp.status_code}")
+    
+    citizens = resp.json()
+    if not citizens:
+        raise Exception("No citizens found in database")
+    
+    # Pick first citizen with mobile
+    citizen = next((c for c in citizens if c.get("mobile")), None)
+    if not citizen:
+        raise Exception("No citizen with mobile found")
+    
+    mobile = citizen["mobile"]
+    
+    # Request OTP
+    resp = requests.post(f"{BASE_URL}/auth/citizen/request-otp", json={"mobile": mobile})
+    if resp.status_code != 200:
+        raise Exception(f"Failed to request OTP: {resp.status_code}")
+    
+    # Verify OTP (any 6 digits work in MVP)
+    resp = requests.post(f"{BASE_URL}/auth/citizen/verify-otp", json={"mobile": mobile, "otp": "123456"})
+    if resp.status_code != 200:
+        raise Exception(f"Failed to verify OTP: {resp.status_code}")
+    
+    data = resp.json()
+    return data["token"], data["user"]
+
+
+def setup_tokens():
+    """Setup all required tokens"""
+    print("\n=== Setting up tokens ===")
+    
+    tokens["admin"] = login_staff("admin", ADMIN_CREDS)
+    print("✓ Admin token obtained")
+    
+    tokens["pa"] = login_staff("pa", PA_CREDS)
+    print("✓ PA token obtained")
+    
+    tokens["worker"] = login_staff("worker", WORKER_CREDS)
+    print("✓ Worker token obtained")
+    
+    citizen_token, citizen_user = get_citizen_token()
+    tokens["citizen"] = citizen_token
+    test_data["citizen_user"] = citizen_user
+    print(f"✓ Citizen token obtained (user: {citizen_user['name']}, id: {citizen_user['id']})")
+
+
+def test_c1_access_control():
+    """Test C1: Access control matrix for key endpoints"""
+    print("\n=== Testing C1: Access Control Matrix ===")
+    
+    admin_token = tokens["admin"]
+    pa_token = tokens["pa"]
+    worker_token = tokens["worker"]
+    citizen_token = tokens["citizen"]
+    citizen_user = test_data["citizen_user"]
+    
+    # Test 1: GET /api/users - staff only
+    print("\n--- Testing GET /api/users ---")
+    
+    # Citizen should get 403
+    resp = requests.get(f"{BASE_URL}/users", headers={"Authorization": f"Bearer {citizen_token}"})
+    log_test("Citizen GET /users → 403", resp.status_code == 403, f"Got {resp.status_code}")
+    
+    # Worker should get 200
+    resp = requests.get(f"{BASE_URL}/users", headers={"Authorization": f"Bearer {worker_token}"})
+    log_test("Worker GET /users → 200", resp.status_code == 200, f"Got {resp.status_code}")
+    
+    # PA should get 200
+    resp = requests.get(f"{BASE_URL}/users", headers={"Authorization": f"Bearer {pa_token}"})
+    log_test("PA GET /users → 200", resp.status_code == 200, f"Got {resp.status_code}")
+    
+    # Admin should get 200
+    resp = requests.get(f"{BASE_URL}/users", headers={"Authorization": f"Bearer {admin_token}"})
+    log_test("Admin GET /users → 200", resp.status_code == 200, f"Got {resp.status_code}")
+    
+    # Test 2: GET /api/households - staff only
+    print("\n--- Testing GET /api/households ---")
+    
+    # Citizen should get 403
+    resp = requests.get(f"{BASE_URL}/households", headers={"Authorization": f"Bearer {citizen_token}"})
+    log_test("Citizen GET /households → 403", resp.status_code == 403, f"Got {resp.status_code}")
+    
+    # Worker should get 200
+    resp = requests.get(f"{BASE_URL}/households", headers={"Authorization": f"Bearer {worker_token}"})
+    log_test("Worker GET /households → 200", resp.status_code == 200, f"Got {resp.status_code}")
+    
+    # PA should get 200
+    resp = requests.get(f"{BASE_URL}/households", headers={"Authorization": f"Bearer {pa_token}"})
+    log_test("PA GET /households → 200", resp.status_code == 200, f"Got {resp.status_code}")
+    
+    # Test 3: GET /api/households/{id} - staff OR own household
+    print("\n--- Testing GET /api/households/{id} ---")
+    
+    citizen_hh_id = citizen_user.get("household_id")
+    if citizen_hh_id:
+        # Citizen accessing own household → 200
+        resp = requests.get(f"{BASE_URL}/households/{citizen_hh_id}", headers={"Authorization": f"Bearer {citizen_token}"})
+        log_test("Citizen GET /households/{own_hh_id} → 200", resp.status_code == 200, f"Got {resp.status_code}")
+        
+        # Get another household ID for testing
+        resp = requests.get(f"{BASE_URL}/households", headers={"Authorization": f"Bearer {admin_token}"})
+        if resp.status_code == 200:
+            households = resp.json()
+            other_hh = next((h for h in households if h["id"] != citizen_hh_id), None)
+            if other_hh:
+                # Citizen accessing other household → 403
+                resp = requests.get(f"{BASE_URL}/households/{other_hh['id']}", headers={"Authorization": f"Bearer {citizen_token}"})
+                log_test("Citizen GET /households/{other_hh_id} → 403", resp.status_code == 403, f"Got {resp.status_code}")
+                
+                # Staff accessing any household → 200
+                resp = requests.get(f"{BASE_URL}/households/{other_hh['id']}", headers={"Authorization": f"Bearer {pa_token}"})
+                log_test("PA GET /households/{any_hh_id} → 200", resp.status_code == 200, f"Got {resp.status_code}")
+    else:
+        print("⚠️  Citizen has no household_id, skipping household access tests")
+    
+    # Test 4: GET /api/issues/{id} - complex access control
+    print("\n--- Testing GET /api/issues/{id} ---")
+    
+    # Get citizen's own issue
+    resp = requests.get(f"{BASE_URL}/issues?mine=true", headers={"Authorization": f"Bearer {citizen_token}"})
+    if resp.status_code == 200:
+        citizen_issues = resp.json()
+        if citizen_issues:
+            own_issue_id = citizen_issues[0]["id"]
+            
+            # Citizen accessing own issue → 200
+            resp = requests.get(f"{BASE_URL}/issues/{own_issue_id}", headers={"Authorization": f"Bearer {citizen_token}"})
+            log_test("Citizen GET /issues/{own_issue_id} → 200", resp.status_code == 200, f"Got {resp.status_code}")
+            
+            # Staff accessing any issue → 200
+            resp = requests.get(f"{BASE_URL}/issues/{own_issue_id}", headers={"Authorization": f"Bearer {pa_token}"})
+            log_test("PA GET /issues/{any_issue_id} → 200", resp.status_code == 200, f"Got {resp.status_code}")
+            
+            # Get another citizen's issue
+            resp = requests.get(f"{BASE_URL}/issues", headers={"Authorization": f"Bearer {admin_token}"})
+            if resp.status_code == 200:
+                all_issues = resp.json()
+                other_issue = next((i for i in all_issues if i.get("citizen_id") != citizen_user["id"]), None)
+                if other_issue:
+                    # Citizen accessing other's issue → 403
+                    resp = requests.get(f"{BASE_URL}/issues/{other_issue['id']}", headers={"Authorization": f"Bearer {citizen_token}"})
+                    log_test("Citizen GET /issues/{other_issue_id} → 403", resp.status_code == 403, f"Got {resp.status_code}")
+                    
+                    # Test worker access - assigned vs unassigned
+                    if other_issue.get("assigned_to"):
+                        assigned_worker_id = other_issue["assigned_to"]
+                        # If worker1 is assigned, they should get 200
+                        resp = requests.get(f"{BASE_URL}/users", headers={"Authorization": f"Bearer {admin_token}"})
+                        workers = [u for u in resp.json() if u["role"] == "worker"]
+                        worker1_user = next((w for w in workers if w["email"] == "worker1@jansetu.in"), None)
+                        
+                        if worker1_user and worker1_user["id"] == assigned_worker_id:
+                            resp = requests.get(f"{BASE_URL}/issues/{other_issue['id']}", headers={"Authorization": f"Bearer {worker_token}"})
+                            log_test("Assigned worker GET /issues/{assigned_issue_id} → 200", resp.status_code == 200, f"Got {resp.status_code}")
+                        else:
+                            # Worker not assigned → 403
+                            resp = requests.get(f"{BASE_URL}/issues/{other_issue['id']}", headers={"Authorization": f"Bearer {worker_token}"})
+                            log_test("Unassigned worker GET /issues/{unassigned_issue_id} → 403", resp.status_code == 403, f"Got {resp.status_code}")
         else:
-            print(f"Login failed for {email}: {response.status_code} - {response.text}")
-            return None
-    except Exception as e:
-        print(f"Login error for {email}: {e}")
-        return None
+            print("⚠️  Citizen has no issues, creating one for testing")
+            # Create an issue for testing
+            issue_payload = {
+                "category": "Road Repair",
+                "title": "Test issue for access control",
+                "description": "Testing access control",
+                "photos": [],
+                "gps_lat": None,
+                "gps_lng": None
+            }
+            resp = requests.post(f"{BASE_URL}/issues", json=issue_payload, headers={"Authorization": f"Bearer {citizen_token}"})
+            if resp.status_code == 200:
+                own_issue_id = resp.json()["id"]
+                
+                # Citizen accessing own issue → 200
+                resp = requests.get(f"{BASE_URL}/issues/{own_issue_id}", headers={"Authorization": f"Bearer {citizen_token}"})
+                log_test("Citizen GET /issues/{own_issue_id} → 200", resp.status_code == 200, f"Got {resp.status_code}")
+    
+    # Test 5: GET /api/persons/{id} - staff OR self
+    print("\n--- Testing GET /api/persons/{id} ---")
+    
+    citizen_id = citizen_user["id"]
+    
+    # Citizen accessing own person profile → 200
+    resp = requests.get(f"{BASE_URL}/persons/{citizen_id}", headers={"Authorization": f"Bearer {citizen_token}"})
+    log_test("Citizen GET /persons/{self_id} → 200", resp.status_code == 200, f"Got {resp.status_code}")
+    
+    # Get another person ID
+    resp = requests.get(f"{BASE_URL}/users?role=citizen", headers={"Authorization": f"Bearer {admin_token}"})
+    if resp.status_code == 200:
+        citizens = resp.json()
+        other_citizen = next((c for c in citizens if c["id"] != citizen_id), None)
+        if other_citizen:
+            # Citizen accessing other person → 403
+            resp = requests.get(f"{BASE_URL}/persons/{other_citizen['id']}", headers={"Authorization": f"Bearer {citizen_token}"})
+            log_test("Citizen GET /persons/{other_id} → 403", resp.status_code == 403, f"Got {resp.status_code}")
+            
+            # Staff accessing any person → 200
+            resp = requests.get(f"{BASE_URL}/persons/{other_citizen['id']}", headers={"Authorization": f"Bearer {pa_token}"})
+            log_test("PA GET /persons/{any_id} → 200", resp.status_code == 200, f"Got {resp.status_code}")
 
 
-def get_citizens():
-    """Get list of citizens."""
-    try:
-        response = requests.get(
-            f"{BASE_URL}/users?role=citizen",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            timeout=10
-        )
-        if response.status_code == 200:
-            return response.json()
-        return []
-    except Exception as e:
-        print(f"Error getting citizens: {e}")
-        return []
-
-
-def test_relation_types():
-    """Test GET /api/meta/relation-types includes Grandson and Granddaughter."""
-    print_test("GET /api/meta/relation-types - Should include Grandson and Granddaughter")
+def test_m1_inverse_gender():
+    """Test M1: Family relationship inverse-gender fix"""
+    print("\n=== Testing M1: Family Relationship Inverse Gender ===")
     
-    try:
-        response = requests.get(f"{BASE_URL}/meta/relation-types", timeout=10)
-        
-        if response.status_code != 200:
-            return print_result(False, f"Expected 200, got {response.status_code}")
-        
-        data = response.json()
-        relation_types = data.get("relation_types", [])
-        
-        if "Grandson" not in relation_types:
-            return print_result(False, "Grandson not found in relation_types")
-        
-        if "Granddaughter" not in relation_types:
-            return print_result(False, "Granddaughter not found in relation_types")
-        
-        # Check original types are still there
-        expected_types = ["Father", "Mother", "Son", "Daughter", "Brother", "Sister", 
-                         "Husband", "Wife", "Grandfather", "Grandmother", "Uncle", 
-                         "Aunt", "Nephew", "Niece", "Cousin", "Other"]
-        
-        for rel_type in expected_types:
-            if rel_type not in relation_types:
-                return print_result(False, f"{rel_type} not found in relation_types")
-        
-        print(f"Found {len(relation_types)} relation types: {relation_types}")
-        return print_result(True, f"All expected relation types present including Grandson and Granddaughter")
-        
-    except Exception as e:
-        return print_result(False, f"Exception: {e}")
-
-
-def test_create_relationship_happy_path():
-    """Test POST /api/relationships - Happy path with since and notes."""
-    global test_relationship_id, test_person_a_id, test_person_b_id
+    pa_token = tokens["pa"]
+    admin_token = tokens["admin"]
     
-    print_test("POST /api/relationships - Happy path with since and notes")
+    # Get two citizens - one male, one female
+    resp = requests.get(f"{BASE_URL}/users?role=citizen", headers={"Authorization": f"Bearer {admin_token}"})
+    if resp.status_code != 200:
+        print("❌ Failed to get citizens for M1 test")
+        return
     
-    # Get two citizens
-    citizens = get_citizens()
-    if len(citizens) < 2:
-        return print_result(False, "Need at least 2 citizens for testing")
+    citizens = resp.json()
+    male_citizen = next((c for c in citizens if c.get("gender", "").lower() in ["male", "m"]), None)
+    female_citizen = next((c for c in citizens if c.get("gender", "").lower() in ["female", "f"]), None)
     
-    # Pick two citizens with known genders
-    person_a = None
-    person_b = None
+    if not male_citizen or not female_citizen:
+        print("⚠️  Need both male and female citizens for M1 test. Skipping.")
+        return
     
-    for citizen in citizens:
-        if citizen.get("gender") in ["Male", "male", "M", "m"]:
-            if not person_a:
-                person_a = citizen
-        if citizen.get("gender") in ["Female", "female", "F", "f"]:
-            if not person_b:
-                person_b = citizen
-        if person_a and person_b:
-            break
+    print(f"Using male citizen: {male_citizen['name']} (id: {male_citizen['id']})")
+    print(f"Using female citizen: {female_citizen['name']} (id: {female_citizen['id']})")
     
-    # If we don't have both genders, just use first two
-    if not person_a or not person_b:
-        person_a = citizens[0]
-        person_b = citizens[1]
+    # Test 1: Create Father relationship from male to female
+    print("\n--- Testing Father relationship (Male → Female) ---")
     
-    test_person_a_id = person_a["id"]
-    test_person_b_id = person_b["id"]
+    rel_payload = {
+        "person_a": male_citizen["id"],
+        "person_b": female_citizen["id"],
+        "type": "Father",
+        "since": "1994",
+        "notes": "Test relationship for M1"
+    }
     
-    print(f"Person A: {person_a['name']} (Gender: {person_a.get('gender', 'Unknown')})")
-    print(f"Person B: {person_b['name']} (Gender: {person_b.get('gender', 'Unknown')})")
+    resp = requests.post(f"{BASE_URL}/relationships", json=rel_payload, headers={"Authorization": f"Bearer {pa_token}"})
+    if resp.status_code != 200:
+        print(f"❌ Failed to create Father relationship: {resp.status_code} {resp.text}")
+        return
     
-    try:
-        payload = {
-            "person_a": test_person_a_id,
-            "person_b": test_person_b_id,
-            "type": "Father",
-            "since": "1994",
-            "notes": "Family connected since Shankarrao Kolhe era."
+    rel_data = resp.json()
+    test_data["father_rel_id"] = rel_data["id"]
+    print(f"✓ Created Father relationship (id: {rel_data['id']})")
+    
+    # Get person B's profile (female) - should show display_type = "Father"
+    resp = requests.get(f"{BASE_URL}/persons/{female_citizen['id']}", headers={"Authorization": f"Bearer {pa_token}"})
+    if resp.status_code != 200:
+        print(f"❌ Failed to get person B profile: {resp.status_code}")
+        return
+    
+    person_b_data = resp.json()
+    relationships_b = person_b_data.get("relationships", [])
+    father_rel_b = next((r for r in relationships_b if r["id"] == rel_data["id"]), None)
+    
+    if father_rel_b:
+        display_type_b = father_rel_b.get("display_type")
+        log_test("Person B (Female) sees display_type='Father'", display_type_b == "Father", f"Got '{display_type_b}'")
+    else:
+        print("❌ Relationship not found in person B's profile")
+    
+    # Get person A's profile (male) - should show display_type = "Daughter"
+    resp = requests.get(f"{BASE_URL}/persons/{male_citizen['id']}", headers={"Authorization": f"Bearer {pa_token}"})
+    if resp.status_code != 200:
+        print(f"❌ Failed to get person A profile: {resp.status_code}")
+        return
+    
+    person_a_data = resp.json()
+    relationships_a = person_a_data.get("relationships", [])
+    father_rel_a = next((r for r in relationships_a if r["id"] == rel_data["id"]), None)
+    
+    if father_rel_a:
+        display_type_a = father_rel_a.get("display_type")
+        log_test("Person A (Male) sees display_type='Daughter' (inverse based on OTHER's gender)", 
+                 display_type_a == "Daughter", f"Got '{display_type_a}'")
+    else:
+        print("❌ Relationship not found in person A's profile")
+    
+    # Test 2: Brother relationship between two males
+    print("\n--- Testing Brother relationship (Male → Male) ---")
+    
+    # Find another male citizen
+    male_citizen_2 = next((c for c in citizens if c.get("gender", "").lower() in ["male", "m"] and c["id"] != male_citizen["id"]), None)
+    
+    if male_citizen_2:
+        rel_payload = {
+            "person_a": male_citizen["id"],
+            "person_b": male_citizen_2["id"],
+            "type": "Brother",
+            "since": "2000",
+            "notes": "Test Brother relationship"
         }
         
-        response = requests.post(
-            f"{BASE_URL}/relationships",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            json=payload,
-            timeout=10
-        )
+        resp = requests.post(f"{BASE_URL}/relationships", json=rel_payload, headers={"Authorization": f"Bearer {pa_token}"})
+        if resp.status_code == 200:
+            rel_data = resp.json()
+            test_data["brother_rel_id"] = rel_data["id"]
+            
+            # Both should see "Brother"
+            resp = requests.get(f"{BASE_URL}/persons/{male_citizen['id']}", headers={"Authorization": f"Bearer {pa_token}"})
+            if resp.status_code == 200:
+                person_data = resp.json()
+                brother_rel = next((r for r in person_data.get("relationships", []) if r["id"] == rel_data["id"]), None)
+                if brother_rel:
+                    log_test("Male A sees display_type='Brother' (symmetric)", 
+                             brother_rel.get("display_type") == "Brother", f"Got '{brother_rel.get('display_type')}'")
+            
+            resp = requests.get(f"{BASE_URL}/persons/{male_citizen_2['id']}", headers={"Authorization": f"Bearer {pa_token}"})
+            if resp.status_code == 200:
+                person_data = resp.json()
+                brother_rel = next((r for r in person_data.get("relationships", []) if r["id"] == rel_data["id"]), None)
+                if brother_rel:
+                    log_test("Male B sees display_type='Brother' (symmetric)", 
+                             brother_rel.get("display_type") == "Brother", f"Got '{brother_rel.get('display_type')}'")
+    else:
+        print("⚠️  Need another male citizen for Brother test. Skipping.")
+    
+    # Test 3: Brother relationship from male to female
+    print("\n--- Testing Brother relationship (Male → Female) ---")
+    
+    rel_payload = {
+        "person_a": male_citizen["id"],
+        "person_b": female_citizen["id"],
+        "type": "Brother",
+        "since": "1995",
+        "notes": "Test Brother cross-gender"
+    }
+    
+    # First delete the Father relationship to avoid conflicts
+    if "father_rel_id" in test_data:
+        requests.delete(f"{BASE_URL}/relationships/{test_data['father_rel_id']}", headers={"Authorization": f"Bearer {pa_token}"})
+    
+    resp = requests.post(f"{BASE_URL}/relationships", json=rel_payload, headers={"Authorization": f"Bearer {pa_token}"})
+    if resp.status_code == 200:
+        rel_data = resp.json()
+        test_data["brother_cross_rel_id"] = rel_data["id"]
         
-        if response.status_code != 200:
-            return print_result(False, f"Expected 200, got {response.status_code}: {response.text}")
+        # Female should see "Brother" (he is her brother)
+        resp = requests.get(f"{BASE_URL}/persons/{female_citizen['id']}", headers={"Authorization": f"Bearer {pa_token}"})
+        if resp.status_code == 200:
+            person_data = resp.json()
+            brother_rel = next((r for r in person_data.get("relationships", []) if r["id"] == rel_data["id"]), None)
+            if brother_rel:
+                log_test("Female sees display_type='Brother' (he is her brother)", 
+                         brother_rel.get("display_type") == "Brother", f"Got '{brother_rel.get('display_type')}'")
         
-        data = response.json()
-        test_relationship_id = data.get("id")
-        
-        # Verify fields
-        if data.get("type") != "Father":
-            return print_result(False, f"Expected type 'Father', got {data.get('type')}")
-        
-        if data.get("since") != "1994":
-            return print_result(False, f"Expected since '1994', got {data.get('since')}")
-        
-        if data.get("notes") != "Family connected since Shankarrao Kolhe era.":
-            return print_result(False, f"Expected notes to match, got {data.get('notes')}")
-        
-        print(f"Created relationship: {data}")
-        return print_result(True, "Relationship created with since and notes")
-        
-    except Exception as e:
-        return print_result(False, f"Exception: {e}")
+        # Male should see "Sister" (she is his sister - inverse based on OTHER's gender)
+        resp = requests.get(f"{BASE_URL}/persons/{male_citizen['id']}", headers={"Authorization": f"Bearer {pa_token}"})
+        if resp.status_code == 200:
+            person_data = resp.json()
+            brother_rel = next((r for r in person_data.get("relationships", []) if r["id"] == rel_data["id"]), None)
+            if brother_rel:
+                log_test("Male sees display_type='Sister' (inverse based on OTHER's gender)", 
+                         brother_rel.get("display_type") == "Sister", f"Got '{brother_rel.get('display_type')}'")
 
 
-def test_get_person_with_display_type():
-    """Test GET /api/persons/{id} returns display_type field."""
-    print_test("GET /api/persons/{id} - Verify display_type field")
+def test_m5_file_access():
+    """Test M5: File access auth + permission"""
+    print("\n=== Testing M5: File Access Auth + Permission ===")
     
-    if not test_person_a_id or not test_person_b_id:
-        return print_result(False, "Need to run create relationship test first")
+    admin_token = tokens["admin"]
+    citizen_token = tokens["citizen"]
+    citizen_user = test_data["citizen_user"]
+    worker_token = tokens["worker"]
+    pa_token = tokens["pa"]
     
-    try:
-        # Test person B's profile (should show Father as display_type)
-        response = requests.get(
-            f"{BASE_URL}/persons/{test_person_b_id}",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            return print_result(False, f"Expected 200, got {response.status_code}")
-        
-        data = response.json()
-        relationships = data.get("relationships", [])
-        
-        if not relationships:
-            return print_result(False, "No relationships found for person B")
-        
-        # Find the relationship we created
-        rel = None
-        for r in relationships:
-            if r.get("type") == "Father":
-                rel = r
-                break
-        
-        if not rel:
-            return print_result(False, "Father relationship not found")
-        
-        # Check display_type
-        if "display_type" not in rel:
-            return print_result(False, "display_type field not present")
-        
-        if rel["display_type"] != "Father":
-            return print_result(False, f"Expected display_type 'Father', got {rel['display_type']}")
-        
-        # Check other fields are present
-        if "type" not in rel:
-            return print_result(False, "type field not present")
-        
-        if "since" not in rel:
-            return print_result(False, "since field not present")
-        
-        if "notes" not in rel:
-            return print_result(False, "notes field not present")
-        
-        if "other" not in rel:
-            return print_result(False, "other field (other person doc) not present")
-        
-        print(f"Person B's relationship: {rel}")
-        
-        # Now test person A's profile (should show Son or Daughter based on A's gender)
-        response = requests.get(
-            f"{BASE_URL}/persons/{test_person_a_id}",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            return print_result(False, f"Expected 200 for person A, got {response.status_code}")
-        
-        data = response.json()
-        person_a_gender = data.get("person", {}).get("gender", "").lower()
-        relationships = data.get("relationships", [])
-        
-        # Find the relationship
-        rel = None
-        for r in relationships:
-            if r.get("type") == "Father":
-                rel = r
-                break
-        
-        if not rel:
-            return print_result(False, "Father relationship not found in person A's profile")
-        
-        if "display_type" not in rel:
-            return print_result(False, "display_type field not present in person A's profile")
-        
-        expected_display = "Daughter" if person_a_gender in ["female", "f"] else "Son"
-        
-        if rel["display_type"] != expected_display:
-            print(f"Warning: Expected display_type '{expected_display}' for person A (gender: {person_a_gender}), got {rel['display_type']}")
-            # This is still a pass if display_type exists, just log the mismatch
-        
-        print(f"Person A's relationship: {rel}")
-        return print_result(True, "display_type field present with correct perspective-aware values")
-        
-    except Exception as e:
-        return print_result(False, f"Exception: {e}")
-
-
-def test_create_relationship_self_link():
-    """Test POST /api/relationships - Reject self-link with 400."""
-    print_test("POST /api/relationships - Reject self-link (400)")
+    # First, try to upload a file
+    print("\n--- Testing file upload ---")
     
-    if not test_person_a_id:
-        return print_result(False, "Need person_a_id from previous test")
+    # Create a simple test image file
+    test_file_content = b"fake image content for testing"
+    files = {"file": ("test_image.jpg", test_file_content, "image/jpeg")}
     
-    try:
-        payload = {
-            "person_a": test_person_a_id,
-            "person_b": test_person_a_id,
-            "type": "Father"
+    resp = requests.post(
+        f"{BASE_URL}/files/upload",
+        files=files,
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    
+    if resp.status_code != 200:
+        print(f"⚠️  File upload failed: {resp.status_code} {resp.text}")
+        print("Trying to find existing file in database...")
+        
+        # Try to get an existing file path from issues
+        resp = requests.get(f"{BASE_URL}/issues", headers={"Authorization": f"Bearer {admin_token}"})
+        if resp.status_code == 200:
+            issues = resp.json()
+            issue_with_photo = next((i for i in issues if i.get("photos") and len(i["photos"]) > 0), None)
+            if issue_with_photo:
+                file_path = issue_with_photo["photos"][0]
+                print(f"✓ Found existing file path: {file_path}")
+            else:
+                print("❌ No existing files found. Cannot test M5.")
+                return
+        else:
+            print("❌ Cannot access issues. Cannot test M5.")
+            return
+    else:
+        upload_data = resp.json()
+        file_path = upload_data["path"]
+        print(f"✓ File uploaded: {file_path}")
+    
+    # Test 1: Access file with no token → 401
+    print("\n--- Testing file access without token ---")
+    resp = requests.get(f"{BASE_URL}/files/{file_path}")
+    log_test("GET /files/{path} with no token → 401", resp.status_code == 401, f"Got {resp.status_code}")
+    
+    # Test 2: Access file with ?t= query param → 200
+    print("\n--- Testing file access with ?t= query param ---")
+    resp = requests.get(f"{BASE_URL}/files/{file_path}?t={admin_token}")
+    log_test("GET /files/{path}?t=<admin_token> → 200", resp.status_code == 200, f"Got {resp.status_code}")
+    
+    # Test 3: Access file with Authorization header → 200
+    print("\n--- Testing file access with Authorization header ---")
+    resp = requests.get(f"{BASE_URL}/files/{file_path}", headers={"Authorization": f"Bearer {admin_token}"})
+    log_test("GET /files/{path} with Authorization header → 200", resp.status_code == 200, f"Got {resp.status_code}")
+    
+    # Test 4: Permission logic - create issue with photo as citizen
+    print("\n--- Testing file permission logic ---")
+    
+    # Upload a file as citizen
+    files = {"file": ("citizen_test.jpg", test_file_content, "image/jpeg")}
+    resp = requests.post(
+        f"{BASE_URL}/files/upload",
+        files=files,
+        headers={"Authorization": f"Bearer {citizen_token}"}
+    )
+    
+    if resp.status_code == 200:
+        citizen_file_data = resp.json()
+        citizen_file_path = citizen_file_data["path"]
+        
+        # Create an issue with this photo
+        issue_payload = {
+            "category": "Water Supply",
+            "title": "Test issue for file access",
+            "description": "Testing file access permissions",
+            "photos": [citizen_file_path],
+            "gps_lat": None,
+            "gps_lng": None
         }
         
-        response = requests.post(
-            f"{BASE_URL}/relationships",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            json=payload,
-            timeout=10
-        )
-        
-        if response.status_code != 400:
-            return print_result(False, f"Expected 400, got {response.status_code}")
-        
-        return print_result(True, "Self-link rejected with 400")
-        
-    except Exception as e:
-        return print_result(False, f"Exception: {e}")
+        resp = requests.post(f"{BASE_URL}/issues", json=issue_payload, headers={"Authorization": f"Bearer {citizen_token}"})
+        if resp.status_code == 200:
+            issue_data = resp.json()
+            issue_id = issue_data["id"]
+            
+            # Citizen A accessing their own issue photo → 200
+            resp = requests.get(f"{BASE_URL}/files/{citizen_file_path}?t={citizen_token}")
+            log_test("Citizen A GET /files/{own_issue_photo}?t=<citizenA_token> → 200", 
+                     resp.status_code == 200, f"Got {resp.status_code}")
+            
+            # Get another citizen token
+            resp = requests.get(f"{BASE_URL}/users?role=citizen", headers={"Authorization": f"Bearer {admin_token}"})
+            if resp.status_code == 200:
+                citizens = resp.json()
+                other_citizen = next((c for c in citizens if c["id"] != citizen_user["id"] and c.get("mobile")), None)
+                
+                if other_citizen:
+                    # Get other citizen token
+                    resp = requests.post(f"{BASE_URL}/auth/citizen/request-otp", json={"mobile": other_citizen["mobile"]})
+                    resp = requests.post(f"{BASE_URL}/auth/citizen/verify-otp", json={"mobile": other_citizen["mobile"], "otp": "123456"})
+                    if resp.status_code == 200:
+                        other_citizen_token = resp.json()["token"]
+                        
+                        # Other citizen accessing the photo → 403
+                        resp = requests.get(f"{BASE_URL}/files/{citizen_file_path}?t={other_citizen_token}")
+                        log_test("Citizen B GET /files/{citizenA_issue_photo}?t=<citizenB_token> → 403", 
+                                 resp.status_code == 403, f"Got {resp.status_code}")
+            
+            # Assign the issue to a worker
+            resp = requests.get(f"{BASE_URL}/users?role=worker", headers={"Authorization": f"Bearer {admin_token}"})
+            if resp.status_code == 200:
+                workers = resp.json()
+                if workers:
+                    worker_id = workers[0]["id"]
+                    
+                    assign_payload = {
+                        "assigned_to": worker_id,
+                        "due_date": "2026-12-31",
+                        "remarks": "Test assignment"
+                    }
+                    
+                    resp = requests.post(
+                        f"{BASE_URL}/issues/{issue_id}/assign",
+                        json=assign_payload,
+                        headers={"Authorization": f"Bearer {pa_token}"}
+                    )
+                    
+                    if resp.status_code == 200:
+                        # Assigned worker accessing the photo → 200
+                        resp = requests.get(f"{BASE_URL}/files/{citizen_file_path}?t={worker_token}")
+                        log_test("Assigned worker GET /files/{assigned_issue_photo}?t=<worker_token> → 200", 
+                                 resp.status_code == 200, f"Got {resp.status_code}")
+                        
+                        # Get another worker if available
+                        if len(workers) > 1:
+                            # Get worker2 token
+                            worker2_creds = {"email": "worker2@jansetu.in", "password": "worker123"}
+                            try:
+                                worker2_token = login_staff("worker2", worker2_creds)
+                                
+                                # Unassigned worker accessing the photo → 403
+                                resp = requests.get(f"{BASE_URL}/files/{citizen_file_path}?t={worker2_token}")
+                                log_test("Unassigned worker GET /files/{unassigned_issue_photo}?t=<worker2_token> → 403", 
+                                         resp.status_code == 403, f"Got {resp.status_code}")
+                            except Exception as e:
+                                print(f"⚠️  Could not test unassigned worker: {e}")
+    else:
+        print(f"⚠️  Could not upload file as citizen: {resp.status_code}")
 
 
-def test_create_relationship_invalid_type():
-    """Test POST /api/relationships - Reject invalid type with 400."""
-    print_test("POST /api/relationships - Reject invalid type (400)")
+def cleanup():
+    """Clean up test data"""
+    print("\n=== Cleaning up test data ===")
     
-    if not test_person_a_id or not test_person_b_id:
-        return print_result(False, "Need person IDs from previous test")
+    pa_token = tokens.get("pa")
+    if not pa_token:
+        return
     
-    try:
-        payload = {
-            "person_a": test_person_a_id,
-            "person_b": test_person_b_id,
-            "type": "Friend"
-        }
-        
-        response = requests.post(
-            f"{BASE_URL}/relationships",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            json=payload,
-            timeout=10
-        )
-        
-        if response.status_code != 400:
-            return print_result(False, f"Expected 400, got {response.status_code}")
-        
-        return print_result(True, "Invalid type rejected with 400")
-        
-    except Exception as e:
-        return print_result(False, f"Exception: {e}")
-
-
-def test_create_relationship_unknown_person():
-    """Test POST /api/relationships - Reject unknown person with 404."""
-    print_test("POST /api/relationships - Reject unknown person (404)")
-    
-    if not test_person_a_id:
-        return print_result(False, "Need person_a_id from previous test")
-    
-    try:
-        payload = {
-            "person_a": test_person_a_id,
-            "person_b": "unknown-person-id-12345",
-            "type": "Father"
-        }
-        
-        response = requests.post(
-            f"{BASE_URL}/relationships",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            json=payload,
-            timeout=10
-        )
-        
-        if response.status_code != 404:
-            return print_result(False, f"Expected 404, got {response.status_code}")
-        
-        return print_result(True, "Unknown person rejected with 404")
-        
-    except Exception as e:
-        return print_result(False, f"Exception: {e}")
-
-
-def test_create_relationship_duplicate():
-    """Test POST /api/relationships - Reject duplicate with 409."""
-    print_test("POST /api/relationships - Reject duplicate (409)")
-    
-    if not test_person_a_id or not test_person_b_id:
-        return print_result(False, "Need person IDs from previous test")
-    
-    try:
-        # Try to create the same relationship again
-        payload = {
-            "person_a": test_person_a_id,
-            "person_b": test_person_b_id,
-            "type": "Father",
-            "since": "1994",
-            "notes": "Family connected since Shankarrao Kolhe era."
-        }
-        
-        response = requests.post(
-            f"{BASE_URL}/relationships",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            json=payload,
-            timeout=10
-        )
-        
-        if response.status_code != 409:
-            return print_result(False, f"Expected 409, got {response.status_code}")
-        
-        return print_result(True, "Duplicate relationship rejected with 409")
-        
-    except Exception as e:
-        return print_result(False, f"Exception: {e}")
-
-
-def test_create_relationship_worker_forbidden():
-    """Test POST /api/relationships - Worker gets 403."""
-    print_test("POST /api/relationships - Worker forbidden (403)")
-    
-    if not test_person_a_id or not test_person_b_id:
-        return print_result(False, "Need person IDs from previous test")
-    
-    try:
-        payload = {
-            "person_a": test_person_a_id,
-            "person_b": test_person_b_id,
-            "type": "Brother"
-        }
-        
-        response = requests.post(
-            f"{BASE_URL}/relationships",
-            headers={"Authorization": f"Bearer {worker_token}"},
-            json=payload,
-            timeout=10
-        )
-        
-        if response.status_code != 403:
-            return print_result(False, f"Expected 403, got {response.status_code}")
-        
-        return print_result(True, "Worker forbidden with 403")
-        
-    except Exception as e:
-        return print_result(False, f"Exception: {e}")
-
-
-def test_update_person_status():
-    """Test PUT /api/persons/{id} - Update status to deceased and back to alive."""
-    print_test("PUT /api/persons/{id} - Update status deceased/alive")
-    
-    if not test_person_a_id:
-        return print_result(False, "Need person_a_id from previous test")
-    
-    try:
-        # Update to deceased
-        payload = {
-            "status": "deceased",
-            "date_of_death": "2024-01-15"
-        }
-        
-        response = requests.put(
-            f"{BASE_URL}/persons/{test_person_a_id}",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            json=payload,
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            return print_result(False, f"Expected 200, got {response.status_code}: {response.text}")
-        
-        data = response.json()
-        
-        if data.get("status") != "deceased":
-            return print_result(False, f"Expected status 'deceased', got {data.get('status')}")
-        
-        if data.get("date_of_death") != "2024-01-15":
-            return print_result(False, f"Expected date_of_death '2024-01-15', got {data.get('date_of_death')}")
-        
-        print("Status updated to deceased")
-        
-        # Verify via GET
-        response = requests.get(
-            f"{BASE_URL}/persons/{test_person_a_id}",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            return print_result(False, f"GET failed: {response.status_code}")
-        
-        data = response.json()
-        person = data.get("person", {})
-        
-        if person.get("status") != "deceased":
-            return print_result(False, "Status not persisted as deceased")
-        
-        # Revert to alive
-        payload = {
-            "status": "alive"
-        }
-        
-        response = requests.put(
-            f"{BASE_URL}/persons/{test_person_a_id}",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            json=payload,
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            return print_result(False, f"Revert failed: {response.status_code}")
-        
-        data = response.json()
-        
-        if data.get("status") != "alive":
-            return print_result(False, f"Expected status 'alive', got {data.get('status')}")
-        
-        print("Status reverted to alive")
-        return print_result(True, "Status updates work correctly")
-        
-    except Exception as e:
-        return print_result(False, f"Exception: {e}")
-
-
-def test_update_person_worker_forbidden():
-    """Test PUT /api/persons/{id} - Worker gets 403."""
-    print_test("PUT /api/persons/{id} - Worker forbidden (403)")
-    
-    if not test_person_a_id:
-        return print_result(False, "Need person_a_id from previous test")
-    
-    try:
-        payload = {
-            "status": "deceased"
-        }
-        
-        response = requests.put(
-            f"{BASE_URL}/persons/{test_person_a_id}",
-            headers={"Authorization": f"Bearer {worker_token}"},
-            json=payload,
-            timeout=10
-        )
-        
-        if response.status_code != 403:
-            return print_result(False, f"Expected 403, got {response.status_code}")
-        
-        return print_result(True, "Worker forbidden with 403")
-        
-    except Exception as e:
-        return print_result(False, f"Exception: {e}")
-
-
-def test_delete_relationship():
-    """Test DELETE /api/relationships/{id} - Remove edge."""
-    print_test("DELETE /api/relationships/{id} - Remove edge")
-    
-    if not test_relationship_id:
-        return print_result(False, "Need relationship_id from previous test")
-    
-    try:
-        response = requests.delete(
-            f"{BASE_URL}/relationships/{test_relationship_id}",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            return print_result(False, f"Expected 200, got {response.status_code}")
-        
-        # Verify it's removed from both persons
-        response = requests.get(
-            f"{BASE_URL}/persons/{test_person_a_id}",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            return print_result(False, f"GET person A failed: {response.status_code}")
-        
-        data = response.json()
-        relationships = data.get("relationships", [])
-        
-        for rel in relationships:
-            if rel.get("id") == test_relationship_id:
-                return print_result(False, "Relationship still exists in person A's profile")
-        
-        response = requests.get(
-            f"{BASE_URL}/persons/{test_person_b_id}",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            return print_result(False, f"GET person B failed: {response.status_code}")
-        
-        data = response.json()
-        relationships = data.get("relationships", [])
-        
-        for rel in relationships:
-            if rel.get("id") == test_relationship_id:
-                return print_result(False, "Relationship still exists in person B's profile")
-        
-        return print_result(True, "Relationship deleted successfully")
-        
-    except Exception as e:
-        return print_result(False, f"Exception: {e}")
-
-
-def test_delete_relationship_worker_forbidden():
-    """Test DELETE /api/relationships/{id} - Worker gets 403."""
-    print_test("DELETE /api/relationships/{id} - Worker forbidden (403)")
-    
-    # Create a new relationship to test deletion
-    if not test_person_a_id or not test_person_b_id:
-        return print_result(False, "Need person IDs from previous test")
-    
-    try:
-        # Create a new relationship
-        payload = {
-            "person_a": test_person_a_id,
-            "person_b": test_person_b_id,
-            "type": "Brother"
-        }
-        
-        response = requests.post(
-            f"{BASE_URL}/relationships",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            json=payload,
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            return print_result(False, f"Failed to create test relationship: {response.status_code}")
-        
-        rel_id = response.json().get("id")
-        
-        # Try to delete with worker token
-        response = requests.delete(
-            f"{BASE_URL}/relationships/{rel_id}",
-            headers={"Authorization": f"Bearer {worker_token}"},
-            timeout=10
-        )
-        
-        if response.status_code != 403:
-            return print_result(False, f"Expected 403, got {response.status_code}")
-        
-        # Cleanup: delete with PA token
-        requests.delete(
-            f"{BASE_URL}/relationships/{rel_id}",
-            headers={"Authorization": f"Bearer {pa_token}"},
-            timeout=10
-        )
-        
-        return print_result(True, "Worker forbidden with 403")
-        
-    except Exception as e:
-        return print_result(False, f"Exception: {e}")
+    # Delete created relationships
+    for rel_key in ["father_rel_id", "brother_rel_id", "brother_cross_rel_id"]:
+        if rel_key in test_data:
+            rel_id = test_data[rel_key]
+            resp = requests.delete(f"{BASE_URL}/relationships/{rel_id}", headers={"Authorization": f"Bearer {pa_token}"})
+            if resp.status_code == 200:
+                print(f"✓ Deleted relationship {rel_id}")
 
 
 def main():
-    """Run all tests."""
-    global admin_token, pa_token, worker_token
+    """Main test runner"""
+    print("=" * 80)
+    print("JANSETU Backend Security Fixes Testing")
+    print("Testing: C1 (Access Control), M1 (Inverse Gender), M5 (File Access)")
+    print("=" * 80)
     
-    print("\n" + "="*80)
-    print("JANSETU FAMILY RELATIONSHIP MODULE - BACKEND API TESTS")
-    print("="*80)
-    
-    # Login
-    print("\n--- Logging in ---")
-    admin_token = login_staff(ADMIN_EMAIL, ADMIN_PASSWORD)
-    pa_token = login_staff(PA_EMAIL, PA_PASSWORD)
-    worker_token = login_staff(WORKER_EMAIL, WORKER_PASSWORD)
-    
-    if not admin_token or not pa_token or not worker_token:
-        print("\n❌ CRITICAL: Failed to login. Cannot proceed with tests.")
-        sys.exit(1)
-    
-    print("✅ All logins successful")
-    
-    # Run tests
-    results = []
-    
-    # Test 1: Relation types
-    results.append(test_relation_types())
-    
-    # Test 2: Create relationship (happy path)
-    results.append(test_create_relationship_happy_path())
-    
-    # Test 3: Get person with display_type
-    results.append(test_get_person_with_display_type())
-    
-    # Test 4: Validation tests
-    results.append(test_create_relationship_self_link())
-    results.append(test_create_relationship_invalid_type())
-    results.append(test_create_relationship_unknown_person())
-    results.append(test_create_relationship_duplicate())
-    results.append(test_create_relationship_worker_forbidden())
-    
-    # Test 5: Update person status
-    results.append(test_update_person_status())
-    results.append(test_update_person_worker_forbidden())
-    
-    # Test 6: Delete relationship
-    results.append(test_delete_relationship())
-    results.append(test_delete_relationship_worker_forbidden())
-    
-    # Summary
-    print("\n" + "="*80)
-    print("TEST SUMMARY")
-    print("="*80)
-    passed = sum(results)
-    total = len(results)
-    print(f"Passed: {passed}/{total}")
-    
-    if passed == total:
-        print("\n✅ ALL TESTS PASSED")
-        sys.exit(0)
-    else:
-        print(f"\n❌ {total - passed} TEST(S) FAILED")
-        sys.exit(1)
+    try:
+        # Setup
+        setup_tokens()
+        
+        # Run tests
+        test_c1_access_control()
+        test_m1_inverse_gender()
+        test_m5_file_access()
+        
+        # Cleanup
+        cleanup()
+        
+        print("\n" + "=" * 80)
+        print("Testing complete!")
+        print("=" * 80)
+        
+    except Exception as e:
+        print(f"\n❌ Test execution failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
