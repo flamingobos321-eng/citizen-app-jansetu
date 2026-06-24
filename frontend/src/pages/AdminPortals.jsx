@@ -147,14 +147,34 @@ function EditDialog({ initial, onClose, onSaved }) {
   };
 
   const save = async () => {
-    if (!form.slug || !form.politician_name || !form.designation || !form.constituency_name || !form.welcome_message) {
-      return toast.error("Slug, politician name, designation, constituency, welcome message are required");
+    // Diagnostic-friendly validation: name the missing field(s) and focus the first.
+    const required = [
+      { key: "slug",               label: "Slug",            testId: "portal-slug" },
+      { key: "politician_name",    label: "Politician Name", testId: "portal-pname" },
+      { key: "designation",        label: "Designation",     testId: "portal-designation" },
+      { key: "constituency_name",  label: "Constituency",    testId: "portal-cname" },
+      { key: "welcome_message",    label: "Welcome Message", testId: "portal-welcome" },
+    ];
+    const missing = required.filter((r) => !String(form[r.key] ?? "").trim());
+    if (missing.length > 0) {
+      const labels = missing.map((m) => m.label).join(", ");
+      toast.error(`Missing required field${missing.length > 1 ? "s" : ""}: ${labels}`);
+      try {
+        const first = document.querySelector(`[data-testid="${missing[0].testId}"]`);
+        if (first) {
+          first.scrollIntoView({ behavior: "smooth", block: "center" });
+          first.focus();
+        }
+      } catch (e) { /* ignore */ }
+      return;
     }
     setSaving(true);
     try {
       // Clean empty social link values
       const social = Object.fromEntries(Object.entries(form.social_links || {}).filter(([_, v]) => (v || "").trim()));
-      const payload = { ...form, social_links: social };
+      // Trim required fields in the outgoing payload (defensive)
+      const trimmed = Object.fromEntries(required.map((r) => [r.key, String(form[r.key] ?? "").trim()]));
+      const payload = { ...form, ...trimmed, social_links: social };
       if (isNew) {
         await api.post("/admin/portals", payload);
         toast.success("Portal created");
