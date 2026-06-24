@@ -1,7 +1,7 @@
 """JANSETU comprehensive backend tests."""
 import os, time, pytest, requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://citizen-connect-43.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://family-bonds-23.preview.emergentagent.com").rstrip("/")
 API = f"{BASE_URL}/api"
 
 @pytest.fixture(scope="module")
