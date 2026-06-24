@@ -1,89 +1,724 @@
-from fastapi import FastAPI, APIRouter
+"""JANSETU - Constituency Management Platform API."""
+import os
+import io
+import uuid
+import logging
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import List, Optional
+
+import bcrypt
+import jwt
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Header, Query, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
 
+from models import (
+    CitizenOTPRequest, CitizenOTPVerify, StaffLogin,
+    CitizenRegister, StaffCreate, User,
+    Constituency, Area, AreaCreate, Household,
+    Issue, IssueCreate, IssueAssign, IssueUpdateStatus, IssueFeedback,
+    Visit, VisitCreate, Notification, NotificationCreate,
+    DevWork, DevWorkCreate,
+    ISSUE_CATEGORIES, ISSUE_STATUSES, DEV_STATUSES,
+    now_iso, new_id,
+)
+from storage_util import put_object, get_object, init_storage, APP_NAME
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[os.environ["DB_NAME"]]
 
-# Create the main app without a prefix
-app = FastAPI()
+JWT_SECRET = os.environ["JWT_SECRET"]
+JWT_ALG = "HS256"
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("jansetu")
+
+app = FastAPI(title="JANSETU API")
+api = APIRouter(prefix="/api")
 
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+# ----------------- Auth helpers -----------------
+def hash_password(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
+def verify_password(pw: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(pw.encode(), hashed.encode())
+    except Exception:
+        return False
+
+
+def create_token(user_id: str, role: str) -> str:
+    payload = {
+        "sub": user_id,
+        "role": role,
+        "exp": datetime.now(timezone.utc) + timedelta(days=30),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Missing token")
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    except jwt.PyJWTError:
+        raise HTTPException(401, "Invalid token")
+    user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(401, "User not found")
+    return user
+
+
+def require_roles(*roles):
+    async def _dep(user: dict = Depends(get_current_user)):
+        if user["role"] not in roles:
+            raise HTTPException(403, "Forbidden")
+        return user
+    return _dep
+
+
+# ----------------- Code generation -----------------
+async def next_seq(name: str) -> int:
+    res = await db.counters.find_one_and_update(
+        {"_id": name},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
+    )
+    return res["seq"]
+
+
+# ----------------- Startup -----------------
+@app.on_event("startup")
+async def on_start():
+    try:
+        init_storage()
+    except Exception as e:
+        logger.warning(f"Storage init deferred: {e}")
+    # seed if empty
+    if await db.users.count_documents({"role": "admin"}) == 0:
+        await seed_demo_data()
+
+
+# ----------------- Health -----------------
+@api.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"name": "JANSETU API", "status": "ok"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
+@api.get("/meta/categories")
+async def meta_cats():
+    return {"issue_categories": ISSUE_CATEGORIES, "issue_statuses": ISSUE_STATUSES, "dev_statuses": DEV_STATUSES}
 
-# Include the router in the main app
-app.include_router(api_router)
 
+# ----------------- AUTH -----------------
+@api.post("/auth/citizen/request-otp")
+async def request_otp(payload: CitizenOTPRequest):
+    # Mock OTP — store last issued mobile (any 6 digits will work)
+    await db.otps.update_one(
+        {"mobile": payload.mobile},
+        {"$set": {"mobile": payload.mobile, "otp": "123456", "at": now_iso()}},
+        upsert=True,
+    )
+    return {"sent": True, "demo_otp": "123456"}
+
+
+@api.post("/auth/citizen/verify-otp")
+async def verify_otp(payload: CitizenOTPVerify):
+    if payload.otp != "123456" and len(payload.otp) != 6:
+        raise HTTPException(400, "Invalid OTP")
+    user = await db.users.find_one({"mobile": payload.mobile, "role": "citizen"}, {"_id": 0, "password_hash": 0})
+    if not user:
+        # Return a flag to register
+        return {"new_user": True, "mobile": payload.mobile}
+    token = create_token(user["id"], "citizen")
+    return {"token": token, "user": user, "new_user": False}
+
+
+@api.post("/auth/citizen/register")
+async def citizen_register(payload: CitizenRegister):
+    if await db.users.find_one({"mobile": payload.mobile, "role": "citizen"}):
+        raise HTTPException(400, "Mobile already registered")
+
+    # Create household
+    hh_seq = await next_seq("household")
+    hh_code = f"H-{10000 + hh_seq}"
+    hh = Household(
+        household_code=hh_code,
+        family_head_name=payload.family_head_name or payload.name,
+        address=payload.address,
+        house_number=payload.house_number,
+        region_type=payload.region_type,
+        ward_id=payload.ward_id,
+        area_id=payload.area_id,
+        village_id=payload.village_id,
+        members_count=payload.members_count,
+    )
+    await db.households.insert_one(hh.model_dump())
+
+    user = User(
+        role="citizen",
+        name=payload.name,
+        mobile=payload.mobile,
+        gender=payload.gender,
+        dob=payload.dob,
+        household_id=hh.id,
+        region_type=payload.region_type,
+        ward_id=payload.ward_id,
+        area_id=payload.area_id,
+        village_id=payload.village_id,
+        house_number=payload.house_number,
+        address=payload.address,
+    )
+    await db.users.insert_one(user.model_dump())
+    token = create_token(user.id, "citizen")
+    return {"token": token, "user": user.model_dump(exclude={"password_hash"}), "household": hh.model_dump()}
+
+
+@api.post("/auth/staff/login")
+async def staff_login(payload: StaffLogin):
+    user = await db.users.find_one({"email": payload.email, "role": {"$ne": "citizen"}})
+    if not user or not verify_password(payload.password, user.get("password_hash", "")):
+        raise HTTPException(401, "Invalid credentials")
+    user.pop("_id", None)
+    user.pop("password_hash", None)
+    token = create_token(user["id"], user["role"])
+    return {"token": token, "user": user}
+
+
+@api.get("/auth/me")
+async def me(user: dict = Depends(get_current_user)):
+    return user
+
+
+# ----------------- USERS / STAFF -----------------
+@api.post("/admin/staff")
+async def create_staff(payload: StaffCreate, _: dict = Depends(require_roles("admin", "politician"))):
+    if await db.users.find_one({"email": payload.email}):
+        raise HTTPException(400, "Email exists")
+    u = User(
+        role=payload.role,
+        name=payload.name,
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        designation=payload.designation,
+        mobile=payload.mobile,
+    )
+    await db.users.insert_one(u.model_dump())
+    out = u.model_dump()
+    out.pop("password_hash", None)
+    return out
+
+
+@api.get("/users")
+async def list_users(role: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {}
+    if role:
+        q["role"] = role
+    docs = await db.users.find(q, {"_id": 0, "password_hash": 0}).to_list(1000)
+    return docs
+
+
+# ----------------- AREAS -----------------
+@api.get("/constituencies")
+async def list_constituencies():
+    return await db.constituencies.find({}, {"_id": 0}).to_list(100)
+
+
+@api.get("/areas")
+async def list_areas(kind: Optional[str] = None, region_type: Optional[str] = None):
+    q = {}
+    if kind:
+        q["kind"] = kind
+    if region_type:
+        q["region_type"] = region_type
+    return await db.areas.find(q, {"_id": 0}).sort("name", 1).to_list(2000)
+
+
+@api.post("/areas")
+async def create_area(payload: AreaCreate, _: dict = Depends(require_roles("admin"))):
+    a = Area(**payload.model_dump())
+    await db.areas.insert_one(a.model_dump())
+    return a.model_dump()
+
+
+@api.delete("/areas/{area_id}")
+async def delete_area(area_id: str, _: dict = Depends(require_roles("admin"))):
+    await db.areas.delete_one({"id": area_id})
+    return {"ok": True}
+
+
+# ----------------- HOUSEHOLDS -----------------
+@api.get("/households")
+async def list_households(search: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {}
+    if search:
+        q["$or"] = [
+            {"household_code": {"$regex": search, "$options": "i"}},
+            {"family_head_name": {"$regex": search, "$options": "i"}},
+            {"house_number": {"$regex": search, "$options": "i"}},
+            {"address": {"$regex": search, "$options": "i"}},
+        ]
+    return await db.households.find(q, {"_id": 0}).limit(200).to_list(200)
+
+
+@api.get("/households/{hh_id}")
+async def household_detail(hh_id: str, user: dict = Depends(get_current_user)):
+    hh = await db.households.find_one({"id": hh_id}, {"_id": 0})
+    if not hh:
+        raise HTTPException(404, "Not found")
+    members = await db.users.find({"household_id": hh_id}, {"_id": 0, "password_hash": 0}).to_list(100)
+    issues = await db.issues.find({"household_id": hh_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return {"household": hh, "members": members, "issues": issues}
+
+
+# ----------------- ISSUES -----------------
+@api.post("/issues")
+async def create_issue(payload: IssueCreate, user: dict = Depends(get_current_user)):
+    seq = await next_seq("issue")
+    code = f"ISS-{10000 + seq}"
+    issue = Issue(
+        issue_code=code,
+        citizen_id=user["id"],
+        household_id=user.get("household_id"),
+        category=payload.category,
+        title=payload.title,
+        description=payload.description,
+        photos=payload.photos,
+        gps_lat=payload.gps_lat,
+        gps_lng=payload.gps_lng,
+        ward_id=user.get("ward_id"),
+        village_id=user.get("village_id"),
+        timeline=[{"status": "New", "at": now_iso(), "by": user["name"], "note": "Issue raised"}],
+    )
+    await db.issues.insert_one(issue.model_dump())
+    return issue.model_dump()
+
+
+@api.get("/issues")
+async def list_issues(
+    mine: bool = False,
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    ward_id: Optional[str] = None,
+    village_id: Optional[str] = None,
+    assigned_to: Optional[str] = None,
+    search: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    q = {}
+    if mine or user["role"] == "citizen":
+        q["citizen_id"] = user["id"]
+    if status:
+        q["status"] = status
+    if category:
+        q["category"] = category
+    if ward_id:
+        q["ward_id"] = ward_id
+    if village_id:
+        q["village_id"] = village_id
+    if assigned_to:
+        q["assigned_to"] = assigned_to
+    if user["role"] == "worker":
+        q["assigned_to"] = user["id"]
+    if search:
+        q["$or"] = [
+            {"issue_code": {"$regex": search, "$options": "i"}},
+            {"title": {"$regex": search, "$options": "i"}},
+            {"description": {"$regex": search, "$options": "i"}},
+        ]
+    return await db.issues.find(q, {"_id": 0}).sort("created_at", -1).limit(500).to_list(500)
+
+
+@api.get("/issues/{issue_id}")
+async def issue_detail(issue_id: str, user: dict = Depends(get_current_user)):
+    issue = await db.issues.find_one({"id": issue_id}, {"_id": 0})
+    if not issue:
+        raise HTTPException(404, "Not found")
+    citizen = await db.users.find_one({"id": issue["citizen_id"]}, {"_id": 0, "password_hash": 0})
+    return {"issue": issue, "citizen": citizen}
+
+
+@api.post("/issues/{issue_id}/assign")
+async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    worker = await db.users.find_one({"id": payload.assigned_to}, {"_id": 0})
+    if not worker:
+        raise HTTPException(404, "Worker not found")
+    update = {
+        "assigned_to": payload.assigned_to,
+        "assigned_to_name": worker["name"],
+        "due_date": payload.due_date,
+        "remarks": payload.remarks,
+        "status": "Assigned",
+        "updated_at": now_iso(),
+    }
+    await db.issues.update_one(
+        {"id": issue_id},
+        {
+            "$set": update,
+            "$push": {"timeline": {"status": "Assigned", "at": now_iso(), "by": user["name"], "note": f"Assigned to {worker['name']}"}},
+        },
+    )
+    return await db.issues.find_one({"id": issue_id}, {"_id": 0})
+
+
+@api.post("/issues/{issue_id}/status")
+async def update_status(issue_id: str, payload: IssueUpdateStatus, user: dict = Depends(require_roles("worker", "pa", "politician", "admin"))):
+    if payload.status not in ISSUE_STATUSES:
+        raise HTTPException(400, "Invalid status")
+    update = {"status": payload.status, "updated_at": now_iso()}
+    if payload.completion_notes:
+        update["completion_notes"] = payload.completion_notes
+    if payload.completion_photos:
+        update["completion_photos"] = payload.completion_photos
+    if payload.remarks:
+        update["remarks"] = payload.remarks
+    await db.issues.update_one(
+        {"id": issue_id},
+        {
+            "$set": update,
+            "$push": {"timeline": {"status": payload.status, "at": now_iso(), "by": user["name"], "note": payload.remarks or payload.completion_notes or ""}},
+        },
+    )
+    return await db.issues.find_one({"id": issue_id}, {"_id": 0})
+
+
+@api.post("/issues/{issue_id}/feedback")
+async def feedback(issue_id: str, payload: IssueFeedback, user: dict = Depends(get_current_user)):
+    issue = await db.issues.find_one({"id": issue_id})
+    if not issue or issue["citizen_id"] != user["id"]:
+        raise HTTPException(403, "Forbidden")
+    update = {
+        "rating": payload.rating,
+        "feedback_comment": payload.comment,
+        "status": "Verified" if payload.verified else "Reopened",
+        "updated_at": now_iso(),
+    }
+    note = f"Citizen rated {payload.rating}/5" + (f" — {payload.comment}" if payload.comment else "")
+    await db.issues.update_one(
+        {"id": issue_id},
+        {
+            "$set": update,
+            "$push": {"timeline": {"status": update["status"], "at": now_iso(), "by": user["name"], "note": note}},
+        },
+    )
+    return await db.issues.find_one({"id": issue_id}, {"_id": 0})
+
+
+# ----------------- VISITS -----------------
+@api.post("/visits")
+async def create_visit(payload: VisitCreate, user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    v = Visit(**payload.model_dump(), created_by=user["id"])
+    await db.visits.insert_one(v.model_dump())
+    # auto-notification
+    notif = Notification(
+        title=f"Visit: {v.title}",
+        body=f"{v.visit_type} on {v.date} at {v.time} — {v.location}",
+        notif_type="Politician Visit",
+        scope="wards" if v.ward_ids else ("villages" if v.village_ids else "all"),
+        ward_ids=v.ward_ids,
+        village_ids=v.village_ids,
+        created_by=user["id"],
+    )
+    await db.notifications.insert_one(notif.model_dump())
+    return v.model_dump()
+
+
+@api.get("/visits")
+async def list_visits(upcoming: bool = False, user: dict = Depends(get_current_user)):
+    q = {}
+    if upcoming:
+        q["date"] = {"$gte": datetime.now(timezone.utc).strftime("%Y-%m-%d")}
+    return await db.visits.find(q, {"_id": 0}).sort("date", 1).limit(200).to_list(200)
+
+
+# ----------------- NOTIFICATIONS -----------------
+@api.post("/notifications")
+async def create_notif(payload: NotificationCreate, user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    n = Notification(**payload.model_dump(), created_by=user["id"])
+    await db.notifications.insert_one(n.model_dump())
+    return n.model_dump()
+
+
+@api.get("/notifications")
+async def list_notifs(user: dict = Depends(get_current_user)):
+    # filter for citizen by scope
+    q = {}
+    if user["role"] == "citizen":
+        clauses = [{"scope": "all"}]
+        if user.get("ward_id"):
+            clauses.append({"ward_ids": user["ward_id"]})
+        if user.get("village_id"):
+            clauses.append({"village_ids": user["village_id"]})
+        q["$or"] = clauses
+    return await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+
+
+# ----------------- DEV WORKS -----------------
+@api.post("/devworks")
+async def create_dev(payload: DevWorkCreate, user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    d = DevWork(**payload.model_dump(), created_by=user["id"])
+    await db.devworks.insert_one(d.model_dump())
+    return d.model_dump()
+
+
+@api.get("/devworks")
+async def list_devs(status: Optional[str] = None, ward_id: Optional[str] = None, village_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {}
+    if status:
+        q["status"] = status
+    if ward_id:
+        q["ward_id"] = ward_id
+    if village_id:
+        q["village_id"] = village_id
+    return await db.devworks.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+
+
+@api.post("/devworks/{dev_id}/status")
+async def update_dev(dev_id: str, status: str = Query(...), user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    if status not in DEV_STATUSES:
+        raise HTTPException(400, "Invalid status")
+    await db.devworks.update_one({"id": dev_id}, {"$set": {"status": status, "updated_at": now_iso()}})
+    return await db.devworks.find_one({"id": dev_id}, {"_id": 0})
+
+
+# ----------------- DASHBOARD -----------------
+@api.get("/dashboard/stats")
+async def dashboard_stats(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    total_citizens = await db.users.count_documents({"role": "citizen"})
+    total_households = await db.households.count_documents({})
+    total_issues = await db.issues.count_documents({})
+    resolved = await db.issues.count_documents({"status": {"$in": ["Resolved", "Verified"]}})
+    pending = await db.issues.count_documents({"status": {"$in": ["New", "Under Review", "Assigned", "In Progress", "Reopened"]}})
+    total_workers = await db.users.count_documents({"role": "worker"})
+    total_visits = await db.visits.count_documents({})
+    total_devworks = await db.devworks.count_documents({})
+
+    # category breakdown
+    cat_pipeline = [{"$group": {"_id": "$category", "count": {"$sum": 1}}}]
+    cats = [{"category": c["_id"], "count": c["count"]} async for c in db.issues.aggregate(cat_pipeline)]
+
+    # status breakdown
+    status_pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
+    statuses = [{"status": s["_id"], "count": s["count"]} async for s in db.issues.aggregate(status_pipeline)]
+
+    # ward performance
+    ward_pipeline = [{"$group": {"_id": "$ward_id", "total": {"$sum": 1}, "resolved": {"$sum": {"$cond": [{"$in": ["$status", ["Resolved", "Verified"]]}, 1, 0]}}}}]
+    wards = [{"ward_id": w["_id"], "total": w["total"], "resolved": w["resolved"]} async for w in db.issues.aggregate(ward_pipeline)]
+
+    return {
+        "total_citizens": total_citizens,
+        "total_households": total_households,
+        "total_issues": total_issues,
+        "resolved_issues": resolved,
+        "pending_issues": pending,
+        "total_workers": total_workers,
+        "total_visits": total_visits,
+        "total_devworks": total_devworks,
+        "by_category": cats,
+        "by_status": statuses,
+        "by_ward": wards,
+    }
+
+
+@api.get("/dashboard/citizen-stats")
+async def citizen_stats(user: dict = Depends(get_current_user)):
+    if user["role"] != "citizen":
+        raise HTTPException(403, "Citizens only")
+    total = await db.issues.count_documents({"citizen_id": user["id"]})
+    resolved = await db.issues.count_documents({"citizen_id": user["id"], "status": {"$in": ["Resolved", "Verified"]}})
+    pending = total - resolved
+    return {"total": total, "resolved": resolved, "pending": pending}
+
+
+# ----------------- FILES -----------------
+MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}
+
+
+@api.post("/files/upload")
+async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    ext = (file.filename or "bin").split(".")[-1].lower()
+    ctype = MIME.get(ext, file.content_type or "application/octet-stream")
+    path = f"{APP_NAME}/uploads/{user['id']}/{uuid.uuid4()}.{ext}"
+    data = await file.read()
+    result = put_object(path, data, ctype)
+    rec = {
+        "id": new_id(),
+        "storage_path": result["path"],
+        "original_filename": file.filename,
+        "content_type": ctype,
+        "size": result.get("size", len(data)),
+        "is_deleted": False,
+        "created_at": now_iso(),
+        "uploaded_by": user["id"],
+    }
+    await db.files.insert_one(rec)
+    return {"path": result["path"], "url": f"/api/files/{result['path']}"}
+
+
+@api.get("/files/{path:path}")
+async def serve_file(path: str):
+    # public read for displayed images
+    try:
+        data, ctype = get_object(path)
+    except Exception:
+        raise HTTPException(404, "Not found")
+    return Response(content=data, media_type=ctype)
+
+
+# ----------------- REPORTS -----------------
+@api.get("/reports/issues.csv")
+async def report_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    issues = await db.issues.find({}, {"_id": 0}).to_list(5000)
+    cols = ["issue_code", "category", "title", "status", "assigned_to_name", "rating", "created_at"]
+    lines = [",".join(cols)]
+    for i in issues:
+        vals = []
+        for c in cols:
+            v = i.get(c, "")
+            v = "" if v is None else str(v).replace(",", " ").replace("\n", " ")
+            vals.append(v)
+        lines.append(",".join(vals))
+    return Response("\n".join(lines), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=issues.csv"})
+
+
+# ----------------- SEED -----------------
+async def seed_demo_data():
+    logger.info("Seeding demo data...")
+
+    # Constituency
+    constituency = Constituency(name="Pune Cantonment", state="Maharashtra", type="mixed", politician_name="Hon. Rajesh Patil")
+    await db.constituencies.insert_one(constituency.model_dump())
+
+    # Wards (urban)
+    wards = []
+    for i, name in enumerate(["Ward 1 - Camp", "Ward 2 - Wanowrie", "Ward 3 - Ghorpadi", "Ward 4 - Lullanagar"]):
+        a = Area(constituency_id=constituency.id, name=name, kind="ward", region_type="urban")
+        await db.areas.insert_one(a.model_dump())
+        wards.append(a)
+
+    # Villages (rural)
+    villages = []
+    for name in ["Hadapsar Gaon", "Mundhwa", "Kondhwa Khurd"]:
+        a = Area(constituency_id=constituency.id, name=name, kind="village", region_type="rural")
+        await db.areas.insert_one(a.model_dump())
+        villages.append(a)
+
+    # Users
+    admin = User(role="admin", name="Super Admin", email="admin@jansetu.in", password_hash=hash_password("admin123"))
+    politician = User(role="politician", name="Hon. Rajesh Patil", email="mla@jansetu.in", password_hash=hash_password("mla123"), designation="MLA, Pune Cantonment")
+    pa = User(role="pa", name="Priya Deshmukh", email="pa@jansetu.in", password_hash=hash_password("pa123"), designation="Personal Assistant")
+    worker1 = User(role="worker", name="Suresh Kale", email="worker1@jansetu.in", password_hash=hash_password("worker123"), designation="Field Coordinator")
+    worker2 = User(role="worker", name="Anita Joshi", email="worker2@jansetu.in", password_hash=hash_password("worker123"), designation="Engineer")
+
+    await db.users.insert_many([admin.model_dump(), politician.model_dump(), pa.model_dump(), worker1.model_dump(), worker2.model_dump()])
+
+    # Demo citizen + household
+    hh_seq = await next_seq("household")
+    hh = Household(
+        household_code=f"H-{10000 + hh_seq}",
+        family_head_name="Ramesh Sharma",
+        address="Plot 22, MG Road, Camp",
+        house_number="22",
+        region_type="urban",
+        ward_id=wards[0].id,
+        members_count=4,
+    )
+    await db.households.insert_one(hh.model_dump())
+
+    citizen = User(
+        role="citizen",
+        name="Ramesh Sharma",
+        mobile="9999900001",
+        gender="Male",
+        household_id=hh.id,
+        region_type="urban",
+        ward_id=wards[0].id,
+        house_number="22",
+        address="Plot 22, MG Road, Camp",
+    )
+    await db.users.insert_one(citizen.model_dump())
+
+    # Sample issues
+    samples = [
+        ("Road", "Large pothole near MG Road", "Pothole causing accidents near junction.", "Resolved"),
+        ("Water Supply", "No water for 3 days", "Tanker has not arrived.", "In Progress"),
+        ("Street Light", "Street light broken", "Dark stretch on side lane.", "Assigned"),
+        ("Garbage", "Garbage not collected", "Garbage piling near Plot 30.", "New"),
+    ]
+    for cat, title, desc, status in samples:
+        seq = await next_seq("issue")
+        i = Issue(
+            issue_code=f"ISS-{10000 + seq}",
+            citizen_id=citizen.id,
+            household_id=hh.id,
+            category=cat,
+            title=title,
+            description=desc,
+            ward_id=wards[0].id,
+            status=status,
+            assigned_to=worker1.id if status != "New" else None,
+            assigned_to_name=worker1.name if status != "New" else None,
+            timeline=[{"status": "New", "at": now_iso(), "by": citizen.name, "note": "Issue raised"}],
+        )
+        await db.issues.insert_one(i.model_dump())
+
+    # Visits
+    v = Visit(
+        title="Janata Darbar - Camp Ward",
+        description="Open meeting with citizens",
+        date=(datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y-%m-%d"),
+        time="10:00",
+        location="Ward 1 Community Hall",
+        visit_type="Janata Darbar",
+        target_audience="All residents",
+        ward_ids=[wards[0].id],
+        created_by=pa.id,
+    )
+    await db.visits.insert_one(v.model_dump())
+
+    # Notifications
+    n = Notification(
+        title="Free Health Camp this Sunday",
+        body="A free health camp will be organized at Ward 2 Community Center, 9 AM - 5 PM.",
+        notif_type="Health Camp",
+        scope="all",
+        created_by=pa.id,
+    )
+    await db.notifications.insert_one(n.model_dump())
+
+    # Dev works
+    for title, cat, status in [
+        ("Road Resurfacing - MG Road", "Road Construction", "Work Started"),
+        ("New Water Tank - Wanowrie", "Water Tank", "Approved"),
+        ("Drainage Project Phase 2", "Drainage Project", "Tender Issued"),
+        ("Street Light Installation", "Street Light Installation", "Completed"),
+    ]:
+        d = DevWork(title=title, description=f"{title} - public infrastructure project.", category=cat, location="Pune Cantonment", ward_id=wards[0].id, status=status, budget=2500000, created_by=politician.id)
+        await db.devworks.insert_one(d.model_dump())
+
+    logger.info("Seed complete.")
+
+
+app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
+async def shutdown():
     client.close()
