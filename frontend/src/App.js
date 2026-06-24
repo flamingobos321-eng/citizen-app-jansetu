@@ -20,8 +20,11 @@ import StaffDashboard from "./pages/StaffDashboard";
 import CitizensList from "./pages/CitizensList";
 import AdminAreas from "./pages/AdminAreas";
 import AdminStaff from "./pages/AdminStaff";
+import AdminPortals from "./pages/AdminPortals";
 import Celebrations from "./pages/Celebrations";
 import PersonProfile from "./pages/PersonProfile";
+import PortalIndex from "./portal/PortalIndex";
+import PortalHome from "./portal/PortalHome";
 
 function Guard({ children }) {
   const { user, loading } = useAuth();
@@ -44,6 +47,8 @@ export default function App() {
         <Toaster richColors position="top-right" />
         <Routes>
           <Route path="/" element={<Landing />} />
+          <Route path="/portal" element={<PortalIndex />} />
+          <Route path="/portal/:slug" element={<PortalHome />} />
           <Route path="/citizen/login" element={<CitizenLogin />} />
           <Route path="/citizen/register" element={<CitizenRegister />} />
           <Route path="/staff/login" element={<StaffLogin />} />
@@ -62,6 +67,7 @@ export default function App() {
           <Route path="/app/persons/:id" element={<Guard><PersonProfile /></Guard>} />
           <Route path="/app/areas" element={<Guard><AdminAreas /></Guard>} />
           <Route path="/app/staff" element={<Guard><AdminStaff /></Guard>} />
+          <Route path="/app/portals" element={<Guard><AdminPortals /></Guard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>

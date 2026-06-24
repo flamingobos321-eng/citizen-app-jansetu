@@ -381,3 +381,58 @@ class DevWorkCreate(BaseModel):
     start_date: Optional[str] = None
     completion_date: Optional[str] = None
     photos: List[str] = []
+
+
+
+# ---------- White Label Portal Config ----------
+class PortalConfig(BaseModel):
+    """Per-client (politician/constituency) white-label branding & content scope."""
+    id: str = Field(default_factory=new_id)
+    slug: str  # unique URL-safe identifier, e.g. "pune-cantonment"
+    is_active: bool = True
+    is_default: bool = False
+
+    # Identity
+    politician_name: str
+    designation: str
+    constituency_name: str
+    constituency_id: Optional[str] = None  # filter content scope if set
+
+    # Branding
+    logo_path: Optional[str] = None
+    hero_image_path: Optional[str] = None
+    theme_color: str = "#0A1128"
+    accent_color: Optional[str] = None
+    welcome_message: str
+    tagline: Optional[str] = None
+
+    # Contact
+    contact_phone: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_address: Optional[str] = None
+    office_hours: Optional[str] = None
+    social_links: dict = {}  # {facebook, twitter, instagram, youtube, whatsapp}
+
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+
+class PortalConfigCreate(BaseModel):
+    slug: str
+    politician_name: str
+    designation: str
+    constituency_name: str
+    welcome_message: str
+    constituency_id: Optional[str] = None
+    is_active: bool = True
+    is_default: bool = False
+    logo_path: Optional[str] = None
+    hero_image_path: Optional[str] = None
+    theme_color: str = "#0A1128"
+    accent_color: Optional[str] = None
+    tagline: Optional[str] = None
+    contact_phone: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_address: Optional[str] = None
+    office_hours: Optional[str] = None
+    social_links: dict = {}

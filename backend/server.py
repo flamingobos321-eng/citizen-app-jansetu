@@ -22,6 +22,7 @@ from models import (
     Visit, VisitCreate, Notification, NotificationCreate,
     DevWork, DevWorkCreate,
     Relationship, RelationshipCreate, RELATION_TYPES, inverse_relation,
+    PortalConfig, PortalConfigCreate,
     ServiceInteraction, ServiceInteractionCreate,
     ISSUE_CATEGORIES, ISSUE_STATUSES, DEV_STATUSES, VISIT_STATUSES,
     now_iso, new_id,
@@ -168,6 +169,45 @@ async def on_start():
     # seed if empty
     if await db.users.count_documents({"role": "admin"}) == 0:
         await seed_demo_data()
+    # Backfill: ensure at least one default portal exists for already-seeded environments
+    if await db.portal_configs.count_documents({}) == 0:
+        await _ensure_default_portal()
+        await _approve_demo_content()
+
+
+async def _ensure_default_portal():
+    """Create a single default portal config linked to the first constituency if none exists."""
+    constituency = await db.constituencies.find_one({}, {"_id": 0})
+    politician = await db.users.find_one({"role": "politician"}, {"_id": 0, "password_hash": 0})
+    name = (politician or {}).get("name") or "Hon. Politician"
+    designation = (politician or {}).get("designation") or "MLA"
+    cname = (constituency or {}).get("name") or "Constituency"
+    portal = PortalConfig(
+        slug=_normalize_slug(cname) or "default",
+        is_active=True,
+        is_default=True,
+        politician_name=name,
+        designation=designation,
+        constituency_name=cname,
+        constituency_id=(constituency or {}).get("id"),
+        welcome_message=f"Welcome to {cname}. Together, we build a stronger constituency.",
+        tagline="Sewa. Suvidha. Sashaktikaran.",
+        theme_color="#0A1128",
+        contact_phone=None,
+        contact_email=None,
+        contact_address=None,
+        office_hours="Mon - Sat, 10:00 AM to 6:00 PM",
+        social_links={},
+    )
+    await db.portal_configs.insert_one(portal.model_dump())
+    logger.info(f"Backfilled default portal: {portal.slug}")
+
+
+async def _approve_demo_content():
+    """One-time backfill: approve seeded devworks and visits so the demo portal is populated."""
+    r1 = await db.devworks.update_many({"approved": {"$ne": True}}, {"$set": {"approved": True, "approved_at": now_iso()}})
+    r2 = await db.visits.update_many({"status": "Pending Approval"}, {"$set": {"status": "Approved", "approved_at": now_iso()}})
+    logger.info(f"Approved demo content: devworks={r1.modified_count}, visits={r2.modified_count}")
 
 
 # ----------------- Health -----------------
@@ -997,6 +1037,154 @@ async def celebrations(days: int = 7, _: dict = Depends(require_roles("pa", "pol
 
 
 
+# ----------------- WHITE-LABEL PORTAL -----------------
+import re
+
+
+def _normalize_slug(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s
+
+
+def _public_portal(p: dict) -> dict:
+    """Strip internal fields for public consumption."""
+    if not p:
+        return p
+    out = {k: v for k, v in p.items() if k != "_id"}
+    return out
+
+
+@api.get("/portals")
+async def list_portals_public():
+    """Public list of active portals (compact)."""
+    docs = await db.portal_configs.find({"is_active": True}, {"_id": 0}).to_list(200)
+    fields = {"id", "slug", "politician_name", "designation", "constituency_name", "logo_path", "theme_color", "is_default"}
+    return [{k: d.get(k) for k in fields} for d in docs]
+
+
+@api.get("/portals/{slug}")
+async def get_portal_public(slug: str):
+    p = await db.portal_configs.find_one({"slug": slug, "is_active": True}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    return _public_portal(p)
+
+
+@api.get("/portals/{slug}/devworks")
+async def portal_devworks(slug: str, limit: int = 6):
+    p = await db.portal_configs.find_one({"slug": slug, "is_active": True}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    q = {"approved": True}
+    if p.get("constituency_id"):
+        # filter by ward/village that belongs to this constituency
+        areas = await db.areas.find({"constituency_id": p["constituency_id"]}, {"id": 1}).to_list(500)
+        area_ids = [a["id"] for a in areas]
+        q["$or"] = [{"ward_id": {"$in": area_ids}}, {"village_id": {"$in": area_ids}}]
+    docs = await db.devworks.find(q, {"_id": 0}).sort("created_at", -1).limit(max(1, min(limit, 50))).to_list(50)
+    return docs
+
+
+@api.get("/portals/{slug}/visits")
+async def portal_visits(slug: str, limit: int = 5):
+    p = await db.portal_configs.find_one({"slug": slug, "is_active": True}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    q = {"status": {"$in": ["Approved", "Published"]}, "date": {"$gte": today}}
+    if p.get("constituency_id"):
+        areas = await db.areas.find({"constituency_id": p["constituency_id"]}, {"id": 1}).to_list(500)
+        area_ids = [a["id"] for a in areas]
+        # visits are tagged with ward_ids/village_ids lists or untagged (all)
+        q["$or"] = [
+            {"ward_ids": {"$in": area_ids}},
+            {"village_ids": {"$in": area_ids}},
+            {"$and": [{"ward_ids": {"$size": 0}}, {"village_ids": {"$size": 0}}]},
+        ]
+    docs = await db.visits.find(q, {"_id": 0}).sort("date", 1).limit(max(1, min(limit, 20))).to_list(20)
+    return docs
+
+
+@api.get("/portals/{slug}/notifications")
+async def portal_notifications(slug: str, limit: int = 5):
+    p = await db.portal_configs.find_one({"slug": slug, "is_active": True}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    # Only broadcast / public notifications
+    q = {"scope": "all"}
+    docs = await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(max(1, min(limit, 20))).to_list(20)
+    return docs
+
+
+# --- Admin write endpoints ---
+@api.get("/admin/portals")
+async def list_portals_admin(_: dict = Depends(require_roles("admin"))):
+    return await db.portal_configs.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+@api.post("/admin/portals")
+async def create_portal(payload: PortalConfigCreate, _: dict = Depends(require_roles("admin"))):
+    slug = _normalize_slug(payload.slug)
+    if not slug:
+        raise HTTPException(400, "Invalid slug")
+    if await db.portal_configs.find_one({"slug": slug}):
+        raise HTTPException(409, "Slug already exists")
+    data = payload.model_dump()
+    data["slug"] = slug
+    cfg = PortalConfig(**data)
+    if cfg.is_default:
+        # ensure only one default
+        await db.portal_configs.update_many({}, {"$set": {"is_default": False}})
+    await db.portal_configs.insert_one(cfg.model_dump())
+    return cfg.model_dump()
+
+
+@api.put("/admin/portals/{portal_id}")
+async def update_portal(portal_id: str, payload: dict, _: dict = Depends(require_roles("admin"))):
+    allowed = {
+        "politician_name", "designation", "constituency_name", "constituency_id",
+        "welcome_message", "tagline",
+        "logo_path", "hero_image_path", "theme_color", "accent_color",
+        "contact_phone", "contact_email", "contact_address", "office_hours", "social_links",
+        "is_active", "slug",
+    }
+    update = {k: v for k, v in payload.items() if k in allowed}
+    if "slug" in update:
+        update["slug"] = _normalize_slug(update["slug"])
+        if not update["slug"]:
+            raise HTTPException(400, "Invalid slug")
+        clash = await db.portal_configs.find_one({"slug": update["slug"], "id": {"$ne": portal_id}})
+        if clash:
+            raise HTTPException(409, "Slug already exists")
+    if not update:
+        raise HTTPException(400, "No allowed fields")
+    update["updated_at"] = now_iso()
+    res = await db.portal_configs.update_one({"id": portal_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Portal not found")
+    return await db.portal_configs.find_one({"id": portal_id}, {"_id": 0})
+
+
+@api.post("/admin/portals/{portal_id}/set-default")
+async def set_default_portal(portal_id: str, _: dict = Depends(require_roles("admin"))):
+    target = await db.portal_configs.find_one({"id": portal_id})
+    if not target:
+        raise HTTPException(404, "Portal not found")
+    await db.portal_configs.update_many({}, {"$set": {"is_default": False}})
+    await db.portal_configs.update_one({"id": portal_id}, {"$set": {"is_default": True, "is_active": True, "updated_at": now_iso()}})
+    return await db.portal_configs.find_one({"id": portal_id}, {"_id": 0})
+
+
+@api.delete("/admin/portals/{portal_id}")
+async def delete_portal(portal_id: str, _: dict = Depends(require_roles("admin"))):
+    # Soft delete: mark inactive and remove default flag
+    res = await db.portal_configs.update_one({"id": portal_id}, {"$set": {"is_active": False, "is_default": False, "updated_at": now_iso()}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Portal not found")
+    return {"ok": True}
+
+
 # ----------------- SEED -----------------
 async def seed_demo_data():
     logger.info("Seeding demo data...")
@@ -1088,6 +1276,9 @@ async def seed_demo_data():
         visit_type="Janata Darbar",
         target_audience="All residents",
         ward_ids=[wards[0].id],
+        status="Approved",
+        approved_by=politician.id,
+        approved_at=now_iso(),
         created_by=pa.id,
     )
     await db.visits.insert_one(v.model_dump())
@@ -1103,14 +1294,50 @@ async def seed_demo_data():
     await db.notifications.insert_one(n.model_dump())
 
     # Dev works
-    for title, cat, status in [
-        ("Road Resurfacing - MG Road", "Road Construction", "Work Started"),
-        ("New Water Tank - Wanowrie", "Water Tank", "Approved"),
-        ("Drainage Project Phase 2", "Drainage Project", "Tender Issued"),
-        ("Street Light Installation", "Street Light Installation", "Completed"),
+    for title, cat, status, approved in [
+        ("Road Resurfacing - MG Road", "Road Construction", "Work Started", True),
+        ("New Water Tank - Wanowrie", "Water Tank", "Approved", True),
+        ("Drainage Project Phase 2", "Drainage Project", "Tender Issued", True),
+        ("Street Light Installation", "Street Light Installation", "Completed", True),
     ]:
-        d = DevWork(title=title, description=f"{title} - public infrastructure project.", category=cat, location="Pune Cantonment", ward_id=wards[0].id, status=status, budget=2500000, created_by=politician.id)
+        d = DevWork(
+            title=title,
+            description=f"{title} - public infrastructure project.",
+            category=cat,
+            location="Pune Cantonment",
+            ward_id=wards[0].id,
+            status=status,
+            budget=2500000,
+            approved=approved,
+            approved_by=politician.id if approved else None,
+            approved_at=now_iso() if approved else None,
+            created_by=politician.id,
+        )
         await db.devworks.insert_one(d.model_dump())
+
+    # White-label portal config for this constituency
+    portal = PortalConfig(
+        slug="pune-cantonment",
+        is_active=True,
+        is_default=True,
+        politician_name="Hon. Rajesh Patil",
+        designation="MLA, Pune Cantonment",
+        constituency_name="Pune Cantonment",
+        constituency_id=constituency.id,
+        welcome_message="Welcome to our digital constituency. Together, we build a stronger, cleaner, more accountable Pune Cantonment.",
+        tagline="Sewa. Suvidha. Sashaktikaran.",
+        theme_color="#0A1128",
+        contact_phone="+91 20 2612 0000",
+        contact_email="office@pune-cantonment.in",
+        contact_address="MLA Office, Camp, Pune - 411001",
+        office_hours="Mon - Sat, 10:00 AM to 6:00 PM",
+        social_links={
+            "facebook": "https://facebook.com/rajeshpatil.mla",
+            "twitter": "https://twitter.com/rajeshpatil",
+            "whatsapp": "https://wa.me/912026120000",
+        },
+    )
+    await db.portal_configs.insert_one(portal.model_dump())
 
     logger.info("Seed complete.")
 

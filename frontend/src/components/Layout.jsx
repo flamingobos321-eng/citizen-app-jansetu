@@ -14,6 +14,7 @@ import {
   Plus,
   ShieldCheck,
   Cake,
+  Globe,
 } from "lucide-react";
 
 const ROLE_LABEL = {
@@ -101,6 +102,7 @@ export default function Layout({ children }) {
                 <>
                   <NavItem to="/app/areas" icon={Map} label="Wards & Villages" testId="nav-areas" />
                   <NavItem to="/app/staff" icon={ShieldCheck} label="Staff & Roles" testId="nav-staff" />
+                  <NavItem to="/app/portals" icon={Globe} label="Client Portals" testId="nav-portals" />
                 </>
               )}
             </>
