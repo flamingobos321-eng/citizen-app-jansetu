@@ -106,6 +106,11 @@ export default function CitizensList() {
 
               <div className="bg-white border border-gray-200 rounded-lg p-5">
                 <h3 className="font-heading font-semibold text-gray-900 mb-3">Service history ({detail.issues.length})</h3>
+                <div className="grid grid-cols-3 gap-3 mb-4">
+                  <Stat label="Total" value={detail.stats?.total ?? detail.issues.length} color="text-[#0A1128]" />
+                  <Stat label="Resolved" value={detail.stats?.resolved ?? 0} color="text-[#10B981]" />
+                  <Stat label="Pending" value={detail.stats?.pending ?? 0} color="text-[#B45309]" />
+                </div>
                 {detail.issues.length === 0 ? (
                   <div className="text-sm text-gray-500">No issues raised yet.</div>
                 ) : (
@@ -136,5 +141,12 @@ const Row = ({ label, value }) => (
   <div>
     <div className="text-xs uppercase tracking-wider font-bold text-gray-500">{label}</div>
     <div className="text-sm text-gray-900 mt-0.5">{value || "—"}</div>
+  </div>
+);
+
+const Stat = ({ label, value, color }) => (
+  <div className="bg-gray-50 border border-gray-200 rounded-md p-3">
+    <div className="text-[10px] uppercase tracking-widest font-bold text-gray-500">{label}</div>
+    <div className={`font-heading text-2xl font-bold mt-0.5 ${color}`}>{value}</div>
   </div>
 );

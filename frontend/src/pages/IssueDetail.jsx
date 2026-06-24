@@ -24,6 +24,29 @@ export default function IssueDetail() {
   const [note, setNote] = useState("");
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState("");
+  const [completionPhotos, setCompletionPhotos] = useState([]);
+  const [uploadingDone, setUploadingDone] = useState(false);
+
+  const onPickCompletionPhoto = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setUploadingDone(true);
+    try {
+      const uploaded = [];
+      for (const file of files) {
+        const fd = new FormData();
+        fd.append("file", file);
+        const r = await api.post("/files/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+        uploaded.push(r.data.path);
+      }
+      setCompletionPhotos((p) => [...p, ...uploaded]);
+      toast.success(`Uploaded ${uploaded.length} photo(s)`);
+    } catch {
+      toast.error("Upload failed");
+    } finally {
+      setUploadingDone(false);
+    }
+  };
 
   const load = () => api.get(`/issues/${id}`).then((r) => setData(r.data));
 
@@ -59,10 +82,16 @@ export default function IssueDetail() {
   const updateStatus = async () => {
     if (!statusUpdate) return toast.error("Select a status");
     try {
-      await api.post(`/issues/${id}/status`, { status: statusUpdate, remarks: note });
-      toast.success("Status updated");
+      const payload = { status: statusUpdate, remarks: note };
+      if (statusUpdate === "Resolved") {
+        payload.completion_notes = note;
+        payload.completion_photos = completionPhotos;
+      }
+      await api.post(`/issues/${id}/status`, payload);
+      toast.success(statusUpdate === "Resolved" ? "Marked resolved — citizen will verify" : "Status updated");
       setStatusUpdate("");
       setNote("");
+      setCompletionPhotos([]);
       load();
     } catch {
       toast.error("Failed");
@@ -106,11 +135,24 @@ export default function IssueDetail() {
 
           {issue.photos?.length > 0 && (
             <Card>
-              <h3 className="font-heading font-semibold text-gray-900 mb-3">Photo evidence ({issue.photos.length})</h3>
+              <h3 className="font-heading font-semibold text-gray-900 mb-3">Before — Citizen evidence ({issue.photos.length})</h3>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {issue.photos.map((p) => (
                   <a key={p} href={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} target="_blank" rel="noreferrer" data-testid={`issue-photo-${p}`}>
                     <img src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} alt="" className="w-full h-32 object-cover rounded-md border border-gray-200 hover:opacity-90 transition" />
+                  </a>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {issue.completion_photos?.length > 0 && (
+            <Card>
+              <h3 className="font-heading font-semibold text-gray-900 mb-3">After — Completion proof ({issue.completion_photos.length})</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {issue.completion_photos.map((p) => (
+                  <a key={p} href={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} target="_blank" rel="noreferrer" data-testid={`completion-photo-${p}`}>
+                    <img src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} alt="" className="w-full h-32 object-cover rounded-md border border-[#10B981] hover:opacity-90 transition" />
                   </a>
                 ))}
               </div>
@@ -314,6 +356,20 @@ export default function IssueDetail() {
                 </SelectContent>
               </Select>
               <Textarea placeholder="Notes / progress (optional)" className="mt-3" value={note} onChange={(e) => setNote(e.target.value)} data-testid="status-note" />
+              {statusUpdate === "Resolved" && (
+                <div className="mt-3">
+                  <Label className="text-xs font-bold uppercase tracking-[0.1em] text-gray-500">Completion photos (recommended)</Label>
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {completionPhotos.map((p) => (
+                      <img key={p} src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} alt="" className="w-16 h-16 object-cover rounded border border-[#10B981]" />
+                    ))}
+                    <label className="w-16 h-16 rounded border-2 border-dashed border-gray-300 flex items-center justify-center text-xs text-gray-500 cursor-pointer hover:border-[#0A1128]">
+                      {uploadingDone ? "..." : "+ Add"}
+                      <input type="file" accept="image/*" multiple className="hidden" onChange={onPickCompletionPhoto} data-testid="completion-photo-input" />
+                    </label>
+                  </div>
+                </div>
+              )}
               <Button className="w-full mt-3 bg-[#0A1128] hover:bg-[#0A1128]/90 text-white" onClick={updateStatus} data-testid="update-status-btn">Update</Button>
               {isAssignee && issue.status !== "Reassignment Requested" && (
                 <Button

@@ -288,7 +288,10 @@ async def household_detail(hh_id: str, user: dict = Depends(get_current_user)):
     if or_clauses:
         bq["$or"] = or_clauses
     benefits = await db.devworks.find(bq, {"_id": 0}).sort("created_at", -1).to_list(100) if or_clauses else []
-    return {"household": hh, "members": members, "issues": issues, "benefits": benefits}
+    total = await db.issues.count_documents({"household_id": hh_id})
+    resolved = await db.issues.count_documents({"household_id": hh_id, "status": {"$in": ["Resolved", "Verified"]}})
+    pending = total - resolved
+    return {"household": hh, "members": members, "issues": issues, "benefits": benefits, "stats": {"total": total, "resolved": resolved, "pending": pending}}
 
 
 # ----------------- ISSUES -----------------
@@ -698,26 +701,41 @@ MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "i
 async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
     ext = (file.filename or "bin").split(".")[-1].lower()
     ctype = MIME.get(ext, file.content_type or "application/octet-stream")
-    path = f"{APP_NAME}/uploads/{user['id']}/{uuid.uuid4()}.{ext}"
     data = await file.read()
-    result = put_object(path, data, ctype)
+    file_id = new_id()
+    path = f"{APP_NAME}/uploads/{user['id']}/{file_id}.{ext}"
+    storage_ok = False
+    try:
+        result = put_object(path, data, ctype)
+        path = result["path"]
+        storage_ok = True
+    except Exception as e:
+        logger.warning(f"Object storage upload failed, falling back to DB: {e}")
     rec = {
-        "id": new_id(),
-        "storage_path": result["path"],
+        "id": file_id,
+        "storage_path": path,
         "original_filename": file.filename,
         "content_type": ctype,
-        "size": result.get("size", len(data)),
+        "size": len(data),
         "is_deleted": False,
+        "in_db": not storage_ok,
         "created_at": now_iso(),
         "uploaded_by": user["id"],
     }
+    if not storage_ok:
+        # store bytes directly in DB as fallback
+        import base64
+        rec["data_b64"] = base64.b64encode(data).decode("ascii")
     await db.files.insert_one(rec)
-    return {"path": result["path"], "url": f"/api/files/{result['path']}"}
+    return {"path": path, "url": f"/api/files/{path}"}
 
 
 @api.get("/files/{path:path}")
 async def serve_file(path: str):
-    # public read for displayed images
+    rec = await db.files.find_one({"storage_path": path, "is_deleted": False})
+    if rec and rec.get("in_db") and rec.get("data_b64"):
+        import base64
+        return Response(content=base64.b64decode(rec["data_b64"]), media_type=rec.get("content_type", "application/octet-stream"))
     try:
         data, ctype = get_object(path)
     except Exception:
