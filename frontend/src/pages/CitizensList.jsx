@@ -89,6 +89,22 @@ export default function CitizensList() {
               </div>
 
               <div className="bg-white border border-gray-200 rounded-lg p-5">
+                <h3 className="font-heading font-semibold text-gray-900 mb-3">Development benefits ({detail.benefits?.length || 0})</h3>
+                {(!detail.benefits || detail.benefits.length === 0) ? (
+                  <div className="text-sm text-gray-500">No approved development works for this area yet.</div>
+                ) : (
+                  <div className="divide-y divide-gray-100">
+                    {detail.benefits.map((b) => (
+                      <div key={b.id} className="py-3">
+                        <div className="font-semibold text-sm text-gray-900">{b.title}</div>
+                        <div className="text-xs text-gray-500 mt-0.5">{b.category} · <span className="pill pill-neutral">{b.status}</span></div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-white border border-gray-200 rounded-lg p-5">
                 <h3 className="font-heading font-semibold text-gray-900 mb-3">Service history ({detail.issues.length})</h3>
                 {detail.issues.length === 0 ? (
                   <div className="text-sm text-gray-500">No issues raised yet.</div>

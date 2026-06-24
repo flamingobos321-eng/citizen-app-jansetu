@@ -36,8 +36,12 @@ export default function IssueDetail() {
 
   const issue = data.issue;
   const isCitizen = user?.role === "citizen";
-  const isStaff = ["pa", "politician", "admin"].includes(user?.role);
+  const isAdmin = user?.role === "admin";
+  const isPA = user?.role === "pa";
+  const isMLA = user?.role === "politician";
+  const canAssign = isPA || isAdmin; // MLA cannot assign
   const isAssignee = user?.role === "worker" && issue.assigned_to === user.id;
+  const canUpdateStatus = canAssign || isAssignee;
   const canVerify = isCitizen && issue.status === "Resolved";
 
   const assign = async () => {
@@ -179,7 +183,14 @@ export default function IssueDetail() {
             {issue.remarks && <Row label="Remarks" value={issue.remarks} />}
           </Card>
 
-          {isStaff && (
+          {isMLA && (
+            <Card>
+              <h3 className="font-heading font-semibold text-gray-900 mb-2">MLA view (read-only)</h3>
+              <p className="text-xs text-gray-500">As the elected representative, you have monitoring access. Assignment and status updates are handled by your PA/office.</p>
+            </Card>
+          )}
+
+          {canAssign && (
             <Card>
               <h3 className="font-heading font-semibold text-gray-900 mb-3">Staff actions</h3>
               <Label className="text-xs font-bold uppercase tracking-[0.1em] text-gray-500">Assign to worker</Label>
@@ -194,7 +205,7 @@ export default function IssueDetail() {
             </Card>
           )}
 
-          {(isStaff || isAssignee) && (
+          {canUpdateStatus && (
             <Card>
               <h3 className="font-heading font-semibold text-gray-900 mb-3">Update status</h3>
               <Select value={statusUpdate} onValueChange={setStatusUpdate}>
@@ -203,8 +214,27 @@ export default function IssueDetail() {
                   {["Under Review", "In Progress", "Resolved"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <Textarea placeholder="Notes (optional)" className="mt-3" value={note} onChange={(e) => setNote(e.target.value)} data-testid="status-note" />
+              <Textarea placeholder="Notes / progress (optional)" className="mt-3" value={note} onChange={(e) => setNote(e.target.value)} data-testid="status-note" />
               <Button className="w-full mt-3 bg-[#0A1128] hover:bg-[#0A1128]/90 text-white" onClick={updateStatus} data-testid="update-status-btn">Update</Button>
+              {isAssignee && (
+                <Button
+                  variant="outline"
+                  className="w-full mt-2"
+                  data-testid="request-reassign-btn"
+                  onClick={async () => {
+                    const reason = window.prompt("Reason for reassignment?") || "";
+                    try {
+                      await api.post(`/issues/${id}/request-reassign`, null, { params: { reason } });
+                      toast.success("Reassignment requested");
+                      load();
+                    } catch {
+                      toast.error("Failed");
+                    }
+                  }}
+                >
+                  Request reassignment
+                </Button>
+              )}
             </Card>
           )}
         </div>

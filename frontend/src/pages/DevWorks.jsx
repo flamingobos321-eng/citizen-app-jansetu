@@ -18,7 +18,9 @@ export default function DevWorks() {
   const { user } = useAuth();
   const [items, setItems] = useState([]);
   const [meta, setMeta] = useState({ dev_statuses: [] });
-  const canCreate = ["pa", "politician", "admin"].includes(user?.role);
+  const canCreate = ["pa", "admin"].includes(user?.role);
+  const canApprove = ["politician", "admin"].includes(user?.role);
+  const canDelete = user?.role === "admin";
 
   const load = () => api.get("/devworks").then((r) => setItems(r.data));
   useEffect(() => {
@@ -52,8 +54,13 @@ export default function DevWorks() {
                 <img src={THUMB} alt="" className="w-full h-full object-cover" />
               </div>
               <div className="p-5">
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
                   <StatusPill status={d.status} />
+                  {d.approved ? (
+                    <span className="pill pill-resolved">Approved</span>
+                  ) : (
+                    <span className="pill pill-pending">Pending Approval</span>
+                  )}
                   <span className="text-xs text-gray-500">{d.category}</span>
                 </div>
                 <h3 className="font-heading font-semibold text-gray-900">{d.title}</h3>
@@ -68,6 +75,18 @@ export default function DevWorks() {
                     </SelectContent>
                   </Select>
                 )}
+                <div className="flex gap-2 mt-3">
+                  {canApprove && !d.approved && (
+                    <Button size="sm" className="bg-[#10B981] hover:bg-[#10B981]/90 text-white" data-testid={`approve-dev-${d.id}`} onClick={async () => { await api.post(`/devworks/${d.id}/approve`); toast.success("Approved"); load(); }}>
+                      Approve
+                    </Button>
+                  )}
+                  {canDelete && (
+                    <Button size="sm" variant="outline" data-testid={`delete-dev-${d.id}`} onClick={async () => { if (window.confirm("Delete project?")) { await api.delete(`/devworks/${d.id}`); load(); }}}>
+                      Delete
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
           ))}

@@ -26,12 +26,22 @@ export default function Notifications() {
         <div className="space-y-3">
           {items.map((n) => (
             <div key={n.id} className="bg-white border border-gray-200 rounded-lg p-5">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="pill pill-info">{n.notif_type}</span>
                 <span className="text-xs text-gray-500">{new Date(n.created_at).toLocaleString()}</span>
+                {canCompose && n.created_by_name && (
+                  <span className="text-xs text-gray-500">· by {n.created_by_name}</span>
+                )}
               </div>
               <div className="font-heading font-semibold text-gray-900 mt-2">{n.title}</div>
               <div className="text-sm text-gray-700 mt-1">{n.body}</div>
+              {canCompose && (
+                <div className="mt-3 pt-3 border-t border-gray-100 flex flex-wrap gap-4 text-xs text-gray-500">
+                  <span>Target: <strong className="text-gray-700">{n.scope}</strong></span>
+                  <span>Recipients: <strong className="text-gray-700">{n.recipients_count ?? "—"}</strong></span>
+                  <span>Status: <span className="pill pill-resolved">{n.delivery_status || "Delivered"}</span></span>
+                </div>
+              )}
             </div>
           ))}
         </div>

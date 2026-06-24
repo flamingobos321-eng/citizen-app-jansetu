@@ -21,7 +21,7 @@ from models import (
     Issue, IssueCreate, IssueAssign, IssueUpdateStatus, IssueFeedback,
     Visit, VisitCreate, Notification, NotificationCreate,
     DevWork, DevWorkCreate,
-    ISSUE_CATEGORIES, ISSUE_STATUSES, DEV_STATUSES,
+    ISSUE_CATEGORIES, ISSUE_STATUSES, DEV_STATUSES, VISIT_STATUSES,
     now_iso, new_id,
 )
 from storage_util import put_object, get_object, init_storage, APP_NAME
@@ -117,7 +117,7 @@ async def root():
 
 @api.get("/meta/categories")
 async def meta_cats():
-    return {"issue_categories": ISSUE_CATEGORIES, "issue_statuses": ISSUE_STATUSES, "dev_statuses": DEV_STATUSES}
+    return {"issue_categories": ISSUE_CATEGORIES, "issue_statuses": ISSUE_STATUSES, "dev_statuses": DEV_STATUSES, "visit_statuses": VISIT_STATUSES}
 
 
 # ----------------- AUTH -----------------
@@ -202,7 +202,7 @@ async def me(user: dict = Depends(get_current_user)):
 
 # ----------------- USERS / STAFF -----------------
 @api.post("/admin/staff")
-async def create_staff(payload: StaffCreate, _: dict = Depends(require_roles("admin", "politician"))):
+async def create_staff(payload: StaffCreate, _: dict = Depends(require_roles("admin"))):
     if await db.users.find_one({"email": payload.email}):
         raise HTTPException(400, "Email exists")
     u = User(
@@ -278,7 +278,17 @@ async def household_detail(hh_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(404, "Not found")
     members = await db.users.find({"household_id": hh_id}, {"_id": 0, "password_hash": 0}).to_list(100)
     issues = await db.issues.find({"household_id": hh_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
-    return {"household": hh, "members": members, "issues": issues}
+    # Development benefits = approved dev works in same ward/village
+    bq = {"approved": True}
+    or_clauses = []
+    if hh.get("ward_id"):
+        or_clauses.append({"ward_id": hh["ward_id"]})
+    if hh.get("village_id"):
+        or_clauses.append({"village_id": hh["village_id"]})
+    if or_clauses:
+        bq["$or"] = or_clauses
+    benefits = await db.devworks.find(bq, {"_id": 0}).sort("created_at", -1).to_list(100) if or_clauses else []
+    return {"household": hh, "members": members, "issues": issues, "benefits": benefits}
 
 
 # ----------------- ISSUES -----------------
@@ -349,7 +359,7 @@ async def issue_detail(issue_id: str, user: dict = Depends(get_current_user)):
 
 
 @api.post("/issues/{issue_id}/assign")
-async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends(require_roles("pa", "politician", "admin"))):
+async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends(require_roles("pa", "admin"))):
     worker = await db.users.find_one({"id": payload.assigned_to}, {"_id": 0})
     if not worker:
         raise HTTPException(404, "Worker not found")
@@ -372,9 +382,14 @@ async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends
 
 
 @api.post("/issues/{issue_id}/status")
-async def update_status(issue_id: str, payload: IssueUpdateStatus, user: dict = Depends(require_roles("worker", "pa", "politician", "admin"))):
+async def update_status(issue_id: str, payload: IssueUpdateStatus, user: dict = Depends(require_roles("worker", "pa", "admin"))):
     if payload.status not in ISSUE_STATUSES:
         raise HTTPException(400, "Invalid status")
+    # workers can only update issues assigned to them
+    if user["role"] == "worker":
+        issue = await db.issues.find_one({"id": issue_id})
+        if not issue or issue.get("assigned_to") != user["id"]:
+            raise HTTPException(403, "Not your assignment")
     update = {"status": payload.status, "updated_at": now_iso()}
     if payload.completion_notes:
         update["completion_notes"] = payload.completion_notes
@@ -416,10 +431,23 @@ async def feedback(issue_id: str, payload: IssueFeedback, user: dict = Depends(g
 
 # ----------------- VISITS -----------------
 @api.post("/visits")
-async def create_visit(payload: VisitCreate, user: dict = Depends(require_roles("pa", "politician", "admin"))):
+async def create_visit(payload: VisitCreate, user: dict = Depends(require_roles("pa", "admin"))):
+    # PA creates as Pending Approval; admin auto-publishes
     v = Visit(**payload.model_dump(), created_by=user["id"])
+    if user["role"] == "admin":
+        v.status = "Published"
+        v.approved_by = user["id"]
+        v.approved_at = now_iso()
+    else:
+        v.status = "Pending Approval"
     await db.visits.insert_one(v.model_dump())
-    # auto-notification
+    if v.status == "Published":
+        await _publish_visit_notification(v, user)
+    return v.model_dump()
+
+
+async def _publish_visit_notification(v: Visit, user: dict):
+    recipients = await _count_recipients("wards" if v.ward_ids else ("villages" if v.village_ids else "all"), v.ward_ids, v.village_ids)
     notif = Notification(
         title=f"Visit: {v.title}",
         body=f"{v.visit_type} on {v.date} at {v.time} — {v.location}",
@@ -428,9 +456,21 @@ async def create_visit(payload: VisitCreate, user: dict = Depends(require_roles(
         ward_ids=v.ward_ids,
         village_ids=v.village_ids,
         created_by=user["id"],
+        created_by_name=user["name"],
+        recipients_count=recipients,
     )
     await db.notifications.insert_one(notif.model_dump())
-    return v.model_dump()
+
+
+@api.post("/visits/{visit_id}/approve")
+async def approve_visit(visit_id: str, user: dict = Depends(require_roles("politician", "admin"))):
+    v = await db.visits.find_one({"id": visit_id})
+    if not v:
+        raise HTTPException(404, "Not found")
+    await db.visits.update_one({"id": visit_id}, {"$set": {"status": "Published", "approved_by": user["id"], "approved_at": now_iso()}})
+    visit = Visit(**{**v, "status": "Published", "approved_by": user["id"], "approved_at": now_iso()})
+    await _publish_visit_notification(visit, user)
+    return await db.visits.find_one({"id": visit_id}, {"_id": 0})
 
 
 @api.get("/visits")
@@ -438,13 +478,30 @@ async def list_visits(upcoming: bool = False, user: dict = Depends(get_current_u
     q = {}
     if upcoming:
         q["date"] = {"$gte": datetime.now(timezone.utc).strftime("%Y-%m-%d")}
+    if user["role"] == "citizen":
+        q["status"] = "Published"
     return await db.visits.find(q, {"_id": 0}).sort("date", 1).limit(200).to_list(200)
+
+
+async def _count_recipients(scope: str, ward_ids: list, village_ids: list) -> int:
+    q = {"role": "citizen"}
+    if scope == "all":
+        return await db.users.count_documents(q)
+    or_clauses = []
+    if ward_ids:
+        or_clauses.append({"ward_id": {"$in": ward_ids}})
+    if village_ids:
+        or_clauses.append({"village_id": {"$in": village_ids}})
+    if or_clauses:
+        q["$or"] = or_clauses
+    return await db.users.count_documents(q)
 
 
 # ----------------- NOTIFICATIONS -----------------
 @api.post("/notifications")
 async def create_notif(payload: NotificationCreate, user: dict = Depends(require_roles("pa", "politician", "admin"))):
-    n = Notification(**payload.model_dump(), created_by=user["id"])
+    recipients = await _count_recipients(payload.scope, payload.ward_ids, payload.village_ids)
+    n = Notification(**payload.model_dump(), created_by=user["id"], created_by_name=user["name"], recipients_count=recipients)
     await db.notifications.insert_one(n.model_dump())
     return n.model_dump()
 
@@ -465,10 +522,33 @@ async def list_notifs(user: dict = Depends(get_current_user)):
 
 # ----------------- DEV WORKS -----------------
 @api.post("/devworks")
-async def create_dev(payload: DevWorkCreate, user: dict = Depends(require_roles("pa", "politician", "admin"))):
+async def create_dev(payload: DevWorkCreate, user: dict = Depends(require_roles("pa", "admin"))):
     d = DevWork(**payload.model_dump(), created_by=user["id"])
+    if user["role"] == "admin":
+        d.approved = True
+        d.approved_by = user["id"]
+        d.approved_at = now_iso()
     await db.devworks.insert_one(d.model_dump())
     return d.model_dump()
+
+
+@api.post("/devworks/{dev_id}/approve")
+async def approve_dev(dev_id: str, user: dict = Depends(require_roles("politician", "admin"))):
+    await db.devworks.update_one({"id": dev_id}, {"$set": {"approved": True, "approved_by": user["id"], "approved_at": now_iso()}})
+    return await db.devworks.find_one({"id": dev_id}, {"_id": 0})
+
+
+@api.delete("/devworks/{dev_id}")
+async def delete_dev(dev_id: str, _: dict = Depends(require_roles("admin"))):
+    await db.devworks.delete_one({"id": dev_id})
+    return {"ok": True}
+
+
+@api.post("/devworks/{dev_id}/progress")
+async def add_dev_progress(dev_id: str, note: str = Query(...), user: dict = Depends(require_roles("pa", "admin"))):
+    entry = {"at": now_iso(), "by": user["name"], "note": note}
+    await db.devworks.update_one({"id": dev_id}, {"$push": {"progress_updates": entry}, "$set": {"updated_at": now_iso()}})
+    return await db.devworks.find_one({"id": dev_id}, {"_id": 0})
 
 
 @api.get("/devworks")
@@ -480,15 +560,34 @@ async def list_devs(status: Optional[str] = None, ward_id: Optional[str] = None,
         q["ward_id"] = ward_id
     if village_id:
         q["village_id"] = village_id
+    # citizens only see approved
+    if user["role"] == "citizen":
+        q["approved"] = True
     return await db.devworks.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
 
 
 @api.post("/devworks/{dev_id}/status")
-async def update_dev(dev_id: str, status: str = Query(...), user: dict = Depends(require_roles("pa", "politician", "admin"))):
+async def update_dev(dev_id: str, status: str = Query(...), user: dict = Depends(require_roles("pa", "admin"))):
     if status not in DEV_STATUSES:
         raise HTTPException(400, "Invalid status")
     await db.devworks.update_one({"id": dev_id}, {"$set": {"status": status, "updated_at": now_iso()}})
     return await db.devworks.find_one({"id": dev_id}, {"_id": 0})
+
+
+# ----------------- WORKER actions -----------------
+@api.post("/issues/{issue_id}/request-reassign")
+async def request_reassign(issue_id: str, reason: str = Query(""), user: dict = Depends(require_roles("worker"))):
+    issue = await db.issues.find_one({"id": issue_id})
+    if not issue or issue.get("assigned_to") != user["id"]:
+        raise HTTPException(403, "Not your assignment")
+    await db.issues.update_one(
+        {"id": issue_id},
+        {
+            "$set": {"status": "Under Review", "updated_at": now_iso(), "assigned_to": None, "assigned_to_name": None},
+            "$push": {"timeline": {"status": "Reassignment Requested", "at": now_iso(), "by": user["name"], "note": reason or "Worker requested reassignment"}},
+        },
+    )
+    return {"ok": True}
 
 
 # ----------------- DASHBOARD -----------------

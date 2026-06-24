@@ -53,7 +53,10 @@ export default function Layout({ children }) {
   };
 
   const isCitizen = user?.role === "citizen";
-  const isStaffAll = ["pa", "politician", "admin"].includes(user?.role);
+  const isAdmin = user?.role === "admin";
+  const isMLA = user?.role === "politician";
+  const isPA = user?.role === "pa";
+  const isStaffAll = isAdmin || isMLA || isPA;
   const isWorker = user?.role === "worker";
 
   return (
@@ -91,7 +94,7 @@ export default function Layout({ children }) {
               <NavItem to="/app/visits" icon={Calendar} label="Visits" testId="nav-visits" />
               <NavItem to="/app/notifications" icon={Bell} label="Notifications" testId="nav-notifs" />
               <NavItem to="/app/devworks" icon={Hammer} label="Development Works" testId="nav-devworks" />
-              {user?.role === "admin" && (
+              {isAdmin && (
                 <>
                   <NavItem to="/app/areas" icon={Map} label="Wards & Villages" testId="nav-areas" />
                   <NavItem to="/app/staff" icon={ShieldCheck} label="Staff & Roles" testId="nav-staff" />

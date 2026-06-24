@@ -11,6 +11,9 @@ export const STATUS_PILL = {
   "Tender Issued": "pill pill-pending",
   "Work Started": "pill pill-pending",
   Completed: "pill pill-resolved",
+  Draft: "pill pill-neutral",
+  "Pending Approval": "pill pill-pending",
+  Published: "pill pill-resolved",
 };
 
 export function StatusPill({ status, testId }) {

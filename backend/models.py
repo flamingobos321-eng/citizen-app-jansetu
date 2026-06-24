@@ -187,6 +187,9 @@ class IssueFeedback(BaseModel):
 
 
 # ---------- Visits ----------
+VISIT_STATUSES = ["Draft", "Pending Approval", "Approved", "Published"]
+
+
 class Visit(BaseModel):
     id: str = Field(default_factory=new_id)
     title: str
@@ -198,6 +201,9 @@ class Visit(BaseModel):
     target_audience: Optional[str] = None
     ward_ids: List[str] = []
     village_ids: List[str] = []
+    status: str = "Pending Approval"
+    approved_by: Optional[str] = None
+    approved_at: Optional[str] = None
     created_by: str
     created_at: str = Field(default_factory=now_iso)
 
@@ -224,6 +230,9 @@ class Notification(BaseModel):
     ward_ids: List[str] = []
     village_ids: List[str] = []
     created_by: str
+    created_by_name: Optional[str] = None
+    recipients_count: int = 0
+    delivery_status: str = "Delivered"
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -253,6 +262,10 @@ class DevWork(BaseModel):
     start_date: Optional[str] = None
     completion_date: Optional[str] = None
     photos: List[str] = []
+    approved: bool = False
+    approved_by: Optional[str] = None
+    approved_at: Optional[str] = None
+    progress_updates: List[dict] = []  # [{at, by, note}]
     created_by: str
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)

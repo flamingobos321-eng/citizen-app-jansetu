@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { SectionTitle, EmptyState } from "../components/Common";
-import { Calendar, MapPin } from "lucide-react";
+import { SectionTitle, EmptyState, StatusPill } from "../components/Common";
+import { Calendar, MapPin, CheckCircle2 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
@@ -15,16 +15,27 @@ import { toast } from "sonner";
 export default function Visits() {
   const { user } = useAuth();
   const [items, setItems] = useState([]);
-  const canCreate = ["pa", "politician", "admin"].includes(user?.role);
+  const canCreate = ["pa", "admin"].includes(user?.role);
+  const canApprove = ["politician", "admin"].includes(user?.role);
 
   const load = () => api.get("/visits", { params: { upcoming: user?.role === "citizen" } }).then((r) => setItems(r.data));
   useEffect(() => { load(); }, []); // eslint-disable-line
+
+  const approve = async (id) => {
+    try {
+      await api.post(`/visits/${id}/approve`);
+      toast.success("Visit approved & published");
+      load();
+    } catch {
+      toast.error("Failed");
+    }
+  };
 
   return (
     <div className="space-y-6 animate-fade-up">
       <SectionTitle subtitle="Politician visits, camps and public meetings">Visits & Camps</SectionTitle>
 
-      {canCreate && <Composer onCreated={load} />}
+      {canCreate && <Composer onCreated={load} isAdmin={user?.role === "admin"} />}
 
       {items.length === 0 ? (
         <EmptyState title="No visits scheduled" />
@@ -32,8 +43,9 @@ export default function Visits() {
         <div className="grid md:grid-cols-2 gap-4">
           {items.map((v) => (
             <div key={v.id} className="bg-white border border-gray-200 rounded-lg p-5">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="pill pill-info">{v.visit_type}</span>
+                <StatusPill status={v.status} />
                 <span className="text-xs text-gray-500">{v.date} · {v.time}</span>
               </div>
               <h3 className="font-heading font-semibold text-gray-900 mt-3">{v.title}</h3>
@@ -44,6 +56,11 @@ export default function Visits() {
               {v.target_audience && (
                 <div className="text-xs text-gray-500 mt-1">Audience: {v.target_audience}</div>
               )}
+              {canApprove && v.status === "Pending Approval" && (
+                <Button className="mt-4 bg-[#10B981] hover:bg-[#10B981]/90 text-white" onClick={() => approve(v.id)} data-testid={`approve-visit-${v.id}`}>
+                  <CheckCircle2 size={14} className="mr-2" /> Approve & Publish
+                </Button>
+              )}
             </div>
           ))}
         </div>
@@ -52,7 +69,7 @@ export default function Visits() {
   );
 }
 
-function Composer({ onCreated }) {
+function Composer({ onCreated, isAdmin }) {
   const [form, setForm] = useState({
     title: "", description: "", date: "", time: "", location: "", visit_type: "Janata Darbar", target_audience: "",
   });
@@ -61,7 +78,7 @@ function Composer({ onCreated }) {
     if (!form.title || !form.date || !form.time || !form.location) return toast.error("Fill required fields");
     try {
       await api.post("/visits", form);
-      toast.success("Visit scheduled and notified");
+      toast.success(isAdmin ? "Visit published" : "Visit created — pending MLA approval");
       setForm({ title: "", description: "", date: "", time: "", location: "", visit_type: "Janata Darbar", target_audience: "" });
       onCreated();
     } catch {
@@ -73,6 +90,7 @@ function Composer({ onCreated }) {
       <div className="flex items-center gap-2 mb-4">
         <Calendar size={18} className="text-[#0A1128]" />
         <h3 className="font-heading font-semibold text-gray-900">Schedule a visit</h3>
+        {!isAdmin && <span className="text-xs text-gray-500">(MLA approval required before publishing)</span>}
       </div>
       <div className="grid sm:grid-cols-2 gap-4">
         <F label="Title *"><Input data-testid="visit-title" value={form.title} onChange={(e) => upd("title", e.target.value)} /></F>
@@ -90,7 +108,9 @@ function Composer({ onCreated }) {
         <F label="Target Audience"><Input data-testid="visit-audience" value={form.target_audience} onChange={(e) => upd("target_audience", e.target.value)} /></F>
         <div className="sm:col-span-2"><F label="Description"><Textarea data-testid="visit-desc" rows={2} value={form.description} onChange={(e) => upd("description", e.target.value)} /></F></div>
       </div>
-      <Button className="mt-4 bg-[#0A1128] hover:bg-[#0A1128]/90 text-white" onClick={submit} data-testid="visit-submit">Schedule & Notify</Button>
+      <Button className="mt-4 bg-[#0A1128] hover:bg-[#0A1128]/90 text-white" onClick={submit} data-testid="visit-submit">
+        {isAdmin ? "Schedule & Publish" : "Submit for approval"}
+      </Button>
     </div>
   );
 }
