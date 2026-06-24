@@ -84,6 +84,7 @@ export default function Layout({ children }) {
               <NavItem to="/app/visits" icon={Calendar} label="Upcoming Visits" testId="nav-visits" />
               <NavItem to="/app/notifications" icon={Bell} label="Notifications" testId="nav-notifs" />
               <NavItem to="/app/devworks" icon={Hammer} label="Development Works" testId="nav-devworks" />
+              <NavItem to="/app/profile" icon={Users} label="My Profile" testId="nav-profile" />
             </>
           )}
           {isStaffAll && (

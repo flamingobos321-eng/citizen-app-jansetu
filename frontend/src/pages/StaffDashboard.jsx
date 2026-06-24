@@ -17,8 +17,13 @@ export default function StaffDashboard() {
   const [areas, setAreas] = useState([]);
 
   useEffect(() => {
-    api.get("/dashboard/stats").then((r) => setStats(r.data));
-    api.get("/areas").then((r) => setAreas(r.data));
+    const fetch = () => {
+      api.get("/dashboard/stats").then((r) => setStats(r.data));
+      api.get("/areas").then((r) => setAreas(r.data));
+    };
+    fetch();
+    const t = setInterval(fetch, 15000);
+    return () => clearInterval(t);
   }, []);
 
   const downloadCsv = async () => {

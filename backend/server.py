@@ -149,21 +149,35 @@ async def citizen_register(payload: CitizenRegister):
     if await db.users.find_one({"mobile": payload.mobile, "role": "citizen"}):
         raise HTTPException(400, "Mobile already registered")
 
-    # Create household
-    hh_seq = await next_seq("household")
-    hh_code = f"H-{10000 + hh_seq}"
-    hh = Household(
-        household_code=hh_code,
-        family_head_name=payload.family_head_name or payload.name,
-        address=payload.address,
-        house_number=payload.house_number,
-        region_type=payload.region_type,
-        ward_id=payload.ward_id,
-        area_id=payload.area_id,
-        village_id=payload.village_id,
-        members_count=payload.members_count,
-    )
-    await db.households.insert_one(hh.model_dump())
+    # Try to link to an existing household at same address (urban) — match by house_number + ward/village
+    existing_hh = None
+    if payload.house_number:
+        hh_query = {"house_number": payload.house_number}
+        if payload.ward_id:
+            hh_query["ward_id"] = payload.ward_id
+        if payload.village_id:
+            hh_query["village_id"] = payload.village_id
+        existing_hh = await db.households.find_one(hh_query)
+
+    if existing_hh:
+        await db.households.update_one({"id": existing_hh["id"]}, {"$inc": {"members_count": 1}})
+        hh_id = existing_hh["id"]
+    else:
+        hh_seq = await next_seq("household")
+        hh_code = f"H-{10000 + hh_seq}"
+        hh = Household(
+            household_code=hh_code,
+            family_head_name=payload.family_head_name or payload.name,
+            address=payload.address,
+            house_number=payload.house_number,
+            region_type=payload.region_type,
+            ward_id=payload.ward_id,
+            area_id=payload.area_id,
+            village_id=payload.village_id,
+            members_count=payload.members_count,
+        )
+        await db.households.insert_one(hh.model_dump())
+        hh_id = hh.id
 
     user = User(
         role="citizen",
@@ -171,7 +185,7 @@ async def citizen_register(payload: CitizenRegister):
         mobile=payload.mobile,
         gender=payload.gender,
         dob=payload.dob,
-        household_id=hh.id,
+        household_id=hh_id,
         region_type=payload.region_type,
         ward_id=payload.ward_id,
         area_id=payload.area_id,
@@ -180,8 +194,9 @@ async def citizen_register(payload: CitizenRegister):
         address=payload.address,
     )
     await db.users.insert_one(user.model_dump())
+    final_hh = await db.households.find_one({"id": hh_id}, {"_id": 0})
     token = create_token(user.id, "citizen")
-    return {"token": token, "user": user.model_dump(exclude={"password_hash"}), "household": hh.model_dump()}
+    return {"token": token, "user": user.model_dump(exclude={"password_hash"}), "household": final_hh}
 
 
 @api.post("/auth/staff/login")
@@ -262,13 +277,30 @@ async def delete_area(area_id: str, _: dict = Depends(require_roles("admin"))):
 async def list_households(search: Optional[str] = None, user: dict = Depends(get_current_user)):
     q = {}
     if search:
+        # also match member mobile/name
+        member_q = {"$or": [{"mobile": {"$regex": search, "$options": "i"}}, {"name": {"$regex": search, "$options": "i"}}]}
+        member_hh_ids = [u["household_id"] async for u in db.users.find(member_q, {"household_id": 1}) if u.get("household_id")]
         q["$or"] = [
             {"household_code": {"$regex": search, "$options": "i"}},
             {"family_head_name": {"$regex": search, "$options": "i"}},
             {"house_number": {"$regex": search, "$options": "i"}},
             {"address": {"$regex": search, "$options": "i"}},
+            {"id": {"$in": member_hh_ids}},
         ]
     return await db.households.find(q, {"_id": 0}).limit(200).to_list(200)
+
+
+@api.post("/admin/reset-demo")
+async def reset_demo(_: dict = Depends(require_roles("admin"))):
+    """Wipe all non-admin data so the platform is ready for real onboarding."""
+    await db.issues.delete_many({})
+    await db.visits.delete_many({})
+    await db.notifications.delete_many({})
+    await db.devworks.delete_many({})
+    await db.households.delete_many({})
+    await db.users.delete_many({"role": "citizen"})
+    await db.counters.delete_many({})
+    return {"ok": True, "message": "Demo data cleared. Households, citizens, issues, visits, notifications and dev works removed."}
 
 
 @api.get("/households/{hh_id}")

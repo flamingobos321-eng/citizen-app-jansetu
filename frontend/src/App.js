@@ -9,6 +9,7 @@ import StaffLogin from "./pages/StaffLogin";
 import Layout from "./components/Layout";
 
 import CitizenHome from "./pages/CitizenHome";
+import CitizenProfile from "./pages/CitizenProfile";
 import RaiseIssue from "./pages/RaiseIssue";
 import IssuesList from "./pages/IssuesList";
 import IssueDetail from "./pages/IssueDetail";
@@ -47,6 +48,7 @@ export default function App() {
 
           <Route path="/app" element={<Guard><HomeRoute /></Guard>} />
           <Route path="/app/raise" element={<Guard><RaiseIssue /></Guard>} />
+          <Route path="/app/profile" element={<Guard><CitizenProfile /></Guard>} />
           <Route path="/app/my-issues" element={<Guard><IssuesList /></Guard>} />
           <Route path="/app/issues" element={<Guard><IssuesList /></Guard>} />
           <Route path="/app/issues/:id" element={<Guard><IssueDetail /></Guard>} />

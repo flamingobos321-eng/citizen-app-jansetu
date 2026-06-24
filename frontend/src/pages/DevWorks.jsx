@@ -22,10 +22,14 @@ export default function DevWorks() {
   const canApprove = ["politician", "admin"].includes(user?.role);
   const canDelete = user?.role === "admin";
 
-  const load = () => api.get("/devworks").then((r) => setItems(r.data));
+  const load = () => {
+    api.get("/devworks").then((r) => setItems(r.data));
+  };
   useEffect(() => {
     load();
     api.get("/meta/categories").then((r) => setMeta(r.data));
+    const t = setInterval(load, 20000);
+    return () => clearInterval(t);
   }, []);
 
   const updateStatus = async (id, status) => {
