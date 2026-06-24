@@ -582,14 +582,63 @@ async def request_reassign(issue_id: str, reason: str = Query(""), user: dict = 
     issue = await db.issues.find_one({"id": issue_id})
     if not issue or issue.get("assigned_to") != user["id"]:
         raise HTTPException(403, "Not your assignment")
+    if issue.get("status") == "Reassignment Requested":
+        raise HTTPException(400, "Reassignment already pending")
+    reassignment = {
+        "requested_by": user["id"],
+        "requested_by_name": user["name"],
+        "reason": reason or "",
+        "at": now_iso(),
+        "status": "Pending",
+    }
     await db.issues.update_one(
         {"id": issue_id},
         {
-            "$set": {"status": "Under Review", "updated_at": now_iso(), "assigned_to": None, "assigned_to_name": None},
+            "$set": {"status": "Reassignment Requested", "updated_at": now_iso(), "reassignment_request": reassignment},
             "$push": {"timeline": {"status": "Reassignment Requested", "at": now_iso(), "by": user["name"], "note": reason or "Worker requested reassignment"}},
         },
     )
     return {"ok": True}
+
+
+@api.post("/issues/{issue_id}/approve-reassign")
+async def approve_reassign(issue_id: str, new_worker_id: str = Query(...), user: dict = Depends(require_roles("pa", "admin"))):
+    worker = await db.users.find_one({"id": new_worker_id, "role": "worker"})
+    if not worker:
+        raise HTTPException(404, "Worker not found")
+    issue = await db.issues.find_one({"id": issue_id})
+    if not issue:
+        raise HTTPException(404, "Issue not found")
+    await db.issues.update_one(
+        {"id": issue_id},
+        {
+            "$set": {
+                "assigned_to": worker["id"],
+                "assigned_to_name": worker["name"],
+                "status": "Assigned",
+                "updated_at": now_iso(),
+                "reassignment_request": None,
+            },
+            "$push": {"timeline": {"status": "Reassignment Approved", "at": now_iso(), "by": user["name"], "note": f"Reassigned to {worker['name']}"}},
+        },
+    )
+    return await db.issues.find_one({"id": issue_id}, {"_id": 0})
+
+
+@api.post("/issues/{issue_id}/reject-reassign")
+async def reject_reassign(issue_id: str, note: str = Query(""), user: dict = Depends(require_roles("pa", "admin"))):
+    issue = await db.issues.find_one({"id": issue_id})
+    if not issue:
+        raise HTTPException(404, "Issue not found")
+    # revert to In Progress (issue stays with the original worker)
+    await db.issues.update_one(
+        {"id": issue_id},
+        {
+            "$set": {"status": "In Progress", "updated_at": now_iso(), "reassignment_request": None},
+            "$push": {"timeline": {"status": "Reassignment Rejected", "at": now_iso(), "by": user["name"], "note": note or "Continue with original worker"}},
+        },
+    )
+    return await db.issues.find_one({"id": issue_id}, {"_id": 0})
 
 
 # ----------------- DASHBOARD -----------------

@@ -127,7 +127,7 @@ ISSUE_CATEGORIES = [
     "Electricity", "Encroachment", "Government Scheme Assistance",
     "Health", "Education", "Public Facility", "Other",
 ]
-ISSUE_STATUSES = ["New", "Under Review", "Assigned", "In Progress", "Resolved", "Verified", "Reopened"]
+ISSUE_STATUSES = ["New", "Under Review", "Assigned", "In Progress", "Resolved", "Verified", "Reopened", "Reassignment Requested"]
 
 
 class Issue(BaseModel):

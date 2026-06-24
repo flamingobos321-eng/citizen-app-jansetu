@@ -106,14 +106,60 @@ export default function IssueDetail() {
 
           {issue.photos?.length > 0 && (
             <Card>
-              <h3 className="font-heading font-semibold text-gray-900 mb-3">Photos</h3>
-              <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
+              <h3 className="font-heading font-semibold text-gray-900 mb-3">Photo evidence ({issue.photos.length})</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 {issue.photos.map((p) => (
-                  <a key={p} href={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} target="_blank" rel="noreferrer">
-                    <img src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} alt="" className="w-full h-24 object-cover rounded-md border border-gray-200" />
+                  <a key={p} href={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} target="_blank" rel="noreferrer" data-testid={`issue-photo-${p}`}>
+                    <img src={`${process.env.REACT_APP_BACKEND_URL}/api/files/${p}`} alt="" className="w-full h-32 object-cover rounded-md border border-gray-200 hover:opacity-90 transition" />
                   </a>
                 ))}
               </div>
+            </Card>
+          )}
+
+          {(issue.gps_lat || data.citizen?.address) && (
+            <Card>
+              <h3 className="font-heading font-semibold text-gray-900 mb-3">Location</h3>
+              <div className="grid sm:grid-cols-3 gap-3 text-sm">
+                <div className="sm:col-span-3">
+                  <div className="text-xs uppercase tracking-wider font-bold text-gray-500">Address</div>
+                  <div className="text-gray-900 mt-0.5">{data.citizen?.address || "—"}</div>
+                </div>
+                {issue.gps_lat && (
+                  <>
+                    <div>
+                      <div className="text-xs uppercase tracking-wider font-bold text-gray-500">Latitude</div>
+                      <div className="font-mono text-gray-900 mt-0.5" data-testid="issue-lat">{issue.gps_lat.toFixed(6)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-wider font-bold text-gray-500">Longitude</div>
+                      <div className="font-mono text-gray-900 mt-0.5" data-testid="issue-lng">{issue.gps_lng.toFixed(6)}</div>
+                    </div>
+                    <div className="flex items-end">
+                      <a
+                        href={`https://www.openstreetmap.org/?mlat=${issue.gps_lat}&mlon=${issue.gps_lng}#map=17/${issue.gps_lat}/${issue.gps_lng}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs font-semibold text-[#0A1128] hover:underline"
+                        data-testid="open-map-link"
+                      >
+                        Open in OSM →
+                      </a>
+                    </div>
+                  </>
+                )}
+              </div>
+              {issue.gps_lat && (
+                <div className="mt-4 rounded-md overflow-hidden border border-gray-200" data-testid="map-preview">
+                  <iframe
+                    title="map"
+                    width="100%"
+                    height="260"
+                    frameBorder="0"
+                    src={`https://www.openstreetmap.org/export/embed.html?bbox=${issue.gps_lng - 0.005}%2C${issue.gps_lat - 0.003}%2C${issue.gps_lng + 0.005}%2C${issue.gps_lat + 0.003}&layer=mapnik&marker=${issue.gps_lat}%2C${issue.gps_lng}`}
+                  />
+                </div>
+              )}
             </Card>
           )}
 
@@ -183,6 +229,59 @@ export default function IssueDetail() {
             {issue.remarks && <Row label="Remarks" value={issue.remarks} />}
           </Card>
 
+          {canAssign && issue.status === "Reassignment Requested" && issue.reassignment_request && (
+            <Card>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="pill pill-pending">Pending review</span>
+                <h3 className="font-heading font-semibold text-gray-900">Reassignment request</h3>
+              </div>
+              <p className="text-sm text-gray-600">
+                <strong>{issue.reassignment_request.requested_by_name}</strong> requested reassignment.
+              </p>
+              {issue.reassignment_request.reason && (
+                <p className="text-sm text-gray-700 mt-2 italic">"{issue.reassignment_request.reason}"</p>
+              )}
+              <Label className="text-xs font-bold uppercase tracking-[0.1em] text-gray-500 mt-4 block">Reassign to (choose new worker)</Label>
+              <Select value={assignTo} onValueChange={setAssignTo}>
+                <SelectTrigger className="mt-2" data-testid="reassign-select"><SelectValue placeholder="Choose worker" /></SelectTrigger>
+                <SelectContent>
+                  {workers.filter((w) => w.id !== issue.assigned_to).map((w) => <SelectItem key={w.id} value={w.id}>{w.name} · {w.designation}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <div className="flex gap-2 mt-3">
+                <Button
+                  className="bg-[#10B981] hover:bg-[#10B981]/90 text-white"
+                  data-testid="approve-reassign-btn"
+                  onClick={async () => {
+                    if (!assignTo) return toast.error("Choose a worker");
+                    try {
+                      await api.post(`/issues/${id}/approve-reassign`, null, { params: { new_worker_id: assignTo } });
+                      toast.success("Reassigned");
+                      setAssignTo("");
+                      load();
+                    } catch { toast.error("Failed"); }
+                  }}
+                >
+                  Approve & reassign
+                </Button>
+                <Button
+                  variant="outline"
+                  data-testid="reject-reassign-btn"
+                  onClick={async () => {
+                    const n = window.prompt("Note for rejection (optional)") || "";
+                    try {
+                      await api.post(`/issues/${id}/reject-reassign`, null, { params: { note: n } });
+                      toast.success("Reassignment rejected");
+                      load();
+                    } catch { toast.error("Failed"); }
+                  }}
+                >
+                  Reject
+                </Button>
+              </div>
+            </Card>
+          )}
+
           {isMLA && (
             <Card>
               <h3 className="font-heading font-semibold text-gray-900 mb-2">MLA view (read-only)</h3>
@@ -216,7 +315,7 @@ export default function IssueDetail() {
               </Select>
               <Textarea placeholder="Notes / progress (optional)" className="mt-3" value={note} onChange={(e) => setNote(e.target.value)} data-testid="status-note" />
               <Button className="w-full mt-3 bg-[#0A1128] hover:bg-[#0A1128]/90 text-white" onClick={updateStatus} data-testid="update-status-btn">Update</Button>
-              {isAssignee && (
+              {isAssignee && issue.status !== "Reassignment Requested" && (
                 <Button
                   variant="outline"
                   className="w-full mt-2"
@@ -225,7 +324,7 @@ export default function IssueDetail() {
                     const reason = window.prompt("Reason for reassignment?") || "";
                     try {
                       await api.post(`/issues/${id}/request-reassign`, null, { params: { reason } });
-                      toast.success("Reassignment requested");
+                      toast.success("Reassignment requested — pending PA/admin review");
                       load();
                     } catch {
                       toast.error("Failed");
@@ -234,6 +333,11 @@ export default function IssueDetail() {
                 >
                   Request reassignment
                 </Button>
+              )}
+              {isAssignee && issue.status === "Reassignment Requested" && (
+                <p className="text-xs text-gray-500 mt-3 italic">
+                  Your reassignment request is pending PA/admin review. The issue remains assigned to you.
+                </p>
               )}
             </Card>
           )}
