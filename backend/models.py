@@ -39,6 +39,8 @@ class User(BaseModel):
     password_hash: Optional[str] = None
     gender: Optional[str] = None
     dob: Optional[str] = None
+    anniversary: Optional[str] = None
+    occupation: Optional[str] = None
     household_id: Optional[str] = None
     constituency_id: Optional[str] = None
     ward_id: Optional[str] = None
@@ -48,9 +50,75 @@ class User(BaseModel):
     region_type: Optional[Literal["urban", "rural"]] = None
     house_number: Optional[str] = None
     address: Optional[str] = None
-    designation: Optional[str] = None  # for worker/politician
+    designation: Optional[str] = None
+    profile_photo: Optional[str] = None
+    notes: Optional[str] = None
+    # Person master fields (long-term vision)
+    status: Literal["alive", "deceased"] = "alive"
+    date_of_death: Optional[str] = None
+    # Political CRM (long-term vision)
+    supporter_since: Optional[str] = None
+    political_role: Optional[str] = None  # Booth Worker / Volunteer / Coordinator / etc
+    influence_level: Optional[str] = None  # Low / Medium / High
+    political_notes: Optional[str] = None
+    family_lineage: List[dict] = []  # [{leader_name, era, since_year, notes}]
     is_active: bool = True
     created_at: str = Field(default_factory=now_iso)
+
+
+# ---------- Relationships (Family Graph) ----------
+RELATION_TYPES = [
+    "Father", "Mother", "Son", "Daughter", "Brother", "Sister",
+    "Husband", "Wife", "Grandfather", "Grandmother",
+    "Uncle", "Aunt", "Nephew", "Niece", "Cousin", "Other",
+]
+
+
+class Relationship(BaseModel):
+    """Edge in the family graph: person_a is `type` of person_b."""
+    id: str = Field(default_factory=new_id)
+    person_a: str
+    person_b: str
+    type: str  # one of RELATION_TYPES
+    since: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class RelationshipCreate(BaseModel):
+    person_a: str
+    person_b: str
+    type: str
+    since: Optional[str] = None
+    notes: Optional[str] = None
+
+
+# ---------- Service Interaction (long-term: extends beyond Issues) ----------
+class ServiceInteraction(BaseModel):
+    id: str = Field(default_factory=new_id)
+    person_id: str
+    household_id: Optional[str] = None
+    interaction_type: str  # Road Repair / Scheme Help / Medical / Meeting / Financial / etc
+    description: str
+    worker_id: Optional[str] = None
+    worker_name: Optional[str] = None
+    status: str = "Completed"
+    remarks: Optional[str] = None
+    photos: List[str] = []
+    occurred_at: str = Field(default_factory=now_iso)
+    created_at: str = Field(default_factory=now_iso)
+
+
+class ServiceInteractionCreate(BaseModel):
+    person_id: str
+    household_id: Optional[str] = None
+    interaction_type: str
+    description: str
+    worker_id: Optional[str] = None
+    status: str = "Completed"
+    remarks: Optional[str] = None
+    photos: List[str] = []
+    occurred_at: Optional[str] = None
 
 
 class CitizenRegister(BaseModel):

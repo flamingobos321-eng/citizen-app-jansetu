@@ -21,6 +21,8 @@ from models import (
     Issue, IssueCreate, IssueAssign, IssueUpdateStatus, IssueFeedback,
     Visit, VisitCreate, Notification, NotificationCreate,
     DevWork, DevWorkCreate,
+    Relationship, RelationshipCreate, RELATION_TYPES,
+    ServiceInteraction, ServiceInteractionCreate,
     ISSUE_CATEGORIES, ISSUE_STATUSES, DEV_STATUSES, VISIT_STATUSES,
     now_iso, new_id,
 )
@@ -789,6 +791,103 @@ async def report_csv(user: dict = Depends(require_roles("pa", "politician", "adm
             vals.append(v)
         lines.append(",".join(vals))
     return Response("\n".join(lines), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=issues.csv"})
+
+
+
+# ----------------- PERSON MASTER / FAMILY GRAPH / SERVICE HISTORY (long-term vision foundation) -----------------
+@api.get("/meta/relation-types")
+async def relation_types():
+    return {"relation_types": RELATION_TYPES}
+
+
+@api.get("/persons/{person_id}")
+async def person_profile(person_id: str, _: dict = Depends(get_current_user)):
+    person = await db.users.find_one({"id": person_id}, {"_id": 0, "password_hash": 0})
+    if not person:
+        raise HTTPException(404, "Person not found")
+    rels = await db.relationships.find({"$or": [{"person_a": person_id}, {"person_b": person_id}]}, {"_id": 0}).to_list(500)
+    other_ids = [r["person_b"] if r["person_a"] == person_id else r["person_a"] for r in rels]
+    others = {u["id"]: u async for u in db.users.find({"id": {"$in": other_ids}}, {"_id": 0, "password_hash": 0})}
+    for r in rels:
+        r["other"] = others.get(r["person_b"] if r["person_a"] == person_id else r["person_a"])
+    interactions = await db.interactions.find({"person_id": person_id}, {"_id": 0}).sort("occurred_at", -1).to_list(500)
+    issues = await db.issues.find({"citizen_id": person_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return {"person": person, "relationships": rels, "interactions": interactions, "issues": issues}
+
+
+@api.put("/persons/{person_id}")
+async def update_person(person_id: str, payload: dict, _: dict = Depends(require_roles("pa", "politician", "admin"))):
+    allowed = {"anniversary", "occupation", "profile_photo", "notes", "status", "date_of_death",
+               "supporter_since", "political_role", "influence_level", "political_notes", "family_lineage"}
+    update = {k: v for k, v in payload.items() if k in allowed}
+    if not update:
+        raise HTTPException(400, "No allowed fields")
+    await db.users.update_one({"id": person_id}, {"$set": update})
+    return await db.users.find_one({"id": person_id}, {"_id": 0, "password_hash": 0})
+
+
+@api.post("/relationships")
+async def create_relationship(payload: RelationshipCreate, _: dict = Depends(require_roles("pa", "admin"))):
+    if payload.type not in RELATION_TYPES:
+        raise HTTPException(400, "Invalid relation type")
+    if not await db.users.find_one({"id": payload.person_a}) or not await db.users.find_one({"id": payload.person_b}):
+        raise HTTPException(404, "Person not found")
+    r = Relationship(**payload.model_dump())
+    await db.relationships.insert_one(r.model_dump())
+    return r.model_dump()
+
+
+@api.delete("/relationships/{rel_id}")
+async def delete_relationship(rel_id: str, _: dict = Depends(require_roles("pa", "admin"))):
+    await db.relationships.delete_one({"id": rel_id})
+    return {"ok": True}
+
+
+@api.post("/interactions")
+async def create_interaction(payload: ServiceInteractionCreate, user: dict = Depends(require_roles("worker", "pa", "admin"))):
+    data = payload.model_dump()
+    if not data.get("occurred_at"):
+        data["occurred_at"] = now_iso()
+    if data.get("worker_id"):
+        w = await db.users.find_one({"id": data["worker_id"]})
+        if w:
+            data["worker_name"] = w["name"]
+    elif user["role"] == "worker":
+        data["worker_id"] = user["id"]
+        data["worker_name"] = user["name"]
+    interaction = ServiceInteraction(**data)
+    await db.interactions.insert_one(interaction.model_dump())
+    return interaction.model_dump()
+
+
+@api.get("/dashboard/celebrations")
+async def celebrations(days: int = 7, _: dict = Depends(require_roles("pa", "politician", "admin"))):
+    from datetime import date
+    today = date.today()
+    citizens = await db.users.find({"role": "citizen", "status": {"$ne": "deceased"}}, {"_id": 0, "password_hash": 0}).to_list(5000)
+
+    def _bucket(field):
+        out = {"today": [], "upcoming": []}
+        for c in citizens:
+            s = c.get(field)
+            if not s or len(s) < 10:
+                continue
+            md = s[5:10]
+            tmd = today.strftime("%m-%d")
+            if md == tmd:
+                out["today"].append(c)
+            else:
+                try:
+                    this_year_dt = datetime.strptime(f"{today.year}-{md}", "%Y-%m-%d").date()
+                    diff = (this_year_dt - today).days
+                    if 0 < diff <= days:
+                        out["upcoming"].append({**c, "in_days": diff})
+                except Exception:
+                    pass
+        return out
+
+    return {"birthdays": _bucket("dob"), "anniversaries": _bucket("anniversary")}
+
 
 
 # ----------------- SEED -----------------
