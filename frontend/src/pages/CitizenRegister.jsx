@@ -18,6 +18,8 @@ export default function CitizenRegister() {
   const navigate = useNavigate();
   const { loginWithToken } = useAuth();
   const presetMobile = loc.state?.mobile || "";
+  const tenantSlug = loc.state?.tenant_slug || null;
+  const portal = loc.state?.portal || null;
 
   const [areas, setAreas] = useState([]);
   const [form, setForm] = useState({
@@ -48,7 +50,8 @@ export default function CitizenRegister() {
     }
     setLoading(true);
     try {
-      const r = await api.post("/auth/citizen/register", form);
+      const payload = { ...form, tenant_slug: tenantSlug || undefined };
+      const r = await api.post("/auth/citizen/register", payload);
       loginWithToken(r.data.token, r.data.user);
       toast.success(`Welcome! Household ${r.data.household.household_code} created.`);
       navigate("/app");
@@ -65,10 +68,15 @@ export default function CitizenRegister() {
   return (
     <div className="min-h-screen bg-[#F9FAFB] py-10 px-4">
       <div className="max-w-2xl mx-auto">
-        <Link to="/citizen/login" className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-6" data-testid="back-login">
+        <Link to={tenantSlug ? `/citizen/login?portal=${tenantSlug}` : "/citizen/login"} className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-6" data-testid="back-login">
           <ArrowLeft size={16} /> Back
         </Link>
         <div className="bg-white border border-gray-200 rounded-lg p-8">
+          {portal && (
+            <div className="flex items-center gap-2 mb-4 text-xs text-gray-500" data-testid="reg-portal-context">
+              Registering in <span className="font-semibold" style={{ color: portal.theme_color || "#0A1128" }}>{portal.constituency_name || portal.politician_name}</span>
+            </div>
+          )}
           <h1 className="font-heading text-3xl font-bold text-gray-900 tracking-tight">Complete your registration</h1>
           <p className="text-sm text-gray-500 mt-1.5">We'll create a household record for your address.</p>
 

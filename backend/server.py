@@ -15,7 +15,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from models import (
-    CitizenOTPRequest, CitizenOTPVerify, StaffLogin,
+    CitizenOTPRequest, CitizenOTPVerify, StaffLogin, ChangePassword,
     CitizenRegister, StaffCreate, User,
     Constituency, Area, AreaCreate, Household,
     Issue, IssueCreate, IssueAssign, IssueUpdateStatus, IssueFeedback,
@@ -230,6 +230,8 @@ async def on_start():
         await _approve_demo_content()
     # Multi-tenant foundation migration (idempotent)
     await _migrate_to_multi_tenant()
+    # Counter sync runs every startup (idempotent, only raises counters):
+    await _sync_tenant_counters()
 
 
 async def _migrate_to_multi_tenant():
@@ -328,6 +330,11 @@ async def _migrate_to_multi_tenant():
             await db.counters.insert_one({"_id": new_id, "seq": counter.get("seq", 0)})
         await db.counters.delete_one({"_id": old_id})
 
+    # Step 5b: Per-tenant counter sync — ensure each tenant's counter is at
+    # least max(existing_code) so newly generated codes don't collide with
+    # pre-seeded records.
+    await _sync_tenant_counters()
+
     # Step 6: Stamp version
     await db.system_meta.update_one(
         {"_id": "multi_tenant"},
@@ -380,6 +387,40 @@ async def _approve_demo_content():
     logger.info(f"Approved demo content: devworks={r1.modified_count}, visits={r2.modified_count}")
 
 
+async def _sync_tenant_counters():
+    """For each tenant, set counter['{tid}:issue'].seq = max(existing ISS code number)
+    and same for household. This prevents code collisions when previously-seeded
+    records exist before the counter sequence catches up.
+    Idempotent — never lowers a counter, only raises it.
+    """
+    import re as _re
+    code_pat = _re.compile(r"\d+")
+    async for portal in db.portal_configs.find({}, {"id": 1}):
+        tid = portal["id"]
+        # Issues
+        max_iss = 0
+        async for doc in db.issues.find({"tenant_id": tid}, {"issue_code": 1}):
+            m = code_pat.search(doc.get("issue_code", ""))
+            if m:
+                max_iss = max(max_iss, int(m.group()))
+        if max_iss > 0:
+            target = max_iss - 10000  # codes are "ISS-10001" → seq=1
+            existing = await db.counters.find_one({"_id": f"{tid}:issue"}) or {"seq": 0}
+            if target > existing.get("seq", 0):
+                await db.counters.update_one({"_id": f"{tid}:issue"}, {"$set": {"seq": target}}, upsert=True)
+        # Households
+        max_hh = 0
+        async for doc in db.households.find({"tenant_id": tid}, {"household_code": 1}):
+            m = code_pat.search(doc.get("household_code", ""))
+            if m:
+                max_hh = max(max_hh, int(m.group()))
+        if max_hh > 0:
+            target = max_hh - 10000
+            existing = await db.counters.find_one({"_id": f"{tid}:household"}) or {"seq": 0}
+            if target > existing.get("seq", 0):
+                await db.counters.update_one({"_id": f"{tid}:household"}, {"$set": {"seq": target}}, upsert=True)
+
+
 # ----------------- Health -----------------
 @api.get("/")
 async def root():
@@ -391,13 +432,25 @@ async def meta_cats():
     return {"issue_categories": ISSUE_CATEGORIES, "issue_statuses": ISSUE_STATUSES, "dev_statuses": DEV_STATUSES, "visit_statuses": VISIT_STATUSES}
 
 
+async def _resolve_tenant_id(slug: Optional[str]) -> Optional[str]:
+    """Resolve a portal slug to its tenant_id. Returns None if no slug provided."""
+    if not slug:
+        return None
+    portal = await db.portal_configs.find_one({"slug": slug.strip().lower(), "is_active": True}, {"id": 1, "portal_status": 1})
+    if not portal:
+        raise HTTPException(404, "Portal not found")
+    if portal.get("portal_status") == "suspended":
+        raise HTTPException(403, "Portal is currently suspended")
+    return portal["id"]
+
+
 # ----------------- AUTH -----------------
 @api.post("/auth/citizen/request-otp")
 async def request_otp(payload: CitizenOTPRequest):
-    # Mock OTP — store last issued mobile (any 6 digits will work)
+    await _resolve_tenant_id(payload.tenant_slug)  # validates slug if provided
     await db.otps.update_one(
-        {"mobile": payload.mobile},
-        {"$set": {"mobile": payload.mobile, "otp": "123456", "at": now_iso()}},
+        {"mobile": payload.mobile, "tenant_slug": payload.tenant_slug},
+        {"$set": {"mobile": payload.mobile, "tenant_slug": payload.tenant_slug, "otp": "123456", "at": now_iso()}},
         upsert=True,
     )
     return {"sent": True, "demo_otp": "123456"}
@@ -407,23 +460,29 @@ async def request_otp(payload: CitizenOTPRequest):
 async def verify_otp(payload: CitizenOTPVerify):
     if payload.otp != "123456" and len(payload.otp) != 6:
         raise HTTPException(400, "Invalid OTP")
-    user = await db.users.find_one({"mobile": payload.mobile, "role": "citizen"}, {"_id": 0, "password_hash": 0})
+    tid = await _resolve_tenant_id(payload.tenant_slug)
+    q = {"mobile": payload.mobile, "role": "citizen"}
+    if tid:
+        q["tenant_id"] = tid
+    user = await db.users.find_one(q, {"_id": 0, "password_hash": 0})
     if not user:
-        # Return a flag to register
-        return {"new_user": True, "mobile": payload.mobile}
+        return {"new_user": True, "mobile": payload.mobile, "tenant_id": tid}
     token = create_token(user["id"], "citizen", user.get("tenant_id"))
     return {"token": token, "user": user, "new_user": False}
 
 
 @api.post("/auth/citizen/register")
 async def citizen_register(payload: CitizenRegister):
-    if await db.users.find_one({"mobile": payload.mobile, "role": "citizen"}):
-        raise HTTPException(400, "Mobile already registered")
+    tid = await _resolve_tenant_id(getattr(payload, "tenant_slug", None))
+    if not tid:
+        raise HTTPException(400, "Portal context required for registration")
+    # Per-tenant mobile uniqueness (rule 6)
+    if await db.users.find_one({"mobile": payload.mobile, "role": "citizen", "tenant_id": tid}):
+        raise HTTPException(400, "Mobile already registered in this constituency")
 
-    # Try to link to an existing household at same address (urban) — match by house_number + ward/village
     existing_hh = None
     if payload.house_number:
-        hh_query = {"house_number": payload.house_number}
+        hh_query = {"house_number": payload.house_number, "tenant_id": tid}
         if payload.ward_id:
             hh_query["ward_id"] = payload.ward_id
         if payload.village_id:
@@ -434,9 +493,10 @@ async def citizen_register(payload: CitizenRegister):
         await db.households.update_one({"id": existing_hh["id"]}, {"$inc": {"members_count": 1}})
         hh_id = existing_hh["id"]
     else:
-        hh_seq = await next_seq("household")
+        hh_seq = await next_seq("household", tid)
         hh_code = f"H-{10000 + hh_seq}"
         hh = Household(
+            tenant_id=tid,
             household_code=hh_code,
             family_head_name=payload.family_head_name or payload.name,
             address=payload.address,
@@ -452,6 +512,7 @@ async def citizen_register(payload: CitizenRegister):
 
     user = User(
         role="citizen",
+        tenant_id=tid,
         name=payload.name,
         mobile=payload.mobile,
         gender=payload.gender,
@@ -472,7 +533,11 @@ async def citizen_register(payload: CitizenRegister):
 
 @api.post("/auth/staff/login")
 async def staff_login(payload: StaffLogin):
-    user = await db.users.find_one({"email": payload.email, "role": {"$ne": "citizen"}})
+    tid = await _resolve_tenant_id(payload.tenant_slug)
+    q = {"email": payload.email.strip().lower(), "role": {"$ne": "citizen"}}
+    if tid:
+        q["tenant_id"] = tid
+    user = await db.users.find_one(q)
     if not user or not verify_password(payload.password, user.get("password_hash", "")):
         raise HTTPException(401, "Invalid credentials")
     user.pop("_id", None)
@@ -484,6 +549,50 @@ async def staff_login(payload: StaffLogin):
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     return user
+
+
+@api.post("/auth/change-password")
+async def change_password(payload: ChangePassword, user: dict = Depends(get_current_user)):
+    full = await db.users.find_one({"id": user["id"]})
+    if not full or not verify_password(payload.current_password, full.get("password_hash", "")):
+        raise HTTPException(400, "Current password is incorrect")
+    if len(payload.new_password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"password_hash": hash_password(payload.new_password), "must_change_password": False}},
+    )
+    return {"ok": True}
+
+
+@api.get("/tenant/setup")
+async def get_setup_progress(user: dict = Depends(require_roles("admin"))):
+    tid = get_tenant_id_for_write(user)
+    portal = await db.portal_configs.find_one({"id": tid}, {"_id": 0})
+    if not portal:
+        raise HTTPException(404, "Portal not found")
+    return {"setup_progress": portal.get("setup_progress", {}), "setup_completed": portal.get("setup_completed", False), "portal": portal}
+
+
+@api.post("/tenant/setup/step")
+async def update_setup_step(payload: dict, user: dict = Depends(require_roles("admin"))):
+    tid = get_tenant_id_for_write(user)
+    step = payload.get("step")
+    done = bool(payload.get("done", True))
+    if step not in ("branding", "constituency", "pa", "workers", "areas", "citizens"):
+        raise HTTPException(400, "Invalid step")
+    await db.portal_configs.update_one(
+        {"id": tid},
+        {"$set": {f"setup_progress.{step}": done, "updated_at": now_iso()}},
+    )
+    portal = await db.portal_configs.find_one({"id": tid}, {"_id": 0})
+    # If all required steps done, mark setup_completed
+    required = ["branding", "pa", "workers", "areas"]
+    progress = portal.get("setup_progress", {})
+    if all(progress.get(s) for s in required):
+        await db.portal_configs.update_one({"id": tid}, {"$set": {"setup_completed": True}})
+        portal["setup_completed"] = True
+    return {"setup_progress": portal.get("setup_progress", {}), "setup_completed": portal.get("setup_completed", False)}
 
 
 # ----------------- USERS / STAFF -----------------
@@ -1309,12 +1418,22 @@ async def portal_notifications(slug: str, limit: int = 5):
 
 # --- Admin write endpoints ---
 @api.get("/admin/portals")
-async def list_portals_admin(_: dict = Depends(require_roles("admin"))):
-    return await db.portal_configs.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+async def list_portals_admin(user: dict = Depends(get_current_user)):
+    if user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(403, "Forbidden")
+    # Tenant admin sees only their own portal; super_admin sees all.
+    q = {} if user.get("role") == "super_admin" else {"id": user.get("tenant_id")}
+    return await db.portal_configs.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+def _generate_password(n: int = 12) -> str:
+    import secrets, string
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
 @api.post("/admin/portals")
-async def create_portal(payload: PortalConfigCreate, _: dict = Depends(require_roles("admin"))):
+async def create_portal(payload: PortalConfigCreate, user: dict = Depends(require_roles("super_admin"))):
     slug = _normalize_slug(payload.slug)
     if not slug:
         raise HTTPException(400, "Invalid slug")
@@ -1322,12 +1441,66 @@ async def create_portal(payload: PortalConfigCreate, _: dict = Depends(require_r
         raise HTTPException(409, "Slug already exists")
     data = payload.model_dump()
     data["slug"] = slug
+    # Default trial: 14-day trial, on trial plan, active.
+    from datetime import date, timedelta
+    today = date.today()
+    if not data.get("subscription_start"):
+        data["subscription_start"] = today.isoformat()
+    if not data.get("trial_expiry"):
+        data["trial_expiry"] = (today + timedelta(days=14)).isoformat()
     cfg = PortalConfig(**data)
     if cfg.is_default:
-        # ensure only one default
         await db.portal_configs.update_many({}, {"$set": {"is_default": False}})
     await db.portal_configs.insert_one(cfg.model_dump())
-    return cfg.model_dump()
+
+    # Auto-provision tenant admin user with a temp password.
+    admin_email = (payload.primary_admin_email or f"admin@{slug}.jansetu.in").strip().lower()
+    admin_name = payload.primary_admin_name or f"Admin - {cfg.constituency_name}"
+    temp_password = _generate_password(12)
+    admin_user = User(
+        role="admin",
+        tenant_id=cfg.id,
+        name=admin_name,
+        email=admin_email,
+        password_hash=hash_password(temp_password),
+        must_change_password=True,
+    )
+    await db.users.insert_one(admin_user.model_dump())
+    await db.portal_configs.update_one(
+        {"id": cfg.id},
+        {"$set": {"primary_admin_email": admin_email, "primary_admin_user_id": admin_user.id, "updated_at": now_iso()}},
+    )
+    # Return creds in the response ONCE — UI must show them in a copy/print modal and never persist them.
+    return {
+        "portal": {**cfg.model_dump(), "primary_admin_email": admin_email, "primary_admin_user_id": admin_user.id},
+        "credentials": {
+            "tenant_admin_email": admin_email,
+            "tenant_admin_name": admin_name,
+            "temp_password": temp_password,
+            "must_change_password": True,
+        },
+        "urls": {
+            "portal_url": f"/portal/{slug}",
+            "staff_login_url": f"/staff/login?portal={slug}",
+            "citizen_portal_url": f"/portal/{slug}",
+        },
+    }
+
+
+@api.post("/admin/portals/{portal_id}/reset-admin-password")
+async def reset_admin_password(portal_id: str, user: dict = Depends(require_roles("super_admin"))):
+    portal = await db.portal_configs.find_one({"id": portal_id})
+    if not portal:
+        raise HTTPException(404, "Portal not found")
+    admin_id = portal.get("primary_admin_user_id")
+    if not admin_id:
+        raise HTTPException(404, "Tenant admin not configured for this portal")
+    temp_password = _generate_password(12)
+    await db.users.update_one(
+        {"id": admin_id},
+        {"$set": {"password_hash": hash_password(temp_password), "must_change_password": True}},
+    )
+    return {"tenant_admin_email": portal.get("primary_admin_email"), "temp_password": temp_password}
 
 
 @api.put("/admin/portals/{portal_id}")

@@ -16,16 +16,24 @@ def new_id():
 # ---------- Auth ----------
 class CitizenOTPRequest(BaseModel):
     mobile: str
+    tenant_slug: Optional[str] = None  # determined from portal URL
 
 
 class CitizenOTPVerify(BaseModel):
     mobile: str
     otp: str
+    tenant_slug: Optional[str] = None
 
 
 class StaffLogin(BaseModel):
     email: str
     password: str
+    tenant_slug: Optional[str] = None  # None means platform super_admin / fallback
+
+
+class ChangePassword(BaseModel):
+    current_password: str
+    new_password: str
 
 
 # ---------- Users ----------
@@ -52,6 +60,7 @@ class User(BaseModel):
     house_number: Optional[str] = None
     address: Optional[str] = None
     designation: Optional[str] = None
+    must_change_password: bool = False  # forces first-login password change for auto-provisioned admins
     profile_photo: Optional[str] = None
     notes: Optional[str] = None
     # Person master fields (long-term vision)
@@ -167,6 +176,7 @@ class CitizenRegister(BaseModel):
     address: str
     family_head_name: Optional[str] = None
     members_count: int = 1
+    tenant_slug: Optional[str] = None  # required for multi-tenant registration
 
 
 class StaffCreate(BaseModel):
@@ -452,6 +462,10 @@ class PortalConfig(BaseModel):
     # Integrations (per-tenant, stored as dicts to stay schema-flexible)
     whatsapp_config: dict = {}    # {provider, api_key, sender, webhook}
     sms_config: dict = {}         # {provider, api_key, sender_id}
+
+    # Setup wizard progress for tenant admin first-time setup
+    setup_progress: dict = {}     # {branding, constituency, pa, workers, areas, citizens}
+    setup_completed: bool = False
 
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)

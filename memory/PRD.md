@@ -58,8 +58,31 @@ Endpoint `GET /api/dashboard/celebrations?days=7` returns today's + upcoming bir
 - **Phase 5**: MLA Approval Inbox; PDF/Excel exports; Real SMS OTP (Twilio); Firebase Push
 
 ## Next Action Items
-1. MLA Approval Inbox widget (next session)
-2. PDF + Excel report exports
-3. Twilio SMS OTP integration
-4. Firebase Cloud Messaging
-5. Phase-2 UI: Person profile + Family graph editor
+1. **(Open) M3** — Server-side guards for issue assignment & status workflow (P1)
+2. **(Open) M2** — Notification composer ward/village targeting in UI (P1)
+3. **(Open) M4** — Citizen feedback state guard (P2)
+4. **(Open) M6** — Celebrations endpoint projection optimization (P2)
+5. **(Backlog) C2** — Real Twilio OTP (currently mocked, accepts any 6 digits) (P1, deferred)
+6. **(Backlog) Setup Wizard UI** — Tenant Admin first-login wizard (backend endpoints `/tenant/setup` already live; user opted to skip for now and access from dashboard)
+7. **(Tech debt) Super admin DELETE portal** — returns 403; require_roles("admin") should also accept super_admin for portal CRUD
+
+## Multi-Tenant Phase 3 — COMPLETED (Feb 2026)
+### Backend (previously delivered)
+- `POST /admin/portals` auto-provisions tenant admin with temp password, returns credentials once
+- `POST /admin/portals/{id}/reset-admin-password` regenerates temp password
+- `/auth/staff/login`, `/auth/citizen/request-otp`, `/auth/citizen/verify-otp`, `/auth/citizen/register` accept optional `tenant_slug`
+- `POST /auth/change-password` for forced first-login password change
+- Per-tenant counters with idempotent startup sync
+- `must_change_password` flag on User model
+
+### Frontend (delivered this session)
+- **AdminPortals.jsx**: `ProvisionedDialog` shows tenant admin email, temp password, staff login URL, citizen portal URL after portal creation. Each row has a "Reset Admin" button that opens the same dialog. Optional `primary_admin_email` / `primary_admin_name` inputs in the create form.
+- **StaffLogin.jsx**: Auto-detects `?portal=<slug>`, fetches `/api/portals/{slug}` for branding, applies logo/theme color/politician name. Sends `tenant_slug` in login payload. Hides demo accounts under portal context. Redirects to `/app/change-password` when `must_change_password=true`.
+- **CitizenLogin.jsx**: Same branding logic; passes `tenant_slug` in OTP request/verify; carries `tenant_slug` + portal context into CitizenRegister via location state.
+- **CitizenRegister.jsx**: Renders portal context banner; sends `tenant_slug` in registration payload.
+- **ChangePassword.jsx** (new): Forced password-change page wired into `Guard` / `TenantGuard` redirect when `must_change_password=true`. Calls `POST /auth/change-password`, refreshes `/auth/me`, navigates back to `/app`.
+- **App.js**: New `/app/change-password` route, `ChangePasswordGuard`, redirect logic in both Guard and TenantGuard.
+
+### Setup Wizard
+Per user direction (Feb 2026), the multi-step setup wizard was descoped. Only the **forced password change** on first login is enforced. Branding / wards / staff are configured from the standard dashboard after login.
+

@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { Toaster } from "./components/ui/sonner";
 
@@ -28,20 +28,30 @@ import Celebrations from "./pages/Celebrations";
 import PersonProfile from "./pages/PersonProfile";
 import PortalIndex from "./portal/PortalIndex";
 import PortalHome from "./portal/PortalHome";
+import ChangePassword from "./pages/ChangePassword";
 
 function Guard({ children }) {
   const { user, loading } = useAuth();
+  const loc = useLocation();
   if (loading) return <div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loading…</div>;
   if (!user) return <Navigate to="/" replace />;
+  // Force password change for auto-provisioned admins on first login.
+  if (user.must_change_password && loc.pathname !== "/app/change-password") {
+    return <Navigate to="/app/change-password" replace />;
+  }
   return <Layout>{children}</Layout>;
 }
 
 // Super admin should never see tenant-scoped pages. Redirect them to platform home.
 function TenantGuard({ children }) {
   const { user, loading } = useAuth();
+  const loc = useLocation();
   if (loading) return <div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loading…</div>;
   if (!user) return <Navigate to="/" replace />;
   if (user.role === "super_admin") return <Navigate to="/app/platform" replace />;
+  if (user.must_change_password && loc.pathname !== "/app/change-password") {
+    return <Navigate to="/app/change-password" replace />;
+  }
   return <Layout>{children}</Layout>;
 }
 
@@ -52,6 +62,14 @@ function SuperGuard({ children }) {
   if (!user) return <Navigate to="/" replace />;
   if (user.role !== "super_admin") return <Navigate to="/app" replace />;
   return <Layout>{children}</Layout>;
+}
+
+// Standalone change-password page — does NOT use Layout (force first-login flow).
+function ChangePasswordGuard() {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loading…</div>;
+  if (!user) return <Navigate to="/" replace />;
+  return <ChangePassword />;
 }
 
 function HomeRoute() {
@@ -76,6 +94,7 @@ export default function App() {
           <Route path="/staff/login" element={<StaffLogin />} />
 
           <Route path="/app" element={<Guard><HomeRoute /></Guard>} />
+          <Route path="/app/change-password" element={<ChangePasswordGuard />} />
           <Route path="/app/platform" element={<SuperGuard><SuperAdminDashboard /></SuperGuard>} />
           <Route path="/app/subscriptions" element={<SuperGuard><SuperSubscriptions /></SuperGuard>} />
           <Route path="/app/trials" element={<SuperGuard><SuperTrials /></SuperGuard>} />

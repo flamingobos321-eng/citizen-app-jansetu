@@ -7,7 +7,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { toast } from "sonner";
-import { Plus, Globe, Pencil, Trash2, Star, X, ExternalLink, Upload, Pause, Play, Timer, CreditCard } from "lucide-react";
+import { Plus, Globe, Pencil, Trash2, Star, X, ExternalLink, Upload, Pause, Play, Timer, CreditCard, Copy, CheckCircle2, KeyRound } from "lucide-react";
 
 const empty = {
   slug: "",
@@ -27,12 +27,15 @@ const empty = {
   contact_address: "",
   office_hours: "",
   social_links: { facebook: "", twitter: "", instagram: "", youtube: "", whatsapp: "" },
+  primary_admin_email: "",
+  primary_admin_name: "",
 };
 
 export default function AdminPortals() {
   const { user } = useAuth();
   const [list, setList] = useState([]);
   const [editing, setEditing] = useState(null);
+  const [provisioned, setProvisioned] = useState(null); // { portal, credentials, urls }
 
   const load = () => api.get("/admin/portals").then((r) => setList(r.data || []));
   useEffect(() => { load(); }, []);
@@ -75,6 +78,21 @@ export default function AdminPortals() {
       await api.delete(`/admin/portals/${p.id}`);
       toast.success("Portal disabled");
       load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed");
+    }
+  };
+  const resetAdminPassword = async (p) => {
+    if (!window.confirm(`Reset the tenant admin password for "${p.constituency_name}"? The current password will stop working immediately.`)) return;
+    try {
+      const r = await api.post(`/admin/portals/${p.id}/reset-admin-password`);
+      setProvisioned({
+        portal: p,
+        credentials: { tenant_admin_email: r.data.tenant_admin_email, temp_password: r.data.temp_password, must_change_password: true },
+        urls: { portal_url: `/portal/${p.slug}`, staff_login_url: `/staff/login?portal=${p.slug}`, citizen_portal_url: `/portal/${p.slug}` },
+        title: "Password Reset",
+        intro: "A new temporary password has been generated. Share it securely with the tenant admin — it will not be shown again.",
+      });
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed");
     }
@@ -142,6 +160,11 @@ export default function AdminPortals() {
                   <Pencil size={12} /> Edit
                 </button>
                 {p.is_active && (
+                  <button onClick={() => resetAdminPassword(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-blue-200 text-blue-700 hover:bg-blue-50" data-testid={`portal-reset-pwd-${p.slug}`}>
+                    <KeyRound size={12} /> Reset Admin
+                  </button>
+                )}
+                {p.is_active && (
                   <button onClick={() => deletePortal(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-red-200 text-red-700 hover:bg-red-50" data-testid={`portal-delete-${p.slug}`}>
                     <Trash2 size={12} /> Disable
                   </button>
@@ -157,8 +180,17 @@ export default function AdminPortals() {
         <EditDialog
           initial={editing}
           onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); load(); }}
+          onSaved={(result) => {
+            setEditing(null);
+            load();
+            if (result && result.credentials) {
+              setProvisioned({ ...result, title: "Portal Created", intro: "Your client portal is live. Share these credentials securely — the temporary password will not be shown again." });
+            }
+          }}
         />
+      )}
+      {provisioned && (
+        <ProvisionedDialog data={provisioned} onClose={() => setProvisioned(null)} />
       )}
     </div>
   );
@@ -219,13 +251,14 @@ function EditDialog({ initial, onClose, onSaved }) {
       const trimmed = Object.fromEntries(required.map((r) => [r.key, String(form[r.key] ?? "").trim()]));
       const payload = { ...form, ...trimmed, social_links: social };
       if (isNew) {
-        await api.post("/admin/portals", payload);
+        const r = await api.post("/admin/portals", payload);
         toast.success("Portal created");
+        onSaved(r.data);
       } else {
         await api.put(`/admin/portals/${form.id}`, payload);
         toast.success("Portal updated");
+        onSaved(null);
       }
-      onSaved();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed");
     } finally {
@@ -313,6 +346,29 @@ function EditDialog({ initial, onClose, onSaved }) {
             </div>
           </F>
 
+          {isNew && (
+            <div className="sm:col-span-2">
+              <Label className="text-xs uppercase tracking-wider font-bold text-gray-500">Tenant Admin (auto-provisioned on create)</Label>
+              <div className="grid sm:grid-cols-2 gap-2 mt-2">
+                <Input
+                  data-testid="portal-admin-email"
+                  value={form.primary_admin_email || ""}
+                  onChange={(e) => set("primary_admin_email", e.target.value)}
+                  placeholder={`admin@${form.slug || "<slug>"}.jansetu.in`}
+                />
+                <Input
+                  data-testid="portal-admin-name"
+                  value={form.primary_admin_name || ""}
+                  onChange={(e) => set("primary_admin_name", e.target.value)}
+                  placeholder={`Admin - ${form.constituency_name || "<constituency>"}`}
+                />
+              </div>
+              <div className="text-[11px] text-gray-400 mt-1">
+                Leave blank to auto-generate. A temporary password will be displayed once after creation.
+              </div>
+            </div>
+          )}
+
           <div className="sm:col-span-2">
             <Label className="text-xs uppercase tracking-wider font-bold text-gray-500">Social Links (optional)</Label>
             <div className="grid sm:grid-cols-2 gap-2 mt-2">
@@ -348,3 +404,99 @@ const F = ({ label, required, hint, children }) => (
     {hint && <div className="text-[11px] text-gray-400 mt-1">{hint}</div>}
   </div>
 );
+
+function ProvisionedDialog({ data, onClose }) {
+  const { portal, credentials, urls, title, intro } = data;
+  const [copied, setCopied] = useState("");
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const fullPortal = `${origin}${urls?.portal_url || ""}`;
+  const fullStaff = `${origin}${urls?.staff_login_url || ""}`;
+  const copy = (key, text) => {
+    try {
+      navigator.clipboard.writeText(text);
+      setCopied(key);
+      toast.success("Copied");
+      setTimeout(() => setCopied(""), 1500);
+    } catch (e) {
+      toast.error("Copy failed");
+    }
+  };
+  const copyAll = () => {
+    const block = [
+      `Portal: ${portal?.constituency_name || portal?.politician_name || ""}`,
+      `Admin email: ${credentials?.tenant_admin_email || ""}`,
+      `Temporary password: ${credentials?.temp_password || ""}`,
+      `Staff login URL: ${fullStaff}`,
+      `Citizen portal URL: ${fullPortal}`,
+      ``,
+      `Note: The admin must change this temporary password on first login.`,
+    ].join("\n");
+    copy("all", block);
+  };
+  return createPortal(
+    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg max-w-lg w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()} data-testid="portal-provisioned-dialog">
+        <div className="flex items-start justify-between p-5 border-b border-gray-100 shrink-0">
+          <div className="flex items-start gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-md bg-green-100 text-green-700 flex items-center justify-center shrink-0">
+              <CheckCircle2 size={20} />
+            </div>
+            <div className="min-w-0">
+              <h3 className="font-heading text-lg font-bold text-gray-900">{title || "Portal Created"}</h3>
+              <p className="text-xs text-gray-500 mt-0.5">{intro}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100 shrink-0" aria-label="Close"><X size={18} /></button>
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-3">
+          <CredRow label="Tenant" value={portal?.constituency_name || portal?.politician_name || portal?.slug} />
+          <CredRow label="Admin email" value={credentials?.tenant_admin_email} onCopy={() => copy("email", credentials?.tenant_admin_email)} copied={copied === "email"} testId="prov-email" />
+          <CredRow label="Temporary password" value={credentials?.temp_password} mono onCopy={() => copy("pwd", credentials?.temp_password)} copied={copied === "pwd"} testId="prov-pwd" />
+          <CredRow label="Staff login URL" value={fullStaff} onCopy={() => copy("staff", fullStaff)} copied={copied === "staff"} testId="prov-staff-url" />
+          <CredRow label="Citizen portal URL" value={fullPortal} onCopy={() => copy("portal", fullPortal)} copied={copied === "portal"} testId="prov-portal-url" />
+
+          <div className="bg-amber-50 border border-amber-200 rounded-md p-3 text-xs text-amber-900">
+            <div className="font-semibold mb-1">Important</div>
+            <ul className="list-disc list-inside space-y-0.5">
+              <li>This temporary password is shown <span className="font-semibold">only once</span>.</li>
+              <li>The admin will be required to change it on first login.</li>
+              <li>If lost, use the <span className="font-semibold">Reset Admin</span> button on the portal row to issue a new one.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div className="flex justify-between gap-2 p-4 border-t border-gray-100 shrink-0 bg-white">
+          <button onClick={copyAll} className="inline-flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid="prov-copy-all">
+            <Copy size={12} /> {copied === "all" ? "Copied!" : "Copy all"}
+          </button>
+          <div className="flex gap-2">
+            <a href={fullStaff} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-3 py-2 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid="prov-open-staff">
+              <ExternalLink size={12} /> Open staff login
+            </a>
+            <button onClick={onClose} className="px-3 py-2 text-xs font-semibold rounded-md bg-[#0A1128] text-white hover:opacity-90" data-testid="prov-done">
+              Done
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function CredRow({ label, value, mono, onCopy, copied, testId }) {
+  return (
+    <div className="border border-gray-200 rounded-md p-3" data-testid={testId}>
+      <div className="text-[11px] uppercase tracking-wider font-bold text-gray-500">{label}</div>
+      <div className="mt-1 flex items-center gap-2">
+        <div className={`flex-1 min-w-0 truncate text-sm ${mono ? "font-mono" : ""} text-gray-900`}>{value || "—"}</div>
+        {onCopy && value && (
+          <button onClick={onCopy} className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded border border-gray-200 hover:bg-gray-50 shrink-0">
+            {copied ? <><CheckCircle2 size={11} className="text-green-600" /> Copied</> : <><Copy size={11} /> Copy</>}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
