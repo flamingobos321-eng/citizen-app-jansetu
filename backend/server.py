@@ -58,10 +58,11 @@ def verify_password(pw: str, hashed: str) -> bool:
         return False
 
 
-def create_token(user_id: str, role: str) -> str:
+def create_token(user_id: str, role: str, tenant_id: Optional[str] = None) -> str:
     payload = {
         "sub": user_id,
         "role": role,
+        "tid": tenant_id,
         "exp": datetime.now(timezone.utc) + timedelta(days=30),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
@@ -106,17 +107,43 @@ async def get_current_user_flexible(
 
 def require_roles(*roles):
     async def _dep(user: dict = Depends(get_current_user)):
-        if user["role"] not in roles:
+        # super_admin is treated as a superset of admin for backward compatibility.
+        # Phase 3 will tighten admin-only portal endpoints to require super_admin explicitly.
+        if user["role"] not in roles and not (user["role"] == "super_admin" and "admin" in roles):
             raise HTTPException(403, "Forbidden")
         return user
     return _dep
 
 
-STAFF_ROLES = ("worker", "pa", "politician", "admin")
+STAFF_ROLES = ("worker", "pa", "politician", "admin", "super_admin")
 
 
 def is_staff(user: dict) -> bool:
     return user.get("role") in STAFF_ROLES
+
+
+# ----------------- Multi-tenant helpers -----------------
+def get_tenant_id(user: dict) -> Optional[str]:
+    """Return the tenant_id the user belongs to. None means platform super_admin."""
+    return user.get("tenant_id")
+
+
+def tenant_filter(user: dict, extra_q: Optional[dict] = None) -> dict:
+    """Compose a Mongo query that scopes to the user's tenant.
+
+    Raises 403 for super_admin attempting to read tenant data (they should only
+    access tenant-management endpoints, never per-tenant collections).
+    NOTE: This helper is defined now (Phase 1) but will be applied to all
+    endpoints in Phase 2. Currently unused until cutover.
+    """
+    if user.get("role") == "super_admin":
+        raise HTTPException(403, "Super admin cannot access tenant data directly")
+    tid = user.get("tenant_id")
+    if not tid:
+        raise HTTPException(403, "User has no tenant")
+    q = dict(extra_q or {})
+    q["tenant_id"] = tid
+    return q
 
 
 async def can_access_file(user: dict, path: str) -> bool:
@@ -149,9 +176,14 @@ async def can_access_file(user: dict, path: str) -> bool:
 
 
 # ----------------- Code generation -----------------
-async def next_seq(name: str) -> int:
+async def next_seq(name: str, tenant_id: Optional[str] = None) -> int:
+    """Atomic counter. If tenant_id is provided, the counter is scoped per-tenant
+    (each tenant restarts ISS/H sequences from 1). Without tenant_id, behaves
+    legacy / global.
+    """
+    counter_id = f"{tenant_id}:{name}" if tenant_id else name
     res = await db.counters.find_one_and_update(
-        {"_id": name},
+        {"_id": counter_id},
         {"$inc": {"seq": 1}},
         upsert=True,
         return_document=True,
@@ -173,6 +205,106 @@ async def on_start():
     if await db.portal_configs.count_documents({}) == 0:
         await _ensure_default_portal()
         await _approve_demo_content()
+    # Multi-tenant foundation migration (idempotent)
+    await _migrate_to_multi_tenant()
+
+
+async def _migrate_to_multi_tenant():
+    """One-time multi-tenant migration. Idempotent. Records version in system_meta.
+
+    Steps:
+      1. Identify the default tenant (existing portal_configs with is_default=true).
+      2. Backfill tenant_id on every domain doc missing it.
+      3. Promote admin@jansetu.in to role=super_admin, tenant_id=null.
+      4. Ensure the default tenant has its own admin user (auto-provisioned with temp password).
+      5. Migrate global counters to tenant-prefixed keys.
+      6. Stamp version meta.
+    """
+    meta = await db.system_meta.find_one({"_id": "multi_tenant"})
+    if meta and meta.get("version", 0) >= 1:
+        return  # already migrated
+
+    default_tenant = await db.portal_configs.find_one({"is_default": True, "is_active": True})
+    if not default_tenant:
+        # No portal yet — nothing to migrate. The startup hook above seeds one
+        # before this runs, so this branch is defensive only.
+        logger.warning("Multi-tenant migration: no default portal — skipping")
+        return
+    default_tid = default_tenant["id"]
+
+    # Step 2: Backfill tenant_id on every domain collection
+    domain_collections = [
+        "users", "households", "issues", "visits", "notifications",
+        "devworks", "relationships", "interactions", "constituencies", "areas",
+    ]
+    backfill_counts = {}
+    for coll in domain_collections:
+        res = await db[coll].update_many(
+            {"tenant_id": {"$exists": False}},
+            {"$set": {"tenant_id": default_tid}},
+        )
+        backfill_counts[coll] = res.modified_count
+
+    # Step 3: Promote platform super-admin (admin@jansetu.in)
+    await db.users.update_one(
+        {"email": "admin@jansetu.in"},
+        {"$set": {"role": "super_admin", "tenant_id": None}},
+    )
+
+    # Step 4: Ensure the default tenant has its own dedicated admin user
+    tenant_admin_email = f"admin@{default_tenant['slug']}.jansetu.in"
+    existing_tenant_admin = await db.users.find_one(
+        {"email": tenant_admin_email, "tenant_id": default_tid}
+    )
+    temp_password_for_log = None
+    if not existing_tenant_admin:
+        import secrets
+        import string
+        alphabet = string.ascii_letters + string.digits
+        temp_password = "".join(secrets.choice(alphabet) for _ in range(12))
+        temp_password_for_log = temp_password
+        admin_user = User(
+            role="admin",
+            tenant_id=default_tid,
+            name=f"Admin - {default_tenant['constituency_name']}",
+            email=tenant_admin_email,
+            password_hash=hash_password(temp_password),
+        )
+        await db.users.insert_one(admin_user.model_dump())
+        await db.portal_configs.update_one(
+            {"id": default_tid},
+            {"$set": {
+                "primary_admin_email": tenant_admin_email,
+                "primary_admin_user_id": admin_user.id,
+                "updated_at": now_iso(),
+            }},
+        )
+
+    # Step 5: Migrate counters that don't have a tenant prefix
+    # Counter docs with _id like "issue", "household" (no colon) get re-keyed to "{tid}:issue".
+    async for counter in db.counters.find({"_id": {"$not": {"$regex": ":"}}}):
+        old_id = counter["_id"]
+        new_id = f"{default_tid}:{old_id}"
+        # Only migrate if new key doesn't already exist
+        if not await db.counters.find_one({"_id": new_id}):
+            await db.counters.insert_one({"_id": new_id, "seq": counter.get("seq", 0)})
+        await db.counters.delete_one({"_id": old_id})
+
+    # Step 6: Stamp version
+    await db.system_meta.update_one(
+        {"_id": "multi_tenant"},
+        {"$set": {"version": 1, "migrated_at": now_iso(), "default_tenant_id": default_tid}},
+        upsert=True,
+    )
+
+    logger.info(f"Multi-tenant migration complete. Backfilled: {backfill_counts}")
+    if temp_password_for_log:
+        logger.info("=" * 80)
+        logger.info("[ONE-TIME] Default tenant admin created:")
+        logger.info(f"  Email:    {tenant_admin_email}")
+        logger.info(f"  Password: {temp_password_for_log}")
+        logger.info(f"  Tenant:   {default_tenant['constituency_name']} ({default_tenant['slug']})")
+        logger.info("=" * 80)
 
 
 async def _ensure_default_portal():
@@ -241,7 +373,7 @@ async def verify_otp(payload: CitizenOTPVerify):
     if not user:
         # Return a flag to register
         return {"new_user": True, "mobile": payload.mobile}
-    token = create_token(user["id"], "citizen")
+    token = create_token(user["id"], "citizen", user.get("tenant_id"))
     return {"token": token, "user": user, "new_user": False}
 
 
@@ -296,7 +428,7 @@ async def citizen_register(payload: CitizenRegister):
     )
     await db.users.insert_one(user.model_dump())
     final_hh = await db.households.find_one({"id": hh_id}, {"_id": 0})
-    token = create_token(user.id, "citizen")
+    token = create_token(user.id, "citizen", user.tenant_id)
     return {"token": token, "user": user.model_dump(exclude={"password_hash"}), "household": final_hh}
 
 
@@ -307,7 +439,7 @@ async def staff_login(payload: StaffLogin):
         raise HTTPException(401, "Invalid credentials")
     user.pop("_id", None)
     user.pop("password_hash", None)
-    token = create_token(user["id"], user["role"])
+    token = create_token(user["id"], user["role"], user.get("tenant_id"))
     return {"token": token, "user": user}
 
 

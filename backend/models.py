@@ -32,8 +32,9 @@ class StaffLogin(BaseModel):
 class User(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=new_id)
-    role: Literal["citizen", "worker", "pa", "politician", "admin"]
+    role: Literal["citizen", "worker", "pa", "politician", "admin", "super_admin"]
     name: str
+    tenant_id: Optional[str] = None  # null only for super_admin (platform-wide)
     email: Optional[str] = None
     mobile: Optional[str] = None
     password_hash: Optional[str] = None
@@ -107,6 +108,7 @@ def inverse_relation(rel_type: str, viewer_gender: Optional[str] = None) -> str:
 class Relationship(BaseModel):
     """Edge in the family graph: person_a is `type` of person_b."""
     id: str = Field(default_factory=new_id)
+    tenant_id: Optional[str] = None
     person_a: str
     person_b: str
     type: str  # one of RELATION_TYPES
@@ -126,6 +128,7 @@ class RelationshipCreate(BaseModel):
 # ---------- Service Interaction (long-term: extends beyond Issues) ----------
 class ServiceInteraction(BaseModel):
     id: str = Field(default_factory=new_id)
+    tenant_id: Optional[str] = None
     person_id: str
     household_id: Optional[str] = None
     interaction_type: str  # Road Repair / Scheme Help / Medical / Meeting / Financial / etc
@@ -178,6 +181,7 @@ class StaffCreate(BaseModel):
 # ---------- Constituency Structure ----------
 class Constituency(BaseModel):
     id: str = Field(default_factory=new_id)
+    tenant_id: Optional[str] = None
     name: str
     type: Literal["urban", "rural", "mixed"] = "mixed"
     state: str
@@ -188,6 +192,7 @@ class Constituency(BaseModel):
 class Area(BaseModel):
     """Generic area: ward / village / area / wasti / booth / taluka."""
     id: str = Field(default_factory=new_id)
+    tenant_id: Optional[str] = None
     constituency_id: str
     parent_id: Optional[str] = None
     name: str
@@ -207,6 +212,7 @@ class AreaCreate(BaseModel):
 # ---------- Household ----------
 class Household(BaseModel):
     id: str = Field(default_factory=new_id)
+    tenant_id: Optional[str] = None
     household_code: str  # H-10001
     family_head_name: str
     address: str
@@ -230,6 +236,7 @@ ISSUE_STATUSES = ["New", "Under Review", "Assigned", "In Progress", "Resolved", 
 
 class Issue(BaseModel):
     id: str = Field(default_factory=new_id)
+    tenant_id: Optional[str] = None
     issue_code: str  # ISS-10001
     citizen_id: str
     household_id: Optional[str] = None
@@ -290,6 +297,7 @@ VISIT_STATUSES = ["Draft", "Pending Approval", "Approved", "Published"]
 
 class Visit(BaseModel):
     id: str = Field(default_factory=new_id)
+    tenant_id: Optional[str] = None
     title: str
     description: Optional[str] = None
     date: str  # ISO date
@@ -321,6 +329,7 @@ class VisitCreate(BaseModel):
 # ---------- Notifications ----------
 class Notification(BaseModel):
     id: str = Field(default_factory=new_id)
+    tenant_id: Optional[str] = None
     title: str
     body: str
     notif_type: str  # Politician Visit / Public Meeting / Scheme / Emergency / etc
@@ -349,6 +358,7 @@ DEV_STATUSES = ["Planned", "Approved", "Tender Issued", "Work Started", "Complet
 
 class DevWork(BaseModel):
     id: str = Field(default_factory=new_id)
+    tenant_id: Optional[str] = None
     title: str
     description: str
     category: str
@@ -384,9 +394,17 @@ class DevWorkCreate(BaseModel):
 
 
 
-# ---------- White Label Portal Config ----------
+SUBSCRIPTION_PLANS = ["trial", "starter", "professional", "enterprise"]
+PORTAL_STATUSES = ["active", "suspended"]
+
+
+# ---------- White Label Portal Config (=Tenant) ----------
 class PortalConfig(BaseModel):
-    """Per-client (politician/constituency) white-label branding & content scope."""
+    """Per-client tenant. The id of this doc IS the tenant_id partition key
+    used across every other domain collection. White-label branding fields
+    live here alongside subscription and integration settings.
+    """
+    model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=new_id)
     slug: str  # unique URL-safe identifier, e.g. "pune-cantonment"
     is_active: bool = True
@@ -398,11 +416,15 @@ class PortalConfig(BaseModel):
     constituency_name: str
     constituency_id: Optional[str] = None  # filter content scope if set
 
+    # Primary tenant admin (auto-provisioned on creation)
+    primary_admin_email: Optional[str] = None
+    primary_admin_user_id: Optional[str] = None
+
     # Branding
     logo_path: Optional[str] = None
     hero_image_path: Optional[str] = None
-    theme_color: str = "#0A1128"
-    accent_color: Optional[str] = None
+    theme_color: str = "#0A1128"          # alias: primary_color
+    accent_color: Optional[str] = None    # alias: secondary_color
     welcome_message: str
     tagline: Optional[str] = None
 
@@ -412,6 +434,24 @@ class PortalConfig(BaseModel):
     contact_address: Optional[str] = None
     office_hours: Optional[str] = None
     social_links: dict = {}  # {facebook, twitter, instagram, youtube, whatsapp}
+
+    # Localization
+    timezone: str = "Asia/Kolkata"
+    language: str = "en"  # ISO 639-1
+
+    # Subscription / lifecycle
+    subscription_plan: str = "trial"            # one of SUBSCRIPTION_PLANS
+    subscription_start: Optional[str] = None    # ISO date
+    subscription_expiry: Optional[str] = None   # ISO date
+    is_trial: bool = True
+    trial_expiry: Optional[str] = None
+    portal_status: str = "active"               # active | suspended
+    max_staff_limit: int = 25
+    custom_domain: Optional[str] = None         # e.g. "rajeshpatil.in" (future use)
+
+    # Integrations (per-tenant, stored as dicts to stay schema-flexible)
+    whatsapp_config: dict = {}    # {provider, api_key, sender, webhook}
+    sms_config: dict = {}         # {provider, api_key, sender_id}
 
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
@@ -436,3 +476,13 @@ class PortalConfigCreate(BaseModel):
     contact_address: Optional[str] = None
     office_hours: Optional[str] = None
     social_links: dict = {}
+    timezone: str = "Asia/Kolkata"
+    language: str = "en"
+    subscription_plan: str = "trial"
+    is_trial: bool = True
+    trial_expiry: Optional[str] = None
+    max_staff_limit: int = 25
+    custom_domain: Optional[str] = None
+    # Optional admin override; if omitted, server generates admin@<slug>.jansetu.in
+    primary_admin_email: Optional[str] = None
+    primary_admin_name: Optional[str] = None
