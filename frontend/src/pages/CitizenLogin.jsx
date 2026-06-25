@@ -63,6 +63,18 @@ export default function CitizenLogin() {
     setLoading(true);
     try {
       const r = await api.post("/auth/citizen/verify-otp", { mobile, otp, tenant_slug: slug || undefined });
+      if (r.data.transferred_out) {
+        // Citizen was transferred out of THIS constituency — point them to the
+        // portal they actually belong to now.
+        const cur = r.data.current_portal;
+        if (cur?.slug) {
+          toast.error(`You have been transferred to ${cur.constituency_name || cur.slug}. Please log in there.`);
+          setTimeout(() => navigate(`/citizen/login?portal=${cur.slug}`), 1500);
+        } else {
+          toast.error(r.data.message || "You have been transferred to another constituency.");
+        }
+        return;
+      }
       if (r.data.new_user) {
         navigate("/citizen/register", { state: { mobile, tenant_slug: slug || null, portal } });
       } else {

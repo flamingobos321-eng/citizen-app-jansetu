@@ -795,3 +795,81 @@ class PersonTimelineEvent(BaseModel):
     label: str                                   # human-readable, e.g. "Complaint #1042"
     summary: Optional[str] = None
     tier: Literal["public", "operational"] = "operational"
+
+
+
+# ---------- V2 Transfer Workflow ----------
+
+class TransferRequest(BaseModel):
+    """Tracks a citizen-initiated constituency transfer.
+
+    State machine: otp_pending → completed | expired | cancelled.
+    Idempotent: completing a `completed` request returns the prior outcome
+    instead of re-running the side-effects.
+    """
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    person_id: str
+    mobile: str
+    from_user_id: str
+    from_organisation_id: str
+    from_membership_id: str
+    to_tenant_slug: str
+    to_organisation_id: str
+    reason: Optional[str] = None
+    status: Literal["otp_pending", "completed", "expired", "cancelled"] = "otp_pending"
+    otp_attempts: int = 0
+    # Snapshot of the outcome — populated when status=completed
+    new_user_id: Optional[str] = None
+    new_membership_id: Optional[str] = None
+    new_household_id: Optional[str] = None
+    completed_at: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+    # Expires after 10 minutes if not verified (computed at create-time).
+    expires_at: Optional[str] = None
+
+
+class MembershipAudit(BaseModel):
+    """Append-only event log for Membership lifecycle (created / archived /
+    transferred_out / transferred_in / cross_linked). Separate from
+    PersonAudit so compliance can subscribe to membership events alone.
+    """
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    membership_id: str
+    person_id: str
+    organisation_id: str
+    event: Literal["created", "archived", "transferred_out",
+                   "transferred_in", "cross_linked", "updated"]
+    at: str = Field(default_factory=now_iso)
+    by_user_id: Optional[str] = None
+    by_tenant_id: Optional[str] = None
+    payload: dict = {}
+
+
+class TransferInitiate(BaseModel):
+    mobile: str
+    target_tenant_slug: str
+    reason: Optional[str] = None
+
+
+class TransferAddress(BaseModel):
+    region_type: Literal["urban", "rural"]
+    house_number: Optional[str] = None
+    ward_id: Optional[str] = None
+    area_id: Optional[str] = None
+    village_id: Optional[str] = None
+    address: str
+    members_count: int = 1
+    family_head_name: Optional[str] = None
+
+
+class TransferVerify(BaseModel):
+    transfer_request_id: str
+    otp: str
+    new_address: TransferAddress
+
+
+class CitizenMobileCheck(BaseModel):
+    mobile: str
+    tenant_slug: str

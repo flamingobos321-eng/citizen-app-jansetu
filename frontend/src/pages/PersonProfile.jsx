@@ -71,6 +71,34 @@ export default function PersonProfile() {
     <div className="space-y-6 animate-fade-up max-w-6xl">
       <Link to="/app/citizens" className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900" data-testid="back-citizens"><ArrowLeft size={16} /> Back</Link>
 
+      {/* TRANSFER BANNER — shown when the V1 user row was transferred OUT of
+          the staff's tenant. Indicates read-only historical view. */}
+      {data.transfer_banner && data.transfer_banner.kind === "transferred_out" && (
+        <div
+          data-testid="transferred-out-banner"
+          className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4"
+        >
+          <svg className="w-5 h-5 text-amber-700 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 0 1 4-4h14" />
+            <polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 0 1-4 4H3" />
+          </svg>
+          <div className="text-sm flex-1">
+            <div className="font-semibold text-amber-900">
+              Transferred to {data.transfer_banner.to_organisation?.constituency_name || data.transfer_banner.to_organisation?.slug || "another constituency"} — read only
+            </div>
+            <div className="text-amber-800 mt-0.5">
+              This citizen's records here are preserved as historical data.
+              {data.transfer_banner.transferred_at && (
+                <span> Transfer date: <span className="font-medium">{new Date(data.transfer_banner.transferred_at).toLocaleDateString()}</span>.</span>
+              )}
+              {data.transfer_banner.reason && (
+                <span> Reason: <span className="font-medium">{data.transfer_banner.reason}</span>.</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* HEADER */}
       <div className="bg-white border border-gray-200 rounded-lg p-6 flex items-start gap-6 flex-wrap">
         <div className="w-20 h-20 rounded-full bg-[#0A1128] text-white flex items-center justify-center text-2xl font-heading font-bold">

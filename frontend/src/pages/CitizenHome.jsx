@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { StatCard, SectionTitle, StatusPill } from "../components/Common";
-import { Plus, FileText, Calendar, Bell, Hammer, ArrowRight } from "lucide-react";
+import { Plus, FileText, Calendar, Bell, Hammer, ArrowRight, ArrowRightLeft } from "lucide-react";
 import { Button } from "../components/ui/button";
 
 export default function CitizenHome() {
@@ -12,12 +12,14 @@ export default function CitizenHome() {
   const [recent, setRecent] = useState([]);
   const [notifs, setNotifs] = useState([]);
   const [visits, setVisits] = useState([]);
+  const [transferInfo, setTransferInfo] = useState(null);
 
   useEffect(() => {
     api.get("/dashboard/citizen-stats").then((r) => setStats(r.data)).catch(() => {});
     api.get("/issues").then((r) => setRecent(r.data.slice(0, 5)));
     api.get("/notifications").then((r) => setNotifs(r.data.slice(0, 3)));
     api.get("/visits", { params: { upcoming: true } }).then((r) => setVisits(r.data.slice(0, 3)));
+    api.get("/me/transfer-info").then((r) => setTransferInfo(r.data)).catch(() => {});
   }, []);
 
   return (
@@ -36,6 +38,27 @@ export default function CitizenHome() {
           </Button>
         </Link>
       </div>
+
+      {/* Transferred-in banner */}
+      {transferInfo?.transferred_in && transferInfo.transferred_from?.organisation && (
+        <div
+          data-testid="transferred-from-banner"
+          className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4"
+        >
+          <ArrowRightLeft size={18} className="text-amber-700 mt-0.5" />
+          <div className="text-sm">
+            <div className="font-semibold text-amber-900">
+              Transferred from {transferInfo.transferred_from.organisation.constituency_name || transferInfo.transferred_from.organisation.slug}
+            </div>
+            <div className="text-amber-800 mt-0.5">
+              Your previous constituency records are preserved (read-only). Your active service history starts from {transferInfo.transferred_from.archived_at ? new Date(transferInfo.transferred_from.archived_at).toLocaleDateString() : "the transfer date"}.
+              {transferInfo.transferred_from.reason && (
+                <span className="text-amber-700"> Reason: <span className="font-medium">{transferInfo.transferred_from.reason}</span>.</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard label="Total Issues" value={stats.total} testId="stat-total" />

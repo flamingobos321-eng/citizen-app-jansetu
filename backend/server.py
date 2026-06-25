@@ -24,11 +24,13 @@ from models import (
     Relationship, RelationshipCreate, RELATION_TYPES, inverse_relation,
     PortalConfig, PortalConfigCreate,
     ServiceInteraction, ServiceInteractionCreate,
+    TransferInitiate, TransferVerify, CitizenMobileCheck,
     ISSUE_CATEGORIES, ISSUE_STATUSES, DEV_STATUSES, VISIT_STATUSES,
     now_iso, new_id,
 )
 from storage_util import put_object, get_object, init_storage, APP_NAME
 import v2_dualwrite as v2dw
+import v2_transfer as v2tr
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -547,11 +549,124 @@ async def verify_otp(payload: CitizenOTPVerify):
     q = {"mobile": payload.mobile, "role": "citizen"}
     if tid:
         q["tenant_id"] = tid
-    user = await db.users.find_one(q, {"_id": 0, "password_hash": 0})
+    # Skip transferred-out (is_active=False) rows so a citizen can't log into
+    # a constituency they've been transferred away from.
+    user = await db.users.find_one({**q, "is_active": {"$ne": False}},
+                                   {"_id": 0, "password_hash": 0})
     if not user:
+        # If they exist but were transferred away, surface that hint.
+        archived = await db.users.find_one({**q, "is_active": False},
+                                           {"_id": 0, "password_hash": 0})
+        if archived:
+            person_id = archived.get("person_id")
+            new_user = None
+            if person_id:
+                new_user = await db.users.find_one(
+                    {"role": "citizen", "person_id": person_id,
+                     "is_active": True}, {"_id": 0, "password_hash": 0})
+            cur_portal = await db.portal_configs.find_one(
+                {"id": (new_user or {}).get("tenant_id")},
+                {"_id": 0, "slug": 1, "politician_name": 1, "constituency_name": 1},
+            ) if new_user else None
+            return {"new_user": False, "transferred_out": True,
+                    "current_portal": cur_portal,
+                    "message": "You have been transferred to another constituency."}
         return {"new_user": True, "mobile": payload.mobile, "tenant_id": tid}
     token = create_token(user["id"], "citizen", user.get("tenant_id"))
     return {"token": token, "user": user, "new_user": False}
+
+
+@api.post("/auth/citizen/check-mobile")
+async def check_mobile(payload: CitizenMobileCheck):
+    """Pre-registration helper. Tells the frontend whether the mobile already
+    has a Person — and if so, whether they need to log in (same tenant) or
+    transfer (different tenant). Used by CitizenRegister.jsx to drive the
+    "Mobile already exists — transfer?" dialog.
+    """
+    tid = await _resolve_tenant_id(payload.tenant_slug)
+    if not tid:
+        raise HTTPException(400, "Invalid portal slug")
+    return await v2tr.detect_transfer_need(
+        db, mobile=payload.mobile.strip(),
+        target_tenant_id=tid, target_tenant_slug=payload.tenant_slug,
+    )
+
+
+@api.post("/auth/citizen/transfer/initiate")
+async def transfer_initiate(payload: TransferInitiate):
+    """Step 1 of the transfer flow — emit the (mocked) OTP and persist a
+    TransferRequest. Returns transfer_request_id + expiry.
+    """
+    try:
+        result = await v2tr.initiate_transfer(
+            db, mobile=payload.mobile.strip(),
+            target_tenant_slug=payload.target_tenant_slug,
+            reason=payload.reason,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@api.post("/auth/citizen/transfer/verify")
+async def transfer_verify(payload: TransferVerify):
+    """Step 2 of the transfer flow — verify OTP and execute the transfer
+    atomically (archive old membership, create new one, cross-link, etc.).
+    Returns a fresh JWT for the citizen on the new tenant.
+    """
+    try:
+        result = await v2tr.verify_and_execute_transfer(
+            db, transfer_request_id=payload.transfer_request_id,
+            otp=payload.otp, new_address=payload.new_address,
+            next_seq_fn=next_seq, create_token_fn=create_token,
+            now_iso_fn=now_iso,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@api.get("/me/transfer-info")
+async def me_transfer_info(user: dict = Depends(get_current_user)):
+    """Returns transfer-related context for the logged-in citizen:
+        - Whether their current membership was transferred from another org
+        - The previous organisation's display info (if applicable)
+        - The full membership history visible to the citizen's CURRENT tenant
+          (their own Person id → all memberships of that Person — this is
+          a citizen self-view so cross-tenant history is allowed).
+    Used by the citizen UI to render the "Transferred from <Org>" banner.
+    """
+    pid = user.get("person_id")
+    if not pid:
+        return {"transferred_in": False, "history": []}
+    current_mid = user.get("origin_membership_id")
+    current_mem = await db.memberships.find_one({"id": current_mid}, {"_id": 0}) if current_mid else None
+    transferred_in = False
+    transferred_from = None
+    if current_mem and current_mem.get("transferred_from_membership_id"):
+        transferred_in = True
+        from_mem = await db.memberships.find_one(
+            {"id": current_mem["transferred_from_membership_id"]}, {"_id": 0})
+        if from_mem:
+            org = await db.portal_configs.find_one(
+                {"id": from_mem["organisation_id"]},
+                {"_id": 0, "id": 1, "slug": 1, "politician_name": 1,
+                 "tenant_name": 1, "constituency_name": 1},
+            )
+            transferred_from = {
+                "organisation": org,
+                "archived_membership_id": from_mem["id"],
+                "archived_at": from_mem.get("end_date"),
+                "reason": from_mem.get("transfer_reason"),
+            }
+    history = await v2tr.get_person_membership_history(db, person_id=pid)
+    return {
+        "person_id": pid,
+        "transferred_in": transferred_in,
+        "transferred_from": transferred_from,
+        "current_membership_id": current_mid,
+        "history": history,
+    }
 
 
 @api.post("/auth/citizen/register")
@@ -560,8 +675,20 @@ async def citizen_register(payload: CitizenRegister):
     if not tid:
         raise HTTPException(400, "Portal context required for registration")
     # Per-tenant mobile uniqueness (rule 6)
-    if await db.users.find_one({"mobile": payload.mobile, "role": "citizen", "tenant_id": tid}):
+    if await db.users.find_one({"mobile": payload.mobile, "role": "citizen",
+                                "tenant_id": tid, "is_active": True}):
         raise HTTPException(400, "Mobile already registered in this constituency")
+    # Cross-tenant detection: a mobile already linked to a Person in another
+    # constituency must go through the explicit Transfer Workflow rather than
+    # silently mint a second Person record.
+    detection = await v2tr.detect_transfer_need(
+        db, mobile=payload.mobile, target_tenant_id=tid,
+        target_tenant_slug=getattr(payload, "tenant_slug", None) or "")
+    if detection.get("exists") and not detection.get("same_tenant"):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "TRANSFER_REQUIRED", **detection,
+                    "message": "Mobile already registered in another constituency"})
 
     existing_hh = None
     if payload.house_number:
@@ -1429,7 +1556,34 @@ async def person_profile(person_id: str, user: dict = Depends(get_current_user))
             r["display_type"] = inverse_relation(r["type"], (other or {}).get("gender"))
     interactions = await db.interactions.find(tenant_filter(user, {"person_id": person_id}), {"_id": 0}).sort("occurred_at", -1).to_list(500)
     issues = await db.issues.find(tenant_filter(user, {"citizen_id": person_id}), {"_id": 0}).sort("created_at", -1).to_list(500)
-    return {"person": person, "relationships": rels, "interactions": interactions, "issues": issues}
+    # Transfer banner: if the V1 user row was transferred OUT we surface the
+    # archived membership row in their tenant so the staff UI can render
+    # "Transferred to <Org>" with date + new org details.
+    transfer_banner = None
+    if person.get("is_active") is False and person.get("_transferred_out_to_user_id"):
+        pid_v2 = person.get("person_id")
+        archived_mem = await db.memberships.find_one(
+            {"person_id": pid_v2, "organisation_id": person.get("tenant_id"),
+             "status": "archived"},
+            {"_id": 0}, sort=[("end_date", -1)],
+        ) if pid_v2 else None
+        to_org = None
+        if archived_mem and archived_mem.get("transferred_to_organisation_id"):
+            to_org = await db.portal_configs.find_one(
+                {"id": archived_mem["transferred_to_organisation_id"]},
+                {"_id": 0, "id": 1, "slug": 1, "politician_name": 1,
+                 "tenant_name": 1, "constituency_name": 1},
+            )
+        transfer_banner = {
+            "kind": "transferred_out",
+            "archived_membership": archived_mem,
+            "to_organisation": to_org,
+            "transferred_at": (archived_mem or {}).get("end_date"),
+            "reason": (archived_mem or {}).get("transfer_reason"),
+            "read_only": True,
+        }
+    return {"person": person, "relationships": rels, "interactions": interactions,
+            "issues": issues, "transfer_banner": transfer_banner}
 
 
 @api.put("/persons/{person_id}")
