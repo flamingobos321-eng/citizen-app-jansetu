@@ -249,6 +249,7 @@ class Issue(BaseModel):
     tenant_id: Optional[str] = None
     issue_code: str  # ISS-10001
     citizen_id: str
+    person_id: Optional[str] = None  # V2: set during M2 backfill + M3 dual-write
     household_id: Optional[str] = None
     category: str
     title: str
@@ -502,3 +503,231 @@ class PortalConfigCreate(BaseModel):
     # Optional admin override; if omitted, server generates admin@<slug>.jansetu.in
     primary_admin_email: Optional[str] = None
     primary_admin_name: Optional[str] = None
+
+
+# ==========================================================================
+# ============================  V2  ARCHITECTURE  ==========================
+# ==========================================================================
+# Added per "JanSetu V2 Master Technical Architecture v1.0" (signed off).
+# These models are ADDITIVE — V1 collections remain authoritative until M4.
+# Nothing here changes runtime behaviour on its own; collections will start
+# accumulating data only when the M2 backfill / dual-write code is enabled.
+# Sprint A scope: Person, Credential, Membership, PersonAudit, PersonConsent,
+#                 AccessAudit. Political-CRM (Party, Election, ...) ship in
+#                 Sprint B but their models are sketched here so migration
+#                 scripts can reference them safely.
+# ==========================================================================
+
+
+# ---------- V2 Identity Layer (global, NO tenant_id) ----------
+
+class Person(BaseModel):
+    """Permanent identity. Survives constituency transfers, marriages,
+    credential rotations, even death (status='deceased')."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)  # "p_<uuid>" assigned by service layer
+    name: str
+    dob: Optional[str] = None
+    gender: Optional[str] = None
+    email: Optional[str] = None
+    photo_path: Optional[str] = None
+    # A person can be more than one type over their lifetime.
+    types: List[Literal["citizen", "supporter", "volunteer", "worker",
+                        "politician", "staff", "journalist", "external"]] = ["citizen"]
+    status: Literal["active", "redacted", "deceased", "merged"] = "active"
+    merged_into_person_id: Optional[str] = None  # set only when status='merged'
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+
+class Credential(BaseModel):
+    """Login proof attached to a Person. A Person may have many credentials
+    (multiple mobiles, email, OAuth, Aadhaar offline, voter ID, DigiLocker).
+    Uniqueness is enforced ONLY among status='active' rows of the same type."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    person_id: str
+    type: Literal["mobile", "email", "google_oauth", "aadhaar_offline",
+                  "voter_id", "digilocker"]
+    value: str
+    verified_at: Optional[str] = None  # ISO timestamp of last successful OTP / OAuth
+    last_used_at: Optional[str] = None
+    status: Literal["active", "revoked", "expired"] = "active"
+    created_at: str = Field(default_factory=now_iso)
+
+
+class RelationshipV2(BaseModel):
+    """V2 family edge — GLOBAL. No tenant_id. Survives transfers.
+
+    Stored in `relationships_v2` collection (V1's `relationships` continues
+    to exist until M5 decommission)."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    from_person_id: str
+    to_person_id: str
+    type: str  # father|mother|son|daughter|spouse|guardian|sibling|...
+    since_date: Optional[str] = None
+    until_date: Optional[str] = None
+    status: Literal["active", "ended"] = "active"
+    notes: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+    created_by_person_id: Optional[str] = None
+
+
+# ---------- V2 Tenancy / Membership Layer ----------
+
+class Membership(BaseModel):
+    """Polymorphic person<->organisation link with history.
+    scope_type future-proofs the schema for party-office / NGO / municipal
+    memberships without redesign. v1 enforces ≤1 active membership per person
+    in the application layer (NOT a unique index)."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    person_id: str
+    organisation_id: str  # = portal_configs.id; renamed in service layer
+    scope_type: Literal["constituency", "party_office", "ngo",
+                        "municipal", "panchayat", "govt_dept", "csr"] = "constituency"
+    household_id: Optional[str] = None
+    ward_id: Optional[str] = None
+    village_id: Optional[str] = None
+    state: Optional[str] = None
+    district: Optional[str] = None
+    taluka: Optional[str] = None
+    address: Optional[str] = None
+    start_date: str = Field(default_factory=now_iso)
+    end_date: Optional[str] = None
+    status: Literal["active", "archived", "pending_transfer", "superseded"] = "active"
+    transfer_reason: Optional[str] = None  # marriage|migration|job|education|other
+    transferred_from_membership_id: Optional[str] = None
+    is_primary: bool = True  # future multi-active will set is_primary=false on secondaries
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+
+# ---------- V2 Privacy / Consent / Audit Layer ----------
+
+class PersonConsent(BaseModel):
+    """Per-(person, organisation, tier) consent. Default tier1+tier2 granted
+    automatically on registration / transfer-in. Revocation blocks future reads
+    but does NOT erase past data (use Person.status='redacted' for that)."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    person_id: str
+    organisation_id: str
+    scope: Literal["tier1", "tier2", "tier3"]
+    granted_at: str = Field(default_factory=now_iso)
+    revoked_at: Optional[str] = None
+    source: Literal["auto_on_registration", "auto_on_transfer", "explicit"] = "explicit"
+
+
+class PersonAudit(BaseModel):
+    """Append-only event log for a Person (created, transferred, merged,
+    redacted, credential added/revoked, etc.). Source of truth for compliance."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    person_id: str
+    event: str
+    at: str = Field(default_factory=now_iso)
+    by_user_id: Optional[str] = None
+    by_tenant_id: Optional[str] = None
+    payload: dict = {}
+
+
+class AccessAudit(BaseModel):
+    """Logged on every Tier-2/Tier-3 READ of personal data. Powers the
+    self-service audit report for politicians and forensic investigations."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    person_id: str
+    organisation_id: str
+    accessed_by_user_id: str
+    fields_accessed: List[str] = []
+    justification: Optional[str] = None
+    at: str = Field(default_factory=now_iso)
+
+
+# ---------- V2 Political CRM Layer (schema only — wired in Sprint B) ----------
+
+class Party(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    name: str
+    short_name: Optional[str] = None
+    logo: Optional[str] = None
+    founded_at: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class PositionDefinition(BaseModel):
+    """Per-party position tree. e.g. BJP's 'Booth President' lives only inside
+    BJP's tree; Congress has its own."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    party_id: str
+    name: str
+    level: int = 1  # 1 = top of party hierarchy
+    parent_position_id: Optional[str] = None
+    default_influence_weight: int = 0
+
+
+class PartyMembership(BaseModel):
+    """Append-only political-affiliation timeline."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    person_id: str
+    party_id: str
+    position_id: Optional[str] = None
+    scope_type: Literal["national", "state", "district",
+                        "constituency", "ward", "booth"] = "constituency"
+    scope_id: Optional[str] = None
+    scope_label: Optional[str] = None
+    start_date: str = Field(default_factory=now_iso)
+    end_date: Optional[str] = None
+    status: Literal["active", "past", "defected"] = "active"
+    source_event: Literal["elected", "appointed",
+                          "joined", "left", "defected"] = "joined"
+    notes: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class Election(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    name: str
+    year: int
+    type: Literal["lok_sabha", "vidhan_sabha", "municipal", "panchayat"]
+    scope_type: Optional[str] = None
+    scope_id: Optional[str] = None
+    polling_date: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class ElectionEvent(BaseModel):
+    """A Person's participation in a specific election."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    person_id: str
+    election_id: str
+    role: Literal["voter", "volunteer", "polling_agent",
+                  "candidate", "observer"]
+    party_id: Optional[str] = None
+    notes: Optional[str] = None
+    recorded_by: Optional[str] = None
+    recorded_at: str = Field(default_factory=now_iso)
+
+
+class InfluenceSignal(BaseModel):
+    """Append-only weighted signal feeding the computed influence score.
+    A score is NEVER stored as ground truth — it is recomputed from signals."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    person_id: str
+    signal_type: Literal["position", "household", "attendance",
+                         "social_reach", "volunteer_hours", "custom"]
+    weight: int = 1
+    value: float = 0.0
+    source: Literal["auto", "manual", "import"] = "auto"
+    scope_organisation_id: Optional[str] = None  # tenant-specific signal
+    recorded_at: str = Field(default_factory=now_iso)
+    recorded_by: Optional[str] = None

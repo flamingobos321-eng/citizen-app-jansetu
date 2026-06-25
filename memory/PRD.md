@@ -58,13 +58,47 @@ Endpoint `GET /api/dashboard/celebrations?days=7` returns today's + upcoming bir
 - **Phase 5**: MLA Approval Inbox; PDF/Excel exports; Real SMS OTP (Twilio); Firebase Push
 
 ## Next Action Items
-1. **(Open) M3** — Server-side guards for issue assignment & status workflow (P1)
-2. **(Open) M2** — Notification composer ward/village targeting in UI (P1)
-3. **(Open) M4** — Citizen feedback state guard (P2)
-4. **(Open) M6** — Celebrations endpoint projection optimization (P2)
-5. **(Backlog) C2** — Real Twilio OTP (currently mocked, accepts any 6 digits) (P1, deferred)
-6. **(Backlog) Setup Wizard UI** — Tenant Admin first-login wizard (backend endpoints `/tenant/setup` already live; user opted to skip for now and access from dashboard)
-7. **(Tech debt) Super admin DELETE portal** — returns 403; require_roles("admin") should also accept super_admin for portal CRUD
+1. **(NEXT) Sprint A — M2** Backfill script: create Person + Credential + Membership rows from V1 `users.citizen`; stamp `person_id` on `issues`. Idempotent. Dry-run first.
+2. **(NEXT) Sprint A — M3** Dual-read / dual-write window. Backend writes both V1 + V2 paths; parity asserter daily.
+3. **(NEXT) Sprint A — M4** Frontend cutover: auth returns `person_id`; relationships, Person 360 read V2.
+4. **(NEXT) Sprint A — M5** Decommission V1 citizen rows after 30-day stability.
+5. **(Open) M3** — Server-side guards for issue assignment & status workflow (P1)
+6. **(Open) M2-original** — Notification composer ward/village targeting in UI (P1)
+7. **(Open) M4-original** — Citizen feedback state guard (P2)
+8. **(Open) M6-original** — Celebrations endpoint projection optimization (P2)
+9. **(Backlog) C2** — Real Twilio OTP (currently mocked, accepts any 6 digits) (P1, deferred)
+10. **(Backlog) Setup Wizard UI** — Tenant Admin first-login wizard (backend endpoints `/tenant/setup` already live; user opted to skip for now and access from dashboard)
+11. **(Tech debt) Super admin DELETE portal** — returns 403; require_roles("admin") should also accept super_admin for portal CRUD
+
+## V2 Architecture (Master Spec v1.0 — SIGNED OFF Feb 2026)
+
+Identity / Membership / Privacy redesign. Person = permanent identity, Mobile = credential, Membership = polymorphic person ↔ organisation link with history. Three-tier privacy (Public / Operational / Intelligence). Migration phased M0 → M5.
+
+### Sprint A — Identity & Migration (in progress)
+- **M0 — Pre-flight dedupe report (DONE Feb 2026)**
+  - `/app/backend/migrations/dedupe_report.py` scans V1 `users.citizen`, groups by mobile, auto-classifies as `AUTO_MERGE | REVIEW_NAME | REVIEW_DOB | REVIEW_OTHER` using SequenceMatcher (>= 0.9) for names and exact-match for DOBs.
+  - Output: `/app/migrations/dedupe_YYYYMMDD.csv` (human-editable) + optional JSON.
+  - Tested on current dev data: 5 citizens, 1 cross-tenant mobile flagged `REVIEW_NAME` (Ramesh Sharma vs Manish Jha share `9999900001`).
+- **M1 — Additive V2 schema (DONE Feb 2026)**
+  - Pydantic models appended to `/app/backend/models.py`: `Person`, `Credential`, `Membership`, `RelationshipV2`, `PersonAudit`, `PersonConsent`, `AccessAudit`, plus Sprint-B schemas (`Party`, `PositionDefinition`, `PartyMembership`, `Election`, `ElectionEvent`, `InfluenceSignal`).
+  - `Issue.person_id` (nullable) added — fills during M2/M3.
+  - Startup hook `_ensure_v2_indexes()` in `server.py` — idempotent, additive; creates 13 V2 collections + indexes. Marks `system_meta.v2_schema.version=1`.
+  - Unique partial index on `credentials(type, value)` where `status="active"` — enforces credential uniqueness only among active rows.
+  - **Regression: V1 untouched.** Super admin / tenant admin / worker / citizen logins all 200; V2 collections empty.
+
+### Sprint A — remaining (next sessions)
+- M2 backfill (V1 citizen rows → Person + Credential + Membership; stamp `person_id` on issues).
+- M3 dual-write window (1 week parity).
+- M4 frontend cutover (auth `pid`, Person 360 reads V2).
+- M5 decommission V1 citizen rows.
+
+### Sprint B — Political CRM & Influence (after Sprint A stable for 30 days)
+- Party / position / party_memberships UIs.
+- Elections + election_events import.
+- Influence signals rule engine + politician dashboards.
+- Household intelligence (T3) with audit ledger.
+- Three-tier privacy decorator (`@scope_check`).
+
 
 ## Multi-Tenant Phase 3 — COMPLETED (Feb 2026)
 ### Backend (previously delivered)

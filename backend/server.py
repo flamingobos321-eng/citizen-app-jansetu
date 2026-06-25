@@ -232,6 +232,79 @@ async def on_start():
     await _migrate_to_multi_tenant()
     # Counter sync runs every startup (idempotent, only raises counters):
     await _sync_tenant_counters()
+    # V2 indexes (M1, additive, idempotent — see migrations/__init__.py)
+    await _ensure_v2_indexes()
+
+
+async def _ensure_v2_indexes():
+    """M1 — Create indexes for V2 collections. Idempotent. Does not write data.
+
+    These indexes are needed before M2 backfill can run efficiently. They are
+    additive and have no effect on V1 behaviour (empty collections in v1)."""
+    from pymongo import ASCENDING, DESCENDING
+    try:
+        # persons: lookup by status, by merge chain
+        await db.persons.create_index([("status", ASCENDING)])
+        await db.persons.create_index([("merged_into_person_id", ASCENDING)],
+                                      sparse=True)
+
+        # credentials: unique (type, value) among active rows only
+        await db.credentials.create_index(
+            [("type", ASCENDING), ("value", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"status": "active"},
+            name="cred_type_value_active_unique",
+        )
+        await db.credentials.create_index([("person_id", ASCENDING)])
+
+        # memberships: most queries by (person, status) or (org, status)
+        await db.memberships.create_index(
+            [("person_id", ASCENDING), ("status", ASCENDING)])
+        await db.memberships.create_index(
+            [("organisation_id", ASCENDING), ("status", ASCENDING)])
+        await db.memberships.create_index(
+            [("person_id", ASCENDING), ("organisation_id", ASCENDING)])
+        await db.memberships.create_index([("household_id", ASCENDING)],
+                                          sparse=True)
+
+        # relationships: directed family edges (global; no tenant_id)
+        await db.relationships_v2.create_index([("from_person_id", ASCENDING)])
+        await db.relationships_v2.create_index([("to_person_id", ASCENDING)])
+
+        # audit & consent
+        await db.person_audit.create_index(
+            [("person_id", ASCENDING), ("at", DESCENDING)])
+        await db.person_consents.create_index(
+            [("person_id", ASCENDING), ("organisation_id", ASCENDING),
+             ("scope", ASCENDING)],
+            unique=True, name="consent_unique")
+        await db.access_audit.create_index(
+            [("person_id", ASCENDING), ("at", DESCENDING)])
+        await db.access_audit.create_index(
+            [("accessed_by_user_id", ASCENDING), ("at", DESCENDING)])
+
+        # Political CRM (Sprint B but indexes safe to create now)
+        await db.parties.create_index([("name", ASCENDING)])
+        await db.position_definitions.create_index(
+            [("party_id", ASCENDING), ("level", ASCENDING)])
+        await db.party_memberships.create_index(
+            [("person_id", ASCENDING), ("start_date", DESCENDING)])
+        await db.elections.create_index(
+            [("year", DESCENDING), ("type", ASCENDING)])
+        await db.election_events.create_index(
+            [("person_id", ASCENDING), ("election_id", ASCENDING)])
+        await db.influence_signals.create_index(
+            [("person_id", ASCENDING), ("recorded_at", DESCENDING)])
+
+        # Stamp the V2 schema version so we know indexes are in place.
+        await db.system_meta.update_one(
+            {"_id": "v2_schema"},
+            {"$set": {"version": 1, "applied_at": now_iso()}},
+            upsert=True,
+        )
+        logger.info("V2 indexes ensured (M1).")
+    except Exception as e:
+        logger.warning(f"V2 index creation deferred: {e}")
 
 
 async def _migrate_to_multi_tenant():
