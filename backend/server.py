@@ -131,40 +131,63 @@ def get_tenant_id(user: dict) -> Optional[str]:
 def tenant_filter(user: dict, extra_q: Optional[dict] = None) -> dict:
     """Compose a Mongo query that scopes to the user's tenant.
 
-    Raises 403 for super_admin attempting to read tenant data (they should only
-    access tenant-management endpoints, never per-tenant collections).
-    NOTE: This helper is defined now (Phase 1) but will be applied to all
-    endpoints in Phase 2. Currently unused until cutover.
+    Behavior:
+      - super_admin: no tenant scoping applied (sees all tenants).
+      - any other role: query is filtered to user.tenant_id.
+      - user with no tenant_id (and not super_admin): 403.
     """
+    q = dict(extra_q or {})
     if user.get("role") == "super_admin":
-        raise HTTPException(403, "Super admin cannot access tenant data directly")
+        return q  # platform-wide access (rule 2)
     tid = user.get("tenant_id")
     if not tid:
         raise HTTPException(403, "User has no tenant")
-    q = dict(extra_q or {})
     q["tenant_id"] = tid
     return q
+
+
+def get_tenant_id_for_write(user: dict) -> str:
+    """Return the tenant_id to auto-attach on a write operation. Rule 3:
+    frontend never sends tenant_id; backend derives it from the auth session.
+    Super_admin cannot create tenant-scoped records (rule 2 keeps them as platform-only).
+    """
+    if user.get("role") == "super_admin":
+        raise HTTPException(400, "Super admin cannot create tenant-scoped records; use a tenant admin account")
+    tid = user.get("tenant_id")
+    if not tid:
+        raise HTTPException(403, "User has no tenant")
+    return tid
 
 
 async def can_access_file(user: dict, path: str) -> bool:
     """Permission check for /api/files/{path}.
 
-    - Staff (worker/pa/politician/admin): all files.
+    - Super_admin: all files (platform-wide access).
+    - Staff (pa/politician/admin) of the tenant that owns the file: all files in their tenant.
     - Citizen: own profile photo, photos on their own issues, photos on approved (public) dev works.
     - Worker: additionally, photos on issues assigned to them.
+    Files are tenant-bounded — a user from tenant A cannot access tenant B files.
     """
     role = user.get("role")
+    if role == "super_admin":
+        return True
+    # Look up the file record to get its tenant_id; deny cross-tenant access.
+    file_rec = await db.files.find_one({"storage_path": path}, {"tenant_id": 1, "uploaded_by": 1})
+    file_tid = file_rec.get("tenant_id") if file_rec else None
+    user_tid = user.get("tenant_id")
+    if file_tid and user_tid and file_tid != user_tid:
+        return False
     if role in ("pa", "politician", "admin"):
         return True
     # Own profile photo (any role)
     if await db.users.find_one({"id": user["id"], "profile_photo": path}, {"id": 1}):
         return True
-    # Approved dev work photos are public to all logged-in users
-    if await db.devworks.find_one({"photos": path, "approved": True}, {"id": 1}):
+    # Approved dev work photos are public to all logged-in users in the same tenant
+    if await db.devworks.find_one(tenant_filter(user, {"photos": path, "approved": True}), {"id": 1}):
         return True
-    # Issue photos — owning citizen or assigned worker
+    # Issue photos — owning citizen or assigned worker (within same tenant)
     issue = await db.issues.find_one(
-        {"$or": [{"photos": path}, {"completion_photos": path}]},
+        tenant_filter(user, {"$or": [{"photos": path}, {"completion_photos": path}]}),
         {"citizen_id": 1, "assigned_to": 1},
     )
     if issue:
@@ -465,12 +488,15 @@ async def me(user: dict = Depends(get_current_user)):
 
 # ----------------- USERS / STAFF -----------------
 @api.post("/admin/staff")
-async def create_staff(payload: StaffCreate, _: dict = Depends(require_roles("admin"))):
-    if await db.users.find_one({"email": payload.email}):
-        raise HTTPException(400, "Email exists")
+async def create_staff(payload: StaffCreate, user: dict = Depends(require_roles("admin"))):
+    tid = get_tenant_id_for_write(user)
+    # Email uniqueness is per-tenant (rule 6 + clean multi-tenant semantics).
+    if await db.users.find_one({"email": payload.email, "tenant_id": tid}):
+        raise HTTPException(400, "Email exists in this tenant")
     u = User(
         role=payload.role,
         name=payload.name,
+        tenant_id=tid,
         email=payload.email,
         password_hash=hash_password(payload.password),
         designation=payload.designation,
@@ -487,7 +513,7 @@ async def list_users(role: Optional[str] = None, user: dict = Depends(get_curren
     # Staff-only directory. Citizens never need a full user listing.
     if not is_staff(user):
         raise HTTPException(403, "Forbidden")
-    q = {}
+    q = tenant_filter(user)
     if role:
         q["role"] = role
     docs = await db.users.find(q, {"_id": 0, "password_hash": 0}).to_list(1000)
@@ -496,13 +522,13 @@ async def list_users(role: Optional[str] = None, user: dict = Depends(get_curren
 
 # ----------------- AREAS -----------------
 @api.get("/constituencies")
-async def list_constituencies():
-    return await db.constituencies.find({}, {"_id": 0}).to_list(100)
+async def list_constituencies(user: dict = Depends(get_current_user)):
+    return await db.constituencies.find(tenant_filter(user), {"_id": 0}).to_list(100)
 
 
 @api.get("/areas")
-async def list_areas(kind: Optional[str] = None, region_type: Optional[str] = None):
-    q = {}
+async def list_areas(kind: Optional[str] = None, region_type: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = tenant_filter(user)
     if kind:
         q["kind"] = kind
     if region_type:
@@ -511,15 +537,15 @@ async def list_areas(kind: Optional[str] = None, region_type: Optional[str] = No
 
 
 @api.post("/areas")
-async def create_area(payload: AreaCreate, _: dict = Depends(require_roles("admin"))):
-    a = Area(**payload.model_dump())
+async def create_area(payload: AreaCreate, user: dict = Depends(require_roles("admin"))):
+    a = Area(**payload.model_dump(), tenant_id=get_tenant_id_for_write(user))
     await db.areas.insert_one(a.model_dump())
     return a.model_dump()
 
 
 @api.delete("/areas/{area_id}")
-async def delete_area(area_id: str, _: dict = Depends(require_roles("admin"))):
-    await db.areas.delete_one({"id": area_id})
+async def delete_area(area_id: str, user: dict = Depends(require_roles("admin"))):
+    await db.areas.delete_one(tenant_filter(user, {"id": area_id}))
     return {"ok": True}
 
 
@@ -529,10 +555,10 @@ async def list_households(search: Optional[str] = None, user: dict = Depends(get
     # Staff-only listing. Citizens look up their own via /households/{id} with their household_id.
     if not is_staff(user):
         raise HTTPException(403, "Forbidden")
-    q = {}
+    q = tenant_filter(user)
     if search:
-        # also match member mobile/name
-        member_q = {"$or": [{"mobile": {"$regex": search, "$options": "i"}}, {"name": {"$regex": search, "$options": "i"}}]}
+        # also match member mobile/name (member lookup is also tenant-scoped)
+        member_q = tenant_filter(user, {"$or": [{"mobile": {"$regex": search, "$options": "i"}}, {"name": {"$regex": search, "$options": "i"}}]})
         member_hh_ids = [u["household_id"] async for u in db.users.find(member_q, {"household_id": 1}) if u.get("household_id")]
         q["$or"] = [
             {"household_code": {"$regex": search, "$options": "i"}},
@@ -559,16 +585,16 @@ async def reset_demo(_: dict = Depends(require_roles("admin"))):
 
 @api.get("/households/{hh_id}")
 async def household_detail(hh_id: str, user: dict = Depends(get_current_user)):
-    # Staff can view any household; a citizen can only view their own household.
+    # Staff can view any household in their tenant; a citizen can only view their own household.
     if not is_staff(user) and user.get("household_id") != hh_id:
         raise HTTPException(403, "Forbidden")
-    hh = await db.households.find_one({"id": hh_id}, {"_id": 0})
+    hh = await db.households.find_one(tenant_filter(user, {"id": hh_id}), {"_id": 0})
     if not hh:
         raise HTTPException(404, "Not found")
-    members = await db.users.find({"household_id": hh_id}, {"_id": 0, "password_hash": 0}).to_list(100)
-    issues = await db.issues.find({"household_id": hh_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    members = await db.users.find(tenant_filter(user, {"household_id": hh_id}), {"_id": 0, "password_hash": 0}).to_list(100)
+    issues = await db.issues.find(tenant_filter(user, {"household_id": hh_id}), {"_id": 0}).sort("created_at", -1).to_list(200)
     # Development benefits = approved dev works in same ward/village
-    bq = {"approved": True}
+    bq = tenant_filter(user, {"approved": True})
     or_clauses = []
     if hh.get("ward_id"):
         or_clauses.append({"ward_id": hh["ward_id"]})
@@ -577,8 +603,8 @@ async def household_detail(hh_id: str, user: dict = Depends(get_current_user)):
     if or_clauses:
         bq["$or"] = or_clauses
     benefits = await db.devworks.find(bq, {"_id": 0}).sort("created_at", -1).to_list(100) if or_clauses else []
-    total = await db.issues.count_documents({"household_id": hh_id})
-    resolved = await db.issues.count_documents({"household_id": hh_id, "status": {"$in": ["Resolved", "Verified"]}})
+    total = await db.issues.count_documents(tenant_filter(user, {"household_id": hh_id}))
+    resolved = await db.issues.count_documents(tenant_filter(user, {"household_id": hh_id, "status": {"$in": ["Resolved", "Verified"]}}))
     pending = total - resolved
     return {"household": hh, "members": members, "issues": issues, "benefits": benefits, "stats": {"total": total, "resolved": resolved, "pending": pending}}
 
@@ -586,9 +612,11 @@ async def household_detail(hh_id: str, user: dict = Depends(get_current_user)):
 # ----------------- ISSUES -----------------
 @api.post("/issues")
 async def create_issue(payload: IssueCreate, user: dict = Depends(get_current_user)):
-    seq = await next_seq("issue")
+    tid = get_tenant_id_for_write(user)
+    seq = await next_seq("issue", tid)
     code = f"ISS-{10000 + seq}"
     issue = Issue(
+        tenant_id=tid,
         issue_code=code,
         citizen_id=user["id"],
         household_id=user.get("household_id"),
@@ -617,7 +645,7 @@ async def list_issues(
     search: Optional[str] = None,
     user: dict = Depends(get_current_user),
 ):
-    q = {}
+    q = tenant_filter(user)
     if mine or user["role"] == "citizen":
         q["citizen_id"] = user["id"]
     if status:
@@ -643,26 +671,26 @@ async def list_issues(
 
 @api.get("/issues/{issue_id}")
 async def issue_detail(issue_id: str, user: dict = Depends(get_current_user)):
-    issue = await db.issues.find_one({"id": issue_id}, {"_id": 0})
+    issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
     if not issue:
         raise HTTPException(404, "Not found")
-    # Access policy: staff (pa/politician/admin) — all; assigned worker — yes;
-    # owning citizen — yes; everyone else — 403.
+    # Access policy within the tenant: staff (pa/politician/admin/super_admin) — all;
+    # assigned worker — yes; owning citizen — yes; everyone else — 403.
     role = user.get("role")
     allowed = (
-        role in ("pa", "politician", "admin")
+        role in ("pa", "politician", "admin", "super_admin")
         or (role == "worker" and user["id"] == issue.get("assigned_to"))
         or user["id"] == issue.get("citizen_id")
     )
     if not allowed:
         raise HTTPException(403, "Forbidden")
-    citizen = await db.users.find_one({"id": issue["citizen_id"]}, {"_id": 0, "password_hash": 0})
+    citizen = await db.users.find_one(tenant_filter(user, {"id": issue["citizen_id"]}), {"_id": 0, "password_hash": 0})
     return {"issue": issue, "citizen": citizen}
 
 
 @api.post("/issues/{issue_id}/assign")
 async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends(require_roles("pa", "admin"))):
-    worker = await db.users.find_one({"id": payload.assigned_to}, {"_id": 0})
+    worker = await db.users.find_one(tenant_filter(user, {"id": payload.assigned_to}), {"_id": 0})
     if not worker:
         raise HTTPException(404, "Worker not found")
     update = {
@@ -673,14 +701,16 @@ async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends
         "status": "Assigned",
         "updated_at": now_iso(),
     }
-    await db.issues.update_one(
-        {"id": issue_id},
+    res = await db.issues.update_one(
+        tenant_filter(user, {"id": issue_id}),
         {
             "$set": update,
             "$push": {"timeline": {"status": "Assigned", "at": now_iso(), "by": user["name"], "note": f"Assigned to {worker['name']}"}},
         },
     )
-    return await db.issues.find_one({"id": issue_id}, {"_id": 0})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Issue not found")
+    return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
 
 
 @api.post("/issues/{issue_id}/status")
@@ -689,7 +719,7 @@ async def update_status(issue_id: str, payload: IssueUpdateStatus, user: dict = 
         raise HTTPException(400, "Invalid status")
     # workers can only update issues assigned to them
     if user["role"] == "worker":
-        issue = await db.issues.find_one({"id": issue_id})
+        issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
         if not issue or issue.get("assigned_to") != user["id"]:
             raise HTTPException(403, "Not your assignment")
     update = {"status": payload.status, "updated_at": now_iso()}
@@ -699,19 +729,21 @@ async def update_status(issue_id: str, payload: IssueUpdateStatus, user: dict = 
         update["completion_photos"] = payload.completion_photos
     if payload.remarks:
         update["remarks"] = payload.remarks
-    await db.issues.update_one(
-        {"id": issue_id},
+    res = await db.issues.update_one(
+        tenant_filter(user, {"id": issue_id}),
         {
             "$set": update,
             "$push": {"timeline": {"status": payload.status, "at": now_iso(), "by": user["name"], "note": payload.remarks or payload.completion_notes or ""}},
         },
     )
-    return await db.issues.find_one({"id": issue_id}, {"_id": 0})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Issue not found")
+    return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
 
 
 @api.post("/issues/{issue_id}/feedback")
 async def feedback(issue_id: str, payload: IssueFeedback, user: dict = Depends(get_current_user)):
-    issue = await db.issues.find_one({"id": issue_id})
+    issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
     if not issue or issue["citizen_id"] != user["id"]:
         raise HTTPException(403, "Forbidden")
     update = {
@@ -722,20 +754,20 @@ async def feedback(issue_id: str, payload: IssueFeedback, user: dict = Depends(g
     }
     note = f"Citizen rated {payload.rating}/5" + (f" — {payload.comment}" if payload.comment else "")
     await db.issues.update_one(
-        {"id": issue_id},
+        tenant_filter(user, {"id": issue_id}),
         {
             "$set": update,
             "$push": {"timeline": {"status": update["status"], "at": now_iso(), "by": user["name"], "note": note}},
         },
     )
-    return await db.issues.find_one({"id": issue_id}, {"_id": 0})
+    return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
 
 
 # ----------------- VISITS -----------------
 @api.post("/visits")
 async def create_visit(payload: VisitCreate, user: dict = Depends(require_roles("pa", "admin"))):
-    # PA creates as Pending Approval; admin auto-publishes
-    v = Visit(**payload.model_dump(), created_by=user["id"])
+    tid = get_tenant_id_for_write(user)
+    v = Visit(**payload.model_dump(), tenant_id=tid, created_by=user["id"])
     if user["role"] == "admin":
         v.status = "Published"
         v.approved_by = user["id"]
@@ -749,8 +781,9 @@ async def create_visit(payload: VisitCreate, user: dict = Depends(require_roles(
 
 
 async def _publish_visit_notification(v: Visit, user: dict):
-    recipients = await _count_recipients("wards" if v.ward_ids else ("villages" if v.village_ids else "all"), v.ward_ids, v.village_ids)
+    recipients = await _count_recipients(user, "wards" if v.ward_ids else ("villages" if v.village_ids else "all"), v.ward_ids, v.village_ids)
     notif = Notification(
+        tenant_id=v.tenant_id,
         title=f"Visit: {v.title}",
         body=f"{v.visit_type} on {v.date} at {v.time} — {v.location}",
         notif_type="Politician Visit",
@@ -766,20 +799,20 @@ async def _publish_visit_notification(v: Visit, user: dict):
 
 @api.post("/visits/{visit_id}/approve")
 async def approve_visit(visit_id: str, user: dict = Depends(require_roles("politician", "admin"))):
-    v = await db.visits.find_one({"id": visit_id})
+    v = await db.visits.find_one(tenant_filter(user, {"id": visit_id}))
     if not v:
         raise HTTPException(404, "Not found")
     if v.get("status") == "Published":
         return {**{k: v[k] for k in v if k != "_id"}}
-    await db.visits.update_one({"id": visit_id}, {"$set": {"status": "Published", "approved_by": user["id"], "approved_at": now_iso()}})
+    await db.visits.update_one(tenant_filter(user, {"id": visit_id}), {"$set": {"status": "Published", "approved_by": user["id"], "approved_at": now_iso()}})
     visit = Visit(**{**v, "status": "Published", "approved_by": user["id"], "approved_at": now_iso()})
     await _publish_visit_notification(visit, user)
-    return await db.visits.find_one({"id": visit_id}, {"_id": 0})
+    return await db.visits.find_one(tenant_filter(user, {"id": visit_id}), {"_id": 0})
 
 
 @api.get("/visits")
 async def list_visits(upcoming: bool = False, user: dict = Depends(get_current_user)):
-    q = {}
+    q = tenant_filter(user)
     if upcoming:
         q["date"] = {"$gte": datetime.now(timezone.utc).strftime("%Y-%m-%d")}
     if user["role"] == "citizen":
@@ -787,8 +820,8 @@ async def list_visits(upcoming: bool = False, user: dict = Depends(get_current_u
     return await db.visits.find(q, {"_id": 0}).sort("date", 1).limit(200).to_list(200)
 
 
-async def _count_recipients(scope: str, ward_ids: list, village_ids: list) -> int:
-    q = {"role": "citizen"}
+async def _count_recipients(user: dict, scope: str, ward_ids: list, village_ids: list) -> int:
+    q = tenant_filter(user, {"role": "citizen"})
     if scope == "all":
         return await db.users.count_documents(q)
     or_clauses = []
@@ -804,8 +837,9 @@ async def _count_recipients(scope: str, ward_ids: list, village_ids: list) -> in
 # ----------------- NOTIFICATIONS -----------------
 @api.post("/notifications")
 async def create_notif(payload: NotificationCreate, user: dict = Depends(require_roles("pa", "politician", "admin"))):
-    recipients = await _count_recipients(payload.scope, payload.ward_ids, payload.village_ids)
-    n = Notification(**payload.model_dump(), created_by=user["id"], created_by_name=user["name"], recipients_count=recipients)
+    tid = get_tenant_id_for_write(user)
+    recipients = await _count_recipients(user, payload.scope, payload.ward_ids, payload.village_ids)
+    n = Notification(**payload.model_dump(), tenant_id=tid, created_by=user["id"], created_by_name=user["name"], recipients_count=recipients)
     await db.notifications.insert_one(n.model_dump())
     return n.model_dump()
 
@@ -813,7 +847,7 @@ async def create_notif(payload: NotificationCreate, user: dict = Depends(require
 @api.get("/notifications")
 async def list_notifs(user: dict = Depends(get_current_user)):
     # filter for citizen by scope
-    q = {}
+    q = tenant_filter(user)
     if user["role"] == "citizen":
         clauses = [{"scope": "all"}]
         if user.get("ward_id"):
@@ -827,7 +861,8 @@ async def list_notifs(user: dict = Depends(get_current_user)):
 # ----------------- DEV WORKS -----------------
 @api.post("/devworks")
 async def create_dev(payload: DevWorkCreate, user: dict = Depends(require_roles("pa", "admin"))):
-    d = DevWork(**payload.model_dump(), created_by=user["id"])
+    tid = get_tenant_id_for_write(user)
+    d = DevWork(**payload.model_dump(), tenant_id=tid, created_by=user["id"])
     if user["role"] == "admin":
         d.approved = True
         d.approved_by = user["id"]
@@ -838,26 +873,30 @@ async def create_dev(payload: DevWorkCreate, user: dict = Depends(require_roles(
 
 @api.post("/devworks/{dev_id}/approve")
 async def approve_dev(dev_id: str, user: dict = Depends(require_roles("politician", "admin"))):
-    await db.devworks.update_one({"id": dev_id}, {"$set": {"approved": True, "approved_by": user["id"], "approved_at": now_iso()}})
-    return await db.devworks.find_one({"id": dev_id}, {"_id": 0})
+    res = await db.devworks.update_one(tenant_filter(user, {"id": dev_id}), {"$set": {"approved": True, "approved_by": user["id"], "approved_at": now_iso()}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Not found")
+    return await db.devworks.find_one(tenant_filter(user, {"id": dev_id}), {"_id": 0})
 
 
 @api.delete("/devworks/{dev_id}")
-async def delete_dev(dev_id: str, _: dict = Depends(require_roles("admin"))):
-    await db.devworks.delete_one({"id": dev_id})
+async def delete_dev(dev_id: str, user: dict = Depends(require_roles("admin"))):
+    await db.devworks.delete_one(tenant_filter(user, {"id": dev_id}))
     return {"ok": True}
 
 
 @api.post("/devworks/{dev_id}/progress")
 async def add_dev_progress(dev_id: str, note: str = Query(...), user: dict = Depends(require_roles("pa", "admin"))):
     entry = {"at": now_iso(), "by": user["name"], "note": note}
-    await db.devworks.update_one({"id": dev_id}, {"$push": {"progress_updates": entry}, "$set": {"updated_at": now_iso()}})
-    return await db.devworks.find_one({"id": dev_id}, {"_id": 0})
+    res = await db.devworks.update_one(tenant_filter(user, {"id": dev_id}), {"$push": {"progress_updates": entry}, "$set": {"updated_at": now_iso()}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Not found")
+    return await db.devworks.find_one(tenant_filter(user, {"id": dev_id}), {"_id": 0})
 
 
 @api.get("/devworks")
 async def list_devs(status: Optional[str] = None, ward_id: Optional[str] = None, village_id: Optional[str] = None, user: dict = Depends(get_current_user)):
-    q = {}
+    q = tenant_filter(user)
     if status:
         q["status"] = status
     if ward_id:
@@ -874,14 +913,16 @@ async def list_devs(status: Optional[str] = None, ward_id: Optional[str] = None,
 async def update_dev(dev_id: str, status: str = Query(...), user: dict = Depends(require_roles("pa", "admin"))):
     if status not in DEV_STATUSES:
         raise HTTPException(400, "Invalid status")
-    await db.devworks.update_one({"id": dev_id}, {"$set": {"status": status, "updated_at": now_iso()}})
-    return await db.devworks.find_one({"id": dev_id}, {"_id": 0})
+    res = await db.devworks.update_one(tenant_filter(user, {"id": dev_id}), {"$set": {"status": status, "updated_at": now_iso()}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Not found")
+    return await db.devworks.find_one(tenant_filter(user, {"id": dev_id}), {"_id": 0})
 
 
 # ----------------- WORKER actions -----------------
 @api.post("/issues/{issue_id}/request-reassign")
 async def request_reassign(issue_id: str, reason: str = Query(""), user: dict = Depends(require_roles("worker"))):
-    issue = await db.issues.find_one({"id": issue_id})
+    issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
     if not issue or issue.get("assigned_to") != user["id"]:
         raise HTTPException(403, "Not your assignment")
     if issue.get("status") == "Reassignment Requested":
@@ -894,7 +935,7 @@ async def request_reassign(issue_id: str, reason: str = Query(""), user: dict = 
         "status": "Pending",
     }
     await db.issues.update_one(
-        {"id": issue_id},
+        tenant_filter(user, {"id": issue_id}),
         {
             "$set": {"status": "Reassignment Requested", "updated_at": now_iso(), "reassignment_request": reassignment},
             "$push": {"timeline": {"status": "Reassignment Requested", "at": now_iso(), "by": user["name"], "note": reason or "Worker requested reassignment"}},
@@ -905,14 +946,14 @@ async def request_reassign(issue_id: str, reason: str = Query(""), user: dict = 
 
 @api.post("/issues/{issue_id}/approve-reassign")
 async def approve_reassign(issue_id: str, new_worker_id: str = Query(...), user: dict = Depends(require_roles("pa", "admin"))):
-    worker = await db.users.find_one({"id": new_worker_id, "role": "worker"})
+    worker = await db.users.find_one(tenant_filter(user, {"id": new_worker_id, "role": "worker"}))
     if not worker:
         raise HTTPException(404, "Worker not found")
-    issue = await db.issues.find_one({"id": issue_id})
+    issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
     if not issue:
         raise HTTPException(404, "Issue not found")
     await db.issues.update_one(
-        {"id": issue_id},
+        tenant_filter(user, {"id": issue_id}),
         {
             "$set": {
                 "assigned_to": worker["id"],
@@ -924,47 +965,48 @@ async def approve_reassign(issue_id: str, new_worker_id: str = Query(...), user:
             "$push": {"timeline": {"status": "Reassignment Approved", "at": now_iso(), "by": user["name"], "note": f"Reassigned to {worker['name']}"}},
         },
     )
-    return await db.issues.find_one({"id": issue_id}, {"_id": 0})
+    return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
 
 
 @api.post("/issues/{issue_id}/reject-reassign")
 async def reject_reassign(issue_id: str, note: str = Query(""), user: dict = Depends(require_roles("pa", "admin"))):
-    issue = await db.issues.find_one({"id": issue_id})
+    issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
     if not issue:
         raise HTTPException(404, "Issue not found")
     # revert to In Progress (issue stays with the original worker)
     await db.issues.update_one(
-        {"id": issue_id},
+        tenant_filter(user, {"id": issue_id}),
         {
             "$set": {"status": "In Progress", "updated_at": now_iso(), "reassignment_request": None},
             "$push": {"timeline": {"status": "Reassignment Rejected", "at": now_iso(), "by": user["name"], "note": note or "Continue with original worker"}},
         },
     )
-    return await db.issues.find_one({"id": issue_id}, {"_id": 0})
+    return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
 
 
 # ----------------- DASHBOARD -----------------
 @api.get("/dashboard/stats")
 async def dashboard_stats(user: dict = Depends(require_roles("pa", "politician", "admin"))):
-    total_citizens = await db.users.count_documents({"role": "citizen"})
-    total_households = await db.households.count_documents({})
-    total_issues = await db.issues.count_documents({})
-    resolved = await db.issues.count_documents({"status": {"$in": ["Resolved", "Verified"]}})
-    pending = await db.issues.count_documents({"status": {"$in": ["New", "Under Review", "Assigned", "In Progress", "Reopened"]}})
-    total_workers = await db.users.count_documents({"role": "worker"})
-    total_visits = await db.visits.count_documents({})
-    total_devworks = await db.devworks.count_documents({})
+    tf = tenant_filter(user)
+    total_citizens = await db.users.count_documents({**tf, "role": "citizen"})
+    total_households = await db.households.count_documents(tf)
+    total_issues = await db.issues.count_documents(tf)
+    resolved = await db.issues.count_documents({**tf, "status": {"$in": ["Resolved", "Verified"]}})
+    pending = await db.issues.count_documents({**tf, "status": {"$in": ["New", "Under Review", "Assigned", "In Progress", "Reopened"]}})
+    total_workers = await db.users.count_documents({**tf, "role": "worker"})
+    total_visits = await db.visits.count_documents(tf)
+    total_devworks = await db.devworks.count_documents(tf)
 
-    # category breakdown
-    cat_pipeline = [{"$group": {"_id": "$category", "count": {"$sum": 1}}}]
+    # category breakdown (tenant-scoped via $match before $group)
+    cat_pipeline = [{"$match": tf}, {"$group": {"_id": "$category", "count": {"$sum": 1}}}]
     cats = [{"category": c["_id"], "count": c["count"]} async for c in db.issues.aggregate(cat_pipeline)]
 
     # status breakdown
-    status_pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
+    status_pipeline = [{"$match": tf}, {"$group": {"_id": "$status", "count": {"$sum": 1}}}]
     statuses = [{"status": s["_id"], "count": s["count"]} async for s in db.issues.aggregate(status_pipeline)]
 
     # ward performance
-    ward_pipeline = [{"$group": {"_id": "$ward_id", "total": {"$sum": 1}, "resolved": {"$sum": {"$cond": [{"$in": ["$status", ["Resolved", "Verified"]]}, 1, 0]}}}}]
+    ward_pipeline = [{"$match": tf}, {"$group": {"_id": "$ward_id", "total": {"$sum": 1}, "resolved": {"$sum": {"$cond": [{"$in": ["$status", ["Resolved", "Verified"]]}, 1, 0]}}}}]
     wards = [{"ward_id": w["_id"], "total": w["total"], "resolved": w["resolved"]} async for w in db.issues.aggregate(ward_pipeline)]
 
     return {
@@ -986,8 +1028,8 @@ async def dashboard_stats(user: dict = Depends(require_roles("pa", "politician",
 async def citizen_stats(user: dict = Depends(get_current_user)):
     if user["role"] != "citizen":
         raise HTTPException(403, "Citizens only")
-    total = await db.issues.count_documents({"citizen_id": user["id"]})
-    resolved = await db.issues.count_documents({"citizen_id": user["id"], "status": {"$in": ["Resolved", "Verified"]}})
+    total = await db.issues.count_documents(tenant_filter(user, {"citizen_id": user["id"]}))
+    resolved = await db.issues.count_documents(tenant_filter(user, {"citizen_id": user["id"], "status": {"$in": ["Resolved", "Verified"]}}))
     pending = total - resolved
     return {"total": total, "resolved": resolved, "pending": pending}
 
@@ -1012,6 +1054,7 @@ async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_cur
         logger.warning(f"Object storage upload failed, falling back to DB: {e}")
     rec = {
         "id": file_id,
+        "tenant_id": user.get("tenant_id"),
         "storage_path": path,
         "original_filename": file.filename,
         "content_type": ctype,
@@ -1047,7 +1090,7 @@ async def serve_file(path: str, user: dict = Depends(get_current_user_flexible))
 # ----------------- REPORTS -----------------
 @api.get("/reports/issues.csv")
 async def report_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
-    issues = await db.issues.find({}, {"_id": 0}).to_list(5000)
+    issues = await db.issues.find(tenant_filter(user), {"_id": 0}).to_list(5000)
     cols = ["issue_code", "category", "title", "status", "assigned_to_name", "rating", "created_at"]
     lines = [",".join(cols)]
     for i in issues:
@@ -1069,69 +1112,69 @@ async def relation_types():
 
 @api.get("/persons/{person_id}")
 async def person_profile(person_id: str, user: dict = Depends(get_current_user)):
-    # Citizens may only view their own person profile; staff may view any.
+    # Citizens may only view their own person profile; staff may view any (within their tenant).
     if not is_staff(user) and user["id"] != person_id:
         raise HTTPException(403, "Forbidden")
-    person = await db.users.find_one({"id": person_id}, {"_id": 0, "password_hash": 0})
+    person = await db.users.find_one(tenant_filter(user, {"id": person_id}), {"_id": 0, "password_hash": 0})
     if not person:
         raise HTTPException(404, "Person not found")
-    rels = await db.relationships.find({"$or": [{"person_a": person_id}, {"person_b": person_id}]}, {"_id": 0}).to_list(500)
+    rels = await db.relationships.find(tenant_filter(user, {"$or": [{"person_a": person_id}, {"person_b": person_id}]}), {"_id": 0}).to_list(500)
     other_ids = [r["person_b"] if r["person_a"] == person_id else r["person_a"] for r in rels]
-    others = {u["id"]: u async for u in db.users.find({"id": {"$in": other_ids}}, {"_id": 0, "password_hash": 0})}
+    others = {u["id"]: u async for u in db.users.find(tenant_filter(user, {"id": {"$in": other_ids}}), {"_id": 0, "password_hash": 0})}
     for r in rels:
         is_a = r["person_a"] == person_id
         other_id = r["person_b"] if is_a else r["person_a"]
         other = others.get(other_id)
         r["other"] = other
-        # display_type = how the OTHER person relates TO the viewer.
-        # Stored: person_a is `type` of person_b.
-        # If viewer is person_b → other (person_a) has relation `type` to me → display_type = type.
-        # If viewer is person_a → other (person_b) has the inverse of `type` to me;
-        #   the inverse label depends on the OTHER person's gender (not the viewer's).
         if not is_a:
             r["display_type"] = r["type"]
         else:
             r["display_type"] = inverse_relation(r["type"], (other or {}).get("gender"))
-    interactions = await db.interactions.find({"person_id": person_id}, {"_id": 0}).sort("occurred_at", -1).to_list(500)
-    issues = await db.issues.find({"citizen_id": person_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    interactions = await db.interactions.find(tenant_filter(user, {"person_id": person_id}), {"_id": 0}).sort("occurred_at", -1).to_list(500)
+    issues = await db.issues.find(tenant_filter(user, {"citizen_id": person_id}), {"_id": 0}).sort("created_at", -1).to_list(500)
     return {"person": person, "relationships": rels, "interactions": interactions, "issues": issues}
 
 
 @api.put("/persons/{person_id}")
-async def update_person(person_id: str, payload: dict, _: dict = Depends(require_roles("pa", "politician", "admin"))):
+async def update_person(person_id: str, payload: dict, user: dict = Depends(require_roles("pa", "politician", "admin"))):
     allowed = {"anniversary", "occupation", "profile_photo", "notes", "status", "date_of_death",
                "supporter_since", "political_role", "influence_level", "political_notes", "family_lineage"}
     update = {k: v for k, v in payload.items() if k in allowed}
     if not update:
         raise HTTPException(400, "No allowed fields")
-    await db.users.update_one({"id": person_id}, {"$set": update})
-    return await db.users.find_one({"id": person_id}, {"_id": 0, "password_hash": 0})
+    res = await db.users.update_one(tenant_filter(user, {"id": person_id}), {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Person not found")
+    return await db.users.find_one(tenant_filter(user, {"id": person_id}), {"_id": 0, "password_hash": 0})
 
 
 @api.post("/relationships")
-async def create_relationship(payload: RelationshipCreate, _: dict = Depends(require_roles("pa", "admin"))):
+async def create_relationship(payload: RelationshipCreate, user: dict = Depends(require_roles("pa", "admin"))):
     if payload.type not in RELATION_TYPES:
         raise HTTPException(400, "Invalid relation type")
     if payload.person_a == payload.person_b:
         raise HTTPException(400, "Cannot create a relationship with the same person")
-    if not await db.users.find_one({"id": payload.person_a}) or not await db.users.find_one({"id": payload.person_b}):
+    # Both persons must exist AND be in the same tenant as the user creating the edge.
+    pa = await db.users.find_one(tenant_filter(user, {"id": payload.person_a}))
+    pb = await db.users.find_one(tenant_filter(user, {"id": payload.person_b}))
+    if not pa or not pb:
         raise HTTPException(404, "Person not found")
-    # Prevent exact duplicate edge (same direction + same type)
-    existing = await db.relationships.find_one({
+    # Prevent exact duplicate edge (same direction + same type) within tenant
+    existing = await db.relationships.find_one(tenant_filter(user, {
         "person_a": payload.person_a,
         "person_b": payload.person_b,
         "type": payload.type,
-    })
+    }))
     if existing:
         raise HTTPException(409, "This relationship already exists")
-    r = Relationship(**payload.model_dump())
+    r = Relationship(**payload.model_dump(), tenant_id=get_tenant_id_for_write(user))
     await db.relationships.insert_one(r.model_dump())
     return r.model_dump()
 
 
 @api.delete("/relationships/{rel_id}")
-async def delete_relationship(rel_id: str, _: dict = Depends(require_roles("pa", "admin"))):
-    await db.relationships.delete_one({"id": rel_id})
+async def delete_relationship(rel_id: str, user: dict = Depends(require_roles("pa", "admin"))):
+    await db.relationships.delete_one(tenant_filter(user, {"id": rel_id}))
     return {"ok": True}
 
 
@@ -1141,23 +1184,23 @@ async def create_interaction(payload: ServiceInteractionCreate, user: dict = Dep
     if not data.get("occurred_at"):
         data["occurred_at"] = now_iso()
     if data.get("worker_id"):
-        w = await db.users.find_one({"id": data["worker_id"]})
+        w = await db.users.find_one(tenant_filter(user, {"id": data["worker_id"]}))
         if w:
             data["worker_name"] = w["name"]
     elif user["role"] == "worker":
         data["worker_id"] = user["id"]
         data["worker_name"] = user["name"]
-    interaction = ServiceInteraction(**data)
+    interaction = ServiceInteraction(**data, tenant_id=get_tenant_id_for_write(user))
     await db.interactions.insert_one(interaction.model_dump())
     return interaction.model_dump()
 
 
 @api.get("/dashboard/celebrations")
-async def celebrations(days: int = 7, _: dict = Depends(require_roles("pa", "politician", "admin"))):
+async def celebrations(days: int = 7, user: dict = Depends(require_roles("pa", "politician", "admin"))):
     from datetime import date
     today = date.today()
-    citizens_alive = await db.users.find({"role": "citizen", "status": {"$ne": "deceased"}}, {"_id": 0, "password_hash": 0}).to_list(5000)
-    citizens_dead = await db.users.find({"role": "citizen", "status": "deceased"}, {"_id": 0, "password_hash": 0}).to_list(5000)
+    citizens_alive = await db.users.find(tenant_filter(user, {"role": "citizen", "status": {"$ne": "deceased"}}), {"_id": 0, "password_hash": 0}).to_list(5000)
+    citizens_dead = await db.users.find(tenant_filter(user, {"role": "citizen", "status": "deceased"}), {"_id": 0, "password_hash": 0}).to_list(5000)
 
     def _bucket(field, deceased_only=False):
         out = {"today": [], "upcoming": []}
