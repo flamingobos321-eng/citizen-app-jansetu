@@ -109,13 +109,10 @@ export default function Landing() {
               Official Constituency Service Platform
             </div>
             <h1 className="font-heading text-4xl sm:text-5xl lg:text-6xl font-bold text-gray-900 tracking-tight leading-[1.05]" data-testid="hero-headline">
-              One Platform to Manage Your <span className="text-[#0A1128]">Entire Constituency</span>.
+              One platform to run your <span className="text-[#0A1128]">entire constituency</span>.
             </h1>
-            <p className="mt-6 text-base sm:text-lg text-gray-700 max-w-2xl leading-relaxed font-medium">
-              JanSetu is a complete Constituency Management Platform that helps MLAs, MPs, Corporators and Political Offices manage citizens, households, complaints, development works, visits, staff and communication from one secure platform.
-            </p>
-            <p className="mt-4 text-sm sm:text-base text-gray-600 max-w-2xl leading-relaxed">
-              Connect citizens with their elected representatives through a transparent digital platform. Raise complaints, track resolutions, monitor development works, manage households, schedule visits, send targeted notifications and build a lifetime citizen service history—all from one place.
+            <p className="mt-6 text-base sm:text-lg text-gray-600 max-w-xl leading-relaxed">
+              For MLAs, MPs, Corporators and political offices — manage citizens, complaints, development works and visits from one secure platform.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <a href="#cta" data-testid="hero-book-demo">
@@ -129,72 +126,47 @@ export default function Landing() {
                 </Button>
               </Link>
             </div>
-            <div className="mt-10 grid grid-cols-3 gap-4 max-w-lg" data-testid="hero-stats">
-              {[
-                { k: "12+", v: "Issue Categories" },
-                { k: "7", v: "Workflow Stages" },
-                { k: "5", v: "User Roles" },
-              ].map((s) => (
-                <div key={s.v} className="rounded-lg border border-gray-200 bg-white/80 backdrop-blur px-4 py-3">
-                  <div className="font-heading text-3xl font-bold text-[#0A1128]">{s.k}</div>
-                  <div className="text-[10px] sm:text-xs font-bold uppercase tracking-[0.12em] text-gray-500 mt-1">{s.v}</div>
-                </div>
-              ))}
+            <div className="mt-10 grid grid-cols-3 gap-6 max-w-md" data-testid="hero-stats">
+              <div>
+                <div className="font-heading text-2xl font-bold text-[#0A1128]">12+</div>
+                <div className="text-xs text-gray-500 uppercase tracking-wider">Issue Categories</div>
+              </div>
+              <div>
+                <div className="font-heading text-2xl font-bold text-[#0A1128]">7</div>
+                <div className="text-xs text-gray-500 uppercase tracking-wider">Workflow Stages</div>
+              </div>
+              <div>
+                <div className="font-heading text-2xl font-bold text-[#0A1128]">5</div>
+                <div className="text-xs text-gray-500 uppercase tracking-wider">User Roles</div>
+              </div>
             </div>
           </div>
 
-          {/* App Mockup */}
-          <div className="lg:col-span-5 animate-fade-up">
-            <div className="relative">
-              <div className="absolute -inset-6 rounded-2xl bg-[#0A1128]/5 -z-10 rotate-1" />
-              <div className="bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden">
-                {/* Browser chrome */}
-                <div className="flex items-center gap-1.5 px-4 py-2.5 bg-gray-50 border-b border-gray-200">
-                  <span className="w-2.5 h-2.5 rounded-full bg-red-400" />
-                  <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-                  <div className="ml-3 px-3 py-0.5 bg-white border border-gray-200 rounded text-[10px] text-gray-400 font-mono">
-                    jansetu.in/app/dashboard
-                  </div>
-                </div>
-                {/* Dashboard preview */}
-                <div className="p-5 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-[10px] uppercase font-bold tracking-[0.15em] text-gray-400">Dashboard</div>
-                      <div className="font-heading font-semibold text-gray-900 text-sm mt-0.5">Pune Cantonment Office</div>
-                    </div>
-                    <div className="w-8 h-8 rounded-full bg-[#0A1128] text-white text-[10px] flex items-center justify-center font-bold">PA</div>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {[
-                      { l: "Citizens", v: "14,820", c: "text-[#0A1128]" },
-                      { l: "Issues", v: "1,247", c: "text-emerald-600" },
-                      { l: "Resolved", v: "92%", c: "text-amber-600" },
-                    ].map((m) => (
-                      <div key={m.l} className="rounded-md border border-gray-200 p-2">
-                        <div className={`font-heading font-bold text-lg ${m.c}`}>{m.v}</div>
-                        <div className="text-[9px] uppercase tracking-wider text-gray-400 mt-0.5">{m.l}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="rounded-md border border-gray-200 p-3">
-                    <div className="text-[10px] uppercase tracking-wider text-gray-400 font-bold mb-2">Recent issues</div>
-                    {[
-                      { c: "Road", t: "Pothole near MG Road", s: "Resolved", sc: "bg-emerald-100 text-emerald-700" },
-                      { c: "Water", t: "Water supply disruption – Ward 3", s: "In Progress", sc: "bg-amber-100 text-amber-700" },
-                      { c: "Electricity", t: "Streetlight outage", s: "Assigned", sc: "bg-blue-100 text-blue-700" },
-                    ].map((i) => (
-                      <div key={i.t} className="flex items-center justify-between py-1.5 text-xs">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{i.c}</span>
-                          <span className="text-gray-700 truncate">{i.t}</span>
-                        </div>
-                        <span className={`text-[9px] px-2 py-0.5 rounded-full ${i.sc} font-semibold`}>{i.s}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+          {/* Right info card */}
+          <div className="lg:col-span-5">
+            <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+              <div className="text-xs font-bold uppercase tracking-[0.15em] text-gray-500">For Constituency Offices</div>
+              <h3 className="font-heading text-2xl font-semibold mt-2 text-gray-900">Everything your office needs.</h3>
+              <ul className="mt-5 space-y-3 text-sm text-gray-700">
+                {[
+                  "Citizen CRM",
+                  "Complaint Management",
+                  "Household & Family Records",
+                  "Development Works",
+                  "Person 360 History",
+                  "Staff & Worker Management",
+                ].map((t) => (
+                  <li key={t} className="flex items-start gap-3">
+                    <CheckCircle2 size={18} className="text-[#0A1128] mt-0.5 shrink-0" />
+                    <span>{t}</span>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-6 pt-5 border-t border-gray-200 flex items-center justify-between">
+                <span className="text-xs text-gray-500">Secure Multi-Tenant Platform</span>
+                <a href="#features" className="text-sm font-semibold text-[#0A1128]" data-testid="hero-card-link">
+                  Learn More →
+                </a>
               </div>
             </div>
           </div>
