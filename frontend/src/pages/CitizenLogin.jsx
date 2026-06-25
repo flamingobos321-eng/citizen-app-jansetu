@@ -67,6 +67,8 @@ export default function CitizenLogin() {
         navigate("/citizen/register", { state: { mobile, tenant_slug: slug || null, portal } });
       } else {
         loginWithToken(r.data.token, r.data.user);
+        if (slug) localStorage.setItem("jansetu_origin_portal", slug);
+        else localStorage.removeItem("jansetu_origin_portal");
         toast.success(`Welcome, ${r.data.user.name}`);
         navigate("/app");
       }

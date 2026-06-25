@@ -46,6 +46,12 @@ export default function StaffLogin() {
     try {
       const r = await api.post("/auth/staff/login", { email, password, tenant_slug: slug || undefined });
       loginWithToken(r.data.token, r.data.user);
+      // Remember the originating portal so logout returns the user here.
+      if (slug && r.data.user?.role !== "super_admin") {
+        localStorage.setItem("jansetu_origin_portal", slug);
+      } else {
+        localStorage.removeItem("jansetu_origin_portal");
+      }
       toast.success(`Welcome, ${r.data.user.name}`);
       if (r.data.user.must_change_password) {
         navigate("/app/change-password", { replace: true });

@@ -742,6 +742,7 @@ async def create_issue(payload: IssueCreate, user: dict = Depends(get_current_us
         photos=payload.photos,
         gps_lat=payload.gps_lat,
         gps_lng=payload.gps_lng,
+        location_address=payload.location_address,
         ward_id=user.get("ward_id"),
         village_id=user.get("village_id"),
         timeline=[{"status": "New", "at": now_iso(), "by": user["name"], "note": "Issue raised"}],
@@ -809,6 +810,7 @@ async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends
     worker = await db.users.find_one(tenant_filter(user, {"id": payload.assigned_to}), {"_id": 0})
     if not worker:
         raise HTTPException(404, "Worker not found")
+    mobile_part = f" · Mobile: {worker.get('mobile')}" if worker.get("mobile") else ""
     update = {
         "assigned_to": payload.assigned_to,
         "assigned_to_name": worker["name"],
@@ -821,7 +823,7 @@ async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends
         tenant_filter(user, {"id": issue_id}),
         {
             "$set": update,
-            "$push": {"timeline": {"status": "Assigned", "at": now_iso(), "by": user["name"], "note": f"Assigned to {worker['name']}"}},
+            "$push": {"timeline": {"status": "Assigned", "at": now_iso(), "by": user["name"], "note": f"Assigned to {worker['name']}{mobile_part}"}},
         },
     )
     if res.matched_count == 0:
@@ -1075,6 +1077,7 @@ async def approve_reassign(issue_id: str, new_worker_id: str = Query(...), user:
         (t or {}).get("status") == "In Progress" for t in prev_timeline
     )
     new_status = "In Progress" if prev_had_progress else "Assigned"
+    mobile_part = f" · Mobile: {worker.get('mobile')}" if worker.get("mobile") else ""
     await db.issues.update_one(
         tenant_filter(user, {"id": issue_id}),
         {
@@ -1085,7 +1088,7 @@ async def approve_reassign(issue_id: str, new_worker_id: str = Query(...), user:
                 "updated_at": now_iso(),
                 "reassignment_request": None,
             },
-            "$push": {"timeline": {"status": "Reassigned", "at": now_iso(), "by": user["name"], "note": f"Reassigned to {worker['name']}"}},
+            "$push": {"timeline": {"status": "Reassigned", "at": now_iso(), "by": user["name"], "note": f"Reassigned to {worker['name']}{mobile_part}"}},
         },
     )
     return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})

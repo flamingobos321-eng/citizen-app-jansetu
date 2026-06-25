@@ -22,9 +22,11 @@ export default function RaiseIssue() {
     photos: [],
     gps_lat: null,
     gps_lng: null,
+    location_address: "",
   });
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [resolvingAddr, setResolvingAddr] = useState(false);
 
   useEffect(() => {
     api.get("/meta/categories").then((r) => setCats(r.data.issue_categories));
@@ -61,10 +63,27 @@ export default function RaiseIssue() {
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        upd("gps_lat", pos.coords.latitude);
-        upd("gps_lng", pos.coords.longitude);
+      async (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        upd("gps_lat", lat);
+        upd("gps_lng", lng);
         toast.success("Location captured");
+        // Reverse-geocode using OpenStreetMap Nominatim (no API key required).
+        // The address is the issue's site address, not the citizen's home address.
+        setResolvingAddr(true);
+        try {
+          const resp = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+            { headers: { "Accept-Language": "en" } },
+          );
+          if (resp.ok) {
+            const data = await resp.json();
+            const addr = data?.display_name || "";
+            if (addr) upd("location_address", addr);
+          }
+        } catch (_) { /* address resolution is best-effort */ }
+        finally { setResolvingAddr(false); }
       },
       () => toast.error("Location permission denied")
     );
@@ -136,7 +155,7 @@ export default function RaiseIssue() {
         </Field>
 
         <Field label="Location (optional)">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <Button type="button" variant="outline" onClick={useGPS} data-testid="gps-btn">
               <MapPin size={14} className="mr-2" /> Use my location
             </Button>
@@ -145,7 +164,14 @@ export default function RaiseIssue() {
                 {form.gps_lat.toFixed(4)}, {form.gps_lng.toFixed(4)}
               </span>
             )}
+            {resolvingAddr && <span className="text-xs text-gray-400">Resolving address…</span>}
           </div>
+          {form.location_address && (
+            <div className="mt-2 text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-md p-2" data-testid="resolved-address">
+              <span className="font-semibold uppercase tracking-wider text-[10px] text-gray-500 block">Issue location</span>
+              {form.location_address}
+            </div>
+          )}
         </Field>
 
         <Button

@@ -256,6 +256,7 @@ class Issue(BaseModel):
     photos: List[str] = []  # storage paths
     gps_lat: Optional[float] = None
     gps_lng: Optional[float] = None
+    location_address: Optional[str] = None  # GPS-derived (reverse-geocoded) address for the issue site
     ward_id: Optional[str] = None
     village_id: Optional[str] = None
     status: str = "New"
@@ -280,6 +281,7 @@ class IssueCreate(BaseModel):
     photos: List[str] = []
     gps_lat: Optional[float] = None
     gps_lng: Optional[float] = None
+    location_address: Optional[str] = None
 
 
 class IssueAssign(BaseModel):

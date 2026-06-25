@@ -1,4 +1,4 @@
-import { Link, NavLink, useNavigate } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { Button } from "./ui/button";
 import {
@@ -71,11 +71,17 @@ function SuperNavItem({ to, icon: Icon, label, testId }) {
 
 export default function Layout({ children }) {
   const { user, logout } = useAuth();
-  const navigate = useNavigate();
 
   const onLogout = () => {
+    // Remember the portal the user signed in from (if any) so we can return them.
+    const origin = localStorage.getItem("jansetu_origin_portal");
+    const isSuper = user?.role === "super_admin";
+    localStorage.removeItem("jansetu_origin_portal");
+    const target = (origin && !isSuper) ? `/portal/${origin}` : "/";
+    // Hard navigate to avoid a race between React Router and the auth-state
+    // re-render (which can briefly re-render Guards before the URL settles).
     logout();
-    navigate("/");
+    window.location.assign(target);
   };
 
   const isCitizen = user?.role === "citizen";

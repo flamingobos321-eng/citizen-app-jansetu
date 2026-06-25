@@ -53,6 +53,8 @@ export default function CitizenRegister() {
       const payload = { ...form, tenant_slug: tenantSlug || undefined };
       const r = await api.post("/auth/citizen/register", payload);
       loginWithToken(r.data.token, r.data.user);
+      if (tenantSlug) localStorage.setItem("jansetu_origin_portal", tenantSlug);
+      else localStorage.removeItem("jansetu_origin_portal");
       toast.success(`Welcome! Household ${r.data.household.household_code} created.`);
       navigate("/app");
     } catch (e) {

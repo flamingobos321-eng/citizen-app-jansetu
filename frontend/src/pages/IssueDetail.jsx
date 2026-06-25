@@ -12,7 +12,7 @@ import {
 import { toast } from "sonner";
 import { ArrowLeft, Star } from "lucide-react";
 
-const FLOW = ["New", "Under Review", "Assigned", "In Progress", "Resolved", "Verified"];
+// FLOW status array removed — timeline now renders all events chronologically
 
 export default function IssueDetail() {
   const { id } = useParams();
@@ -159,13 +159,15 @@ export default function IssueDetail() {
             </Card>
           )}
 
-          {(issue.gps_lat || data.citizen?.address) && (
+          {(issue.gps_lat || issue.location_address) && (
             <Card>
-              <h3 className="font-heading font-semibold text-gray-900 mb-3">Location</h3>
+              <h3 className="font-heading font-semibold text-gray-900 mb-3">Issue Location</h3>
               <div className="grid sm:grid-cols-3 gap-3 text-sm">
                 <div className="sm:col-span-3">
-                  <div className="text-xs uppercase tracking-wider font-bold text-gray-500">Address</div>
-                  <div className="text-gray-900 mt-0.5">{data.citizen?.address || "—"}</div>
+                  <div className="text-xs uppercase tracking-wider font-bold text-gray-500">Address (from GPS)</div>
+                  <div className="text-gray-900 mt-0.5" data-testid="issue-address">
+                    {issue.location_address || (issue.gps_lat ? "Address unavailable — see coordinates below" : "—")}
+                  </div>
                 </div>
                 {issue.gps_lat && (
                   <>
@@ -207,28 +209,38 @@ export default function IssueDetail() {
 
           <Card>
             <h3 className="font-heading font-semibold text-gray-900 mb-4">Timeline</h3>
-            <div className="space-y-4">
-              {FLOW.map((s, idx) => {
-                const event = issue.timeline?.find((t) => t.status === s);
-                const reached = FLOW.indexOf(issue.status) >= idx || event;
-                return (
-                  <div key={s} className="flex gap-3">
-                    <div className="flex flex-col items-center">
-                      <div className={`w-3 h-3 rounded-full ${reached ? "bg-[#10B981]" : "bg-gray-300"}`} />
-                      {idx < FLOW.length - 1 && <div className={`w-0.5 flex-1 ${reached ? "bg-[#10B981]" : "bg-gray-200"}`} />}
-                    </div>
-                    <div className="pb-4 flex-1">
-                      <div className="font-semibold text-sm text-gray-900">{s}</div>
-                      {event && (
+            <div className="space-y-4" data-testid="issue-timeline">
+              {(() => {
+                // Render every recorded event in chronological order.
+                // Falls back to a synthetic "Issue Created" entry if the legacy
+                // record has no initial timeline event.
+                const events = Array.isArray(issue.timeline) ? [...issue.timeline] : [];
+                if (!events.some((t) => t.status === "New" || t.status === "Issue Created")) {
+                  events.unshift({ status: "Issue Created", at: issue.created_at, by: issue.citizen_name || "Citizen", note: "" });
+                }
+                const sorted = events
+                  .map((e, i) => ({ ...e, _idx: i }))
+                  .sort((a, b) => new Date(a.at) - new Date(b.at));
+                const finalIdx = sorted.length - 1;
+                return sorted.map((event, idx) => {
+                  const label = event.status === "New" ? "Issue Created" : event.status;
+                  return (
+                    <div key={`${event.status}-${event.at}-${event._idx}`} className="flex gap-3" data-testid={`timeline-event-${idx}`}>
+                      <div className="flex flex-col items-center">
+                        <div className="w-3 h-3 rounded-full bg-[#10B981]" />
+                        {idx < finalIdx && <div className="w-0.5 flex-1 bg-[#10B981]" />}
+                      </div>
+                      <div className="pb-4 flex-1">
+                        <div className="font-semibold text-sm text-gray-900">{label}</div>
                         <div className="text-xs text-gray-500 mt-0.5">
                           {new Date(event.at).toLocaleString()} · by {event.by}
-                          {event.note && <div className="mt-0.5 text-gray-600">{event.note}</div>}
+                          {event.note && <div className="mt-0.5 text-gray-600 whitespace-pre-wrap">{event.note}</div>}
                         </div>
-                      )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                });
+              })()}
             </div>
           </Card>
 
