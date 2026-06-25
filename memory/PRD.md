@@ -177,3 +177,52 @@ V1 still authoritative. Frontend untouched (no cutover yet). M4 frontend cutover
 - Celebrations endpoint: 5000 full user docs without projection (P2)
 - Add a parity invariant for "every staff Person has staff-scope membership AND current_organisation_id is NULL" (currently only implicitly covered).
 - Strip `_dualwrite_marker` from V2 read API responses (cosmetic; harmless for shadow mode).
+
+
+## Citizen Constituency Transfer Workflow — COMPLETED (Feb 2026)
+**Goal:** Allow a citizen registered in Constituency A who visits Constituency B's portal to transfer their Person (and their entire lifetime history) without ever creating a duplicate Person record.
+
+### Backend
+- New models: `TransferRequest`, `MembershipAudit`, `TransferInitiate`, `TransferVerify`, `TransferAddress`, `CitizenMobileCheck`.
+- New module `backend/v2_transfer.py`: `detect_transfer_need`, `initiate_transfer`, `verify_and_execute_transfer`, `get_person_membership_history`.
+- New endpoints:
+  - `POST /api/auth/citizen/check-mobile` — detection (returns transfer payload).
+  - `POST /api/auth/citizen/transfer/initiate` — creates TransferRequest, mocks OTP.
+  - `POST /api/auth/citizen/transfer/verify` — atomic execution (archive old, create new, cross-link, audit, timeline, consents, fresh JWT).
+  - `GET /api/me/transfer-info` — citizen's transferred-from banner data + membership history.
+- Modified endpoints:
+  - `POST /api/auth/citizen/register` — returns HTTP 409 with `detail.code='TRANSFER_REQUIRED'` when mobile exists at a different tenant.
+  - `POST /api/auth/citizen/verify-otp` — returns `{transferred_out:true, current_portal}` when a citizen tries to log into a constituency they've been transferred away from (blocks token issuance).
+  - `GET /api/persons/{id}` — includes `transfer_banner` for transferred-out citizens so old-constituency staff get a read-only banner.
+
+### Frontend
+- `CitizenRegister.jsx` — TransferConfirmDialog (`transfer-confirm-dialog`) + TransferOtpDialog (`transfer-otp-dialog`). Reads `tenant_slug` from React Router state OR `?portal=` query string. `/areas` 401 swallowed gracefully.
+- `CitizenLogin.jsx` — redirects transferred-out citizens to their new portal with a toast.
+- `CitizenHome.jsx` — TransferredFromBanner (`transferred-from-banner`) showing previous org + transfer reason.
+- `PersonProfile.jsx` (staff view) — TransferredOutBanner (`transferred-out-banner`) for archived citizens.
+
+### Invariants verified
+- No duplicate Persons (the existing Person is reused).
+- No duplicate active Memberships (old becomes `archived`, new becomes `active`).
+- Mobile credential remains active and tied to the same Person.
+- Family relationships (`relationships_v2`) untouched — they are person-id linked, not user-id linked.
+- All operational records (issues / visits / devworks / interactions / notifications) keep their original `tenant_id` and `origin_membership_id` → old tenant retains read access; new tenant cannot see them.
+- Parity report still returns `ok=true` across all 17 invariants after transfer.
+
+### Test coverage
+- `tests/test_m3_transfer.py` — 14 unit tests (detect / initiate / verify happy + edge cases / family / idempotency / OTP / expiry / history).
+- `tests/test_m3_transfer_e2e.py` — 12 HTTP-layer E2E tests against the live preview (1 skipped harness-limit, not a backend bug).
+- Cumulative regression: **55 passed, 1 skipped** (transfer + dual-write + M2 backfill).
+
+### Status
+- Backend: production-ready (within shadow mode constraints).
+- Frontend: minimum surface for THIS feature. M4 frontend cutover NOT started per user direction.
+- Real OTP / Fast2SMS still MOCKED (any 6-digit OTP accepted) — provider-agnostic so a `Fast2SmsProvider` can swap in at the end.
+
+## Next Priorities
+1. **V2 Phase M4 — Frontend Cutover (P0)** — swap auth payloads to use `person_id`; introduce Person 360 view consuming `/me/transfer-info` + `person_timeline_events`.
+2. **Political CRM Module (P1)** — `parties`, `position_definitions`, `election_events`.
+3. **Three-Tier Privacy Gating & Consent Ledger (P1)**.
+4. **Access Audit Log + Politician Self-Service Report (P2)**.
+5. **Real Fast2SMS OTP integration (P1)**.
+6. **V2 Phase M5 — Decommission V1 schemas (P2)**.

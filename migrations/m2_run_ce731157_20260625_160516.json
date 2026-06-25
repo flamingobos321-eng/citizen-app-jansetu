@@ -1,0 +1,32 @@
+{
+  "_id": "run_ce731157_20260625_160516",
+  "started_at": "2026-06-25T16:05:16.989379+00:00",
+  "finished_at": "2026-06-25T16:05:16.996955+00:00",
+  "elapsed_s": 0.007559061050415039,
+  "dry_run": true,
+  "counts": {
+    "citizens_scanned": 1,
+    "persons_created": 1,
+    "audit_entries": 1,
+    "credentials_created": 1,
+    "visits_skipped_no_person_ref": 0,
+    "devworks_skipped_no_person_ref": 0,
+    "notifications_skipped_no_person_ref": 0
+  },
+  "errors": [],
+  "validation": {
+    "checks": {
+      "every_citizen_mapped": {
+        "expected": 1,
+        "actual": 1,
+        "ok": true
+      },
+      "unresolved_conflicts": {
+        "violations": 0,
+        "ok": true,
+        "mobiles": []
+      }
+    },
+    "ok": true
+  }
+}

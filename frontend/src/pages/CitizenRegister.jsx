@@ -21,7 +21,11 @@ export default function CitizenRegister() {
   const navigate = useNavigate();
   const { loginWithToken } = useAuth();
   const presetMobile = loc.state?.mobile || "";
-  const tenantSlug = loc.state?.tenant_slug || null;
+  // Read tenant_slug from React Router state (primary path) AND fall back to
+  // the ?portal= query string so direct-URL navigation / page reloads still
+  // carry portal context into the registration POST.
+  const queryParams = new URLSearchParams(loc.search);
+  const tenantSlug = loc.state?.tenant_slug || queryParams.get("portal") || null;
   const portal = loc.state?.portal || null;
 
   const [areas, setAreas] = useState([]);
@@ -48,7 +52,11 @@ export default function CitizenRegister() {
   const [transferReason, setTransferReason] = useState("");
 
   useEffect(() => {
-    api.get("/areas").then((r) => setAreas(r.data));
+    // /areas requires staff auth; for unauthenticated registration we just
+    // silently swallow the 401 — the ward/village selectors degrade to empty
+    // gracefully and the server will still accept the form (ward_id/village_id
+    // are optional for citizen registration).
+    api.get("/areas").then((r) => setAreas(r.data)).catch(() => setAreas([]));
   }, []);
 
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
