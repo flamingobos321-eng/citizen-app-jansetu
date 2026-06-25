@@ -97,12 +97,12 @@ export default function Landing() {
       </header>
 
       {/* ============= HERO ============= */}
-      <section className="relative overflow-hidden">
+      <section className="relative overflow-hidden min-h-screen flex items-center">
         <div className="absolute inset-0 -z-0">
           <img src={HERO_BG} alt="Government building" className="w-full h-full object-cover" />
           <div className="absolute inset-0 bg-white/92 backdrop-blur-sm" />
         </div>
-        <div className="relative max-w-7xl mx-auto px-6 py-20 sm:py-28 grid lg:grid-cols-12 gap-12 items-center">
+        <div className="relative w-full max-w-7xl mx-auto px-6 py-20 grid lg:grid-cols-12 gap-12 items-center">
           <div className="lg:col-span-7 animate-fade-up">
             <div className="inline-flex items-center gap-2 bg-white border border-gray-200 px-3 py-1.5 rounded-full text-xs font-semibold text-gray-700 mb-6" data-testid="hero-badge">
               <ShieldCheck size={14} className="text-[#0A1128]" />
