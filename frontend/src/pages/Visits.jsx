@@ -15,6 +15,8 @@ import { toast } from "sonner";
 export default function Visits() {
   const { user } = useAuth();
   const [items, setItems] = useState([]);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
   const canCreate = ["pa", "admin"].includes(user?.role);
   const canApprove = ["politician", "admin"].includes(user?.role);
 
@@ -31,17 +33,41 @@ export default function Visits() {
     }
   };
 
+  const visible = items.filter((v) => {
+    if (statusFilter !== "all" && v.status !== statusFilter) return false;
+    if (typeFilter !== "all" && v.visit_type !== typeFilter) return false;
+    return true;
+  });
+
   return (
     <div className="space-y-6 animate-fade-up">
       <SectionTitle subtitle="Politician visits, camps and public meetings">Visits & Camps</SectionTitle>
 
       {canCreate && <Composer onCreated={load} isAdmin={user?.role === "admin"} />}
 
-      {items.length === 0 ? (
+      {/* Filters (staff/citizen) */}
+      <div className="flex flex-wrap gap-3" data-testid="visits-filters">
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="w-[180px]" data-testid="visits-filter-status"><SelectValue placeholder="All statuses" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
+            {["Pending Approval", "Published", "Cancelled", "Completed"].map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={typeFilter} onValueChange={setTypeFilter}>
+          <SelectTrigger className="w-[200px]" data-testid="visits-filter-type"><SelectValue placeholder="All types" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All types</SelectItem>
+            {["Public Meeting", "Village Visit", "Ward Inspection", "Health Camp", "Janata Darbar"].map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {visible.length === 0 ? (
         <EmptyState title="No visits scheduled" />
       ) : (
         <div className="grid md:grid-cols-2 gap-4">
-          {items.map((v) => (
+          {visible.map((v) => (
             <div key={v.id} className="bg-white border border-gray-200 rounded-lg p-5">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="pill pill-info">{v.visit_type}</span>

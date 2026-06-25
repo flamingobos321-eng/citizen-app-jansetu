@@ -14,6 +14,7 @@ import {
   Plus,
   ShieldCheck,
   Cake,
+  Download,
   Globe,
   Crown,
   CreditCard,
@@ -139,6 +140,7 @@ export default function Layout({ children }) {
               <NavItem to="/app/notifications" icon={Bell} label="Notifications" testId="nav-notifs" />
               <NavItem to="/app/devworks" icon={Hammer} label="Development Works" testId="nav-devworks" />
               <NavItem to="/app/celebrations" icon={Cake} label="Celebrations" testId="nav-celeb" />
+              <NavItem to="/app/reports" icon={Download} label="Reports" testId="nav-reports" />
               {isAdmin && (
                 <>
                   <NavItem to="/app/areas" icon={Map} label="Wards & Villages" testId="nav-areas" />

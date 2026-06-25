@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { SectionTitle, EmptyState } from "../components/Common";
 import { Input } from "../components/ui/input";
-import { Search, Home, ChevronRight } from "lucide-react";
+import { Search, Home, ChevronRight, User } from "lucide-react";
 
 export default function CitizensList() {
   const [hh, setHh] = useState([]);
@@ -78,12 +79,23 @@ export default function CitizensList() {
                 <h3 className="font-heading font-semibold text-gray-900 mb-3">Members ({detail.members.length})</h3>
                 <div className="divide-y divide-gray-100">
                   {detail.members.map((m) => (
-                    <div key={m.id} className="py-2 flex items-center justify-between">
-                      <div>
-                        <div className="font-semibold text-sm text-gray-900">{m.name}</div>
-                        <div className="text-xs text-gray-500">{m.mobile} · {m.gender}</div>
+                    <Link
+                      key={m.id}
+                      to={`/app/persons/${m.id}`}
+                      data-testid={`member-link-${m.id}`}
+                      className="py-2 flex items-center justify-between gap-3 hover:bg-gray-50 -mx-2 px-2 rounded"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-500">
+                          <User size={14} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-sm text-gray-900 truncate">{m.name}</div>
+                          <div className="text-xs text-gray-500">{m.mobile} · {m.gender}</div>
+                        </div>
                       </div>
-                    </div>
+                      <ChevronRight size={14} className="text-gray-400 shrink-0" />
+                    </Link>
                   ))}
                 </div>
               </div>

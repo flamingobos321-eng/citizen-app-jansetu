@@ -25,6 +25,7 @@ import SuperAdminDashboard from "./pages/SuperAdminDashboard";
 import SuperSubscriptions from "./pages/SuperSubscriptions";
 import SuperTrials from "./pages/SuperTrials";
 import Celebrations from "./pages/Celebrations";
+import Reports from "./pages/Reports";
 import PersonProfile from "./pages/PersonProfile";
 import PortalIndex from "./portal/PortalIndex";
 import PortalHome from "./portal/PortalHome";
@@ -110,6 +111,7 @@ export default function App() {
           <Route path="/app/devworks" element={<TenantGuard><DevWorks /></TenantGuard>} />
           <Route path="/app/citizens" element={<TenantGuard><CitizensList /></TenantGuard>} />
           <Route path="/app/celebrations" element={<TenantGuard><Celebrations /></TenantGuard>} />
+          <Route path="/app/reports" element={<TenantGuard><Reports /></TenantGuard>} />
           <Route path="/app/persons/:id" element={<TenantGuard><PersonProfile /></TenantGuard>} />
           <Route path="/app/areas" element={<TenantGuard><AdminAreas /></TenantGuard>} />
           <Route path="/app/staff" element={<TenantGuard><AdminStaff /></TenantGuard>} />

@@ -1152,6 +1152,11 @@ async def feedback(issue_id: str, payload: IssueFeedback, user: dict = Depends(g
     issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
     if not issue or issue["citizen_id"] != user["id"]:
         raise HTTPException(403, "Forbidden")
+    # State guard: feedback may only be submitted when the issue has reached
+    # "Resolved". Verifying earlier states (New / Assigned / In Progress) does
+    # not make sense and was previously silently allowed.
+    if issue.get("status") != "Resolved":
+        raise HTTPException(400, "Feedback can only be submitted on Resolved issues")
     update = {
         "rating": payload.rating,
         "feedback_comment": payload.comment,
@@ -1543,19 +1548,80 @@ async def serve_file(path: str, user: dict = Depends(get_current_user_flexible))
 
 
 # ----------------- REPORTS -----------------
-@api.get("/reports/issues.csv")
-async def report_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
-    issues = await db.issues.find(tenant_filter(user), {"_id": 0}).to_list(5000)
-    cols = ["issue_code", "category", "title", "status", "assigned_to_name", "rating", "created_at"]
+def _csv_response(filename: str, rows: list[dict], cols: list[str]) -> Response:
     lines = [",".join(cols)]
-    for i in issues:
+    for r in rows:
         vals = []
         for c in cols:
-            v = i.get(c, "")
+            v = r.get(c, "")
             v = "" if v is None else str(v).replace(",", " ").replace("\n", " ")
             vals.append(v)
         lines.append(",".join(vals))
-    return Response("\n".join(lines), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=issues.csv"})
+    return Response(
+        "\n".join(lines),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@api.get("/reports/issues.csv")
+async def report_issues_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    issues = await db.issues.find(tenant_filter(user), {"_id": 0}).to_list(20000)
+    cols = ["issue_code", "category", "title", "status", "assigned_to_name", "rating", "created_at"]
+    return _csv_response("issues.csv", issues, cols)
+
+
+@api.get("/reports/households.csv")
+async def report_households_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    hh = await db.households.find(tenant_filter(user), {"_id": 0}).to_list(20000)
+    cols = ["household_code", "family_head_name", "house_number", "region_type",
+            "address", "members_count", "created_at"]
+    return _csv_response("households.csv", hh, cols)
+
+
+@api.get("/reports/citizens.csv")
+async def report_citizens_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    rows = await db.users.find(
+        tenant_filter(user, {"role": "citizen"}),
+        {"_id": 0, "id": 1, "name": 1, "mobile": 1, "gender": 1, "dob": 1,
+         "address": 1, "house_number": 1, "region_type": 1, "status": 1,
+         "is_active": 1, "created_at": 1},
+    ).to_list(50000)
+    cols = ["id", "name", "mobile", "gender", "dob", "house_number", "region_type",
+            "address", "status", "is_active", "created_at"]
+    return _csv_response("citizens.csv", rows, cols)
+
+
+@api.get("/reports/devworks.csv")
+async def report_devworks_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    rows = await db.devworks.find(tenant_filter(user), {"_id": 0}).to_list(20000)
+    cols = ["title", "category", "status", "approved", "budget", "location", "created_at"]
+    return _csv_response("devworks.csv", rows, cols)
+
+
+@api.get("/reports/visits.csv")
+async def report_visits_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    rows = await db.visits.find(tenant_filter(user), {"_id": 0}).to_list(20000)
+    cols = ["title", "visit_type", "date", "time", "location", "status",
+            "target_audience", "created_at"]
+    return _csv_response("visits.csv", rows, cols)
+
+
+@api.get("/reports/summary")
+async def report_summary(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    """Lightweight numbers report for the Reports page header."""
+    base = tenant_filter(user)
+    citizens = await db.users.count_documents({**base, "role": "citizen"})
+    households = await db.households.count_documents(base)
+    issues = await db.issues.count_documents(base)
+    resolved = await db.issues.count_documents({**base, "status": {"$in": ["Resolved", "Verified"]}})
+    devworks = await db.devworks.count_documents(base)
+    visits = await db.visits.count_documents(base)
+    return {
+        "citizens": citizens, "households": households,
+        "issues": issues, "issues_resolved": resolved,
+        "devworks": devworks, "visits": visits,
+    }
 
 
 
@@ -1702,8 +1768,21 @@ async def create_interaction(payload: ServiceInteractionCreate, user: dict = Dep
 async def celebrations(days: int = 7, user: dict = Depends(require_roles("pa", "politician", "admin"))):
     from datetime import date
     today = date.today()
-    citizens_alive = await db.users.find(tenant_filter(user, {"role": "citizen", "status": {"$ne": "deceased"}}), {"_id": 0, "password_hash": 0}).to_list(5000)
-    citizens_dead = await db.users.find(tenant_filter(user, {"role": "citizen", "status": "deceased"}), {"_id": 0, "password_hash": 0}).to_list(5000)
+    # Projection: load only the fields the bucketing logic actually uses
+    # (avoid pulling full 5000-doc user records each call).
+    projection = {
+        "_id": 0, "id": 1, "name": 1, "mobile": 1, "ward_id": 1, "village_id": 1,
+        "household_id": 1, "dob": 1, "anniversary": 1, "date_of_death": 1,
+        "status": 1, "gender": 1, "profile_photo": 1,
+    }
+    citizens_alive = await db.users.find(
+        tenant_filter(user, {"role": "citizen", "status": {"$ne": "deceased"}}),
+        projection,
+    ).to_list(5000)
+    citizens_dead = await db.users.find(
+        tenant_filter(user, {"role": "citizen", "status": "deceased"}),
+        projection,
+    ).to_list(5000)
 
     def _bucket(field, deceased_only=False):
         out = {"today": [], "upcoming": []}

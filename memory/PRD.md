@@ -240,3 +240,20 @@ V1 still authoritative. Frontend untouched (no cutover yet). M4 frontend cutover
 4. Real Fast2SMS OTP integration (P1, end of project).
 5. V2 Phase M5 — Decommission V1 schemas (P2).
 
+
+
+## Core CRM Polish — COMPLETED (Feb 2026)
+**Backend:**
+- Feedback state guard added: `POST /api/issues/{id}/feedback` now rejects with HTTP 400 unless `status="Resolved"`.
+- `/api/dashboard/celebrations` switched to a slim projection (no longer pulls 5000 full user docs).
+- New CSV report endpoints (PA/Politician/Admin): `/api/reports/households.csv`, `/api/reports/citizens.csv`, `/api/reports/devworks.csv`, `/api/reports/visits.csv`, plus `/api/reports/summary` (JSON counts).
+- DRY refactor: single `_csv_response()` helper now powers all `/reports/*.csv` endpoints.
+
+**Frontend:**
+- `Notifications.jsx` composer now supports ward / village targeting (multi-select chips, scope=all/ward/village). Validates non-empty selections.
+- `CitizensList.jsx` member rows are now `<Link>` to `PersonProfile` (`member-link-<id>`).
+- `Visits.jsx` adds status + type filters (`visits-filter-status`, `visits-filter-type`).
+- New page `Reports.jsx` (`/app/reports`) — staff-only — summary tiles + CSV download cards for citizens / households / issues / devworks / visits.
+- Sidebar (`Layout.jsx`) gains a "Reports" nav entry for staff roles.
+
+**Tests:** 43/43 backend pytest pass.
