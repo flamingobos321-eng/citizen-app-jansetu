@@ -770,6 +770,37 @@ async def staff_login(payload: StaffLogin):
     return {"token": token, "user": user}
 
 
+@api.get("/me/timeline")
+async def me_timeline(user: dict = Depends(get_current_user),
+                      limit: int = 200):
+    """Citizen Person-360 timeline (cross-tenant self-view)."""
+    pid = user.get("person_id")
+    if not pid:
+        return {"person_id": None, "events": []}
+    events = await db.person_timeline_events.find(
+        {"person_id": pid}, {"_id": 0}
+    ).sort("at", -1).to_list(max(1, min(limit, 500)))
+    return {"person_id": pid, "events": events}
+
+
+@api.get("/persons/{person_id}/timeline")
+async def person_timeline(person_id: str,
+                          user: dict = Depends(get_current_user),
+                          limit: int = 200):
+    """Staff view of a person's timeline, scoped to the staff's tenant.
+    Returns only events emitted by the staff's organisation (operational
+    tenant isolation enforced via organisation_id filter)."""
+    target = await db.users.find_one(tenant_filter(user, {"id": person_id}), {"_id": 0, "person_id": 1})
+    if not target:
+        raise HTTPException(404, "Person not found")
+    pid = target.get("person_id")
+    if not pid:
+        return {"person_id": None, "events": []}
+    q = {"person_id": pid, "organisation_id": user.get("tenant_id")}
+    events = await db.person_timeline_events.find(q, {"_id": 0}).sort("at", -1).to_list(max(1, min(limit, 500)))
+    return {"person_id": pid, "events": events}
+
+
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
     return user

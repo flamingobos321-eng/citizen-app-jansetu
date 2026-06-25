@@ -1,0 +1,46 @@
+{
+  "_id": "run_64781589_20260625_161448",
+  "started_at": "2026-06-25T16:14:48.651239+00:00",
+  "finished_at": "2026-06-25T16:14:48.654635+00:00",
+  "elapsed_s": 0.0007433891296386719,
+  "dry_run": false,
+  "counts": {
+    "citizens_scanned": 2
+  },
+  "errors": [],
+  "validation": {
+    "checks": {
+      "every_citizen_mapped": {
+        "expected": 2,
+        "actual": 0,
+        "ok": true
+      },
+      "one_active_membership_per_person": {
+        "violations": 0,
+        "ok": true,
+        "examples": []
+      },
+      "active_mobile_unique": {
+        "violations": 0,
+        "ok": true,
+        "examples": []
+      },
+      "issues_stamped": {
+        "violations": 0,
+        "ok": true
+      },
+      "relationships_v2_endpoints_valid": {
+        "violations": 0,
+        "ok": true
+      },
+      "unresolved_conflicts": {
+        "violations": 1,
+        "ok": false,
+        "mobiles": [
+          "9000000001"
+        ]
+      }
+    },
+    "ok": false
+  }
+}

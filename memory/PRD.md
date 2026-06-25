@@ -226,3 +226,17 @@ V1 still authoritative. Frontend untouched (no cutover yet). M4 frontend cutover
 4. **Access Audit Log + Politician Self-Service Report (P2)**.
 5. **Real Fast2SMS OTP integration (P1)**.
 6. **V2 Phase M5 — Decommission V1 schemas (P2)**.
+
+## V2 Phase M4 — Frontend Cutover (minimum) COMPLETED (Feb 2026)
+- New backend endpoints: `GET /api/me/timeline` (citizen cross-tenant self-view) + `GET /api/persons/{id}/timeline` (staff tenant-scoped).
+- New component `frontend/src/components/PersonTimeline.jsx` (V2 `person_timeline_events` renderer).
+- Wired into `CitizenHome.jsx` (Person 360 timeline) and `PersonProfile.jsx` (staff view).
+- `useAuth()` already exposes `user.person_id`; no auth-context change required.
+
+## Next Priorities
+1. Political CRM Module (P1) — parties, positions, elections.
+2. Three-Tier Privacy Gating + Consent Ledger (P1).
+3. Access Audit Log + Politician Self-Service Report (P2).
+4. Real Fast2SMS OTP integration (P1, end of project).
+5. V2 Phase M5 — Decommission V1 schemas (P2).
+

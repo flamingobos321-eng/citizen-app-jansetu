@@ -3,6 +3,7 @@ import { useParams, Link } from "react-router-dom";
 import { api, fileUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { SectionTitle, StatusPill } from "../components/Common";
+import { PersonTimeline } from "../components/PersonTimeline";
 import {
   Phone, MessageSquare, Copy, ArrowLeft, User, Heart, Cake, Flame,
   Briefcase, Users, Plus, Trash2, Search, X, AlertTriangle,
@@ -202,6 +203,11 @@ export default function PersonProfile() {
                 ))}
               </div>
             )}
+          </Card>
+
+          {/* V2 Person 360 Timeline (tenant-scoped staff view) */}
+          <Card title="Person Timeline" icon={Heart}>
+            <PersonTimeline scope="staff" personUserId={id} limit={100} />
           </Card>
         </div>
 

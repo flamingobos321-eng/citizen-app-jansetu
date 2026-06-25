@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { StatCard, SectionTitle, StatusPill } from "../components/Common";
+import { PersonTimeline } from "../components/PersonTimeline";
 import { Plus, FileText, Calendar, Bell, Hammer, ArrowRight, ArrowRightLeft } from "lucide-react";
 import { Button } from "../components/ui/button";
 
@@ -142,6 +143,17 @@ export default function CitizenHome() {
               ))}
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Person 360 — lifetime timeline (V2 cross-tenant self-view) */}
+      <div className="bg-white border border-gray-200 rounded-lg">
+        <div className="p-5 border-b border-gray-200 flex items-center justify-between">
+          <h3 className="font-heading font-semibold text-gray-900">Your timeline</h3>
+          <span className="text-[10px] uppercase font-bold tracking-[0.1em] text-gray-400">Person 360</span>
+        </div>
+        <div className="p-5">
+          <PersonTimeline scope="self" limit={50} />
         </div>
       </div>
     </div>
