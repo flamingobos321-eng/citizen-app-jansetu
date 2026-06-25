@@ -716,14 +716,23 @@ async def create_staff(payload: StaffCreate, user: dict = Depends(require_roles(
         mobile=payload.mobile,
     )
     await db.users.insert_one(u.model_dump())
-    # M3 dual-write — mirror staff into V2 (Person + staff Membership).
+    # M3 dual-write — mirror staff into V2 (Person + staff Membership). Then
+    # stamp person_id / origin_membership_id back onto the V1 row for symmetry
+    # with the citizen-register flow (testing_agent_v3 minor #1).
     try:
-        await v2dw.ensure_person_for_user(db, u.model_dump())
+        pid = await v2dw.ensure_person_for_user(db, u.model_dump())
+        if pid:
+            mem = await v2dw.resolve_active_membership(
+                db, person_id=pid, organisation_id=u.tenant_id)
+            await db.users.update_one(
+                {"id": u.id},
+                {"$set": {"person_id": pid,
+                          "origin_membership_id": mem["id"] if mem else None}},
+            )
     except Exception:
         logger.exception("V2 dualwrite skipped for staff creation")
-    out = u.model_dump()
-    out.pop("password_hash", None)
-    return out
+    out = await db.users.find_one({"id": u.id}, {"_id": 0, "password_hash": 0})
+    return out or u.model_dump()
 
 
 @api.get("/users")

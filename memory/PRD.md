@@ -130,3 +130,50 @@ Identity / Membership / Privacy redesign. Person = permanent identity, Mobile = 
 ### Setup Wizard
 Per user direction (Feb 2026), the multi-step setup wizard was descoped. Only the **forced password change** on first login is enforced. Branding / wards / staff are configured from the standard dashboard after login.
 
+
+
+## V2 Phase M3 — Dual-Write Backend COMPLETED (Feb 2026)
+**Goal:** Every V1 mutation also writes V2 (persons/credentials/memberships/timeline) so the two stay perfectly in sync during shadow mode. V1 contracts unchanged; V1 remains authoritative.
+
+### Schema additions
+- `Membership.scope_type` now includes `"staff"` (so staff Persons can be ORG-bound for `origin_membership_id` stamping while keeping `Person.current_organisation_id` NULL per spec).
+- `Visit` / `Notification` / `DevWork` / `ServiceInteraction` / `Relationship` all gained `origin_membership_id: Optional[str]`.
+- `PersonTimelineEvent.event_type` expanded to include: `complaint_assigned`, `complaint_in_progress`, `complaint_reassigned`, `complaint_feedback`, `visit_announced`, `visit_approved`, `devwork_announced`, `devwork_completed`, `notification_published`, `profile_updated`, `membership_created`, `relationship_added`, `relationship_removed`.
+
+### Endpoints wired to dual-write
+`citizen_register`, `create_staff`, `update_person`, `create_issue`, `assign_issue`, `update_status`, `feedback`, `approve_reassign`, `create_visit`, `approve_visit`, `create_notif`, `create_dev`, `update_dev` (status), `create_interaction`, `create_relationship`, `delete_relationship`.
+
+### Helpers (`backend/v2_dualwrite.py`)
+`ensure_person_for_user` (citizen/staff branching), `resolve_active_membership`, `resolve_person_and_membership`, `sync_issue_to_v2`, `sync_issue_event`, `sync_visit_to_v2`, `sync_visit_approved`, `sync_notification_to_v2`, `sync_devwork_to_v2`, `sync_devwork_status`, `sync_interaction_to_v2`, `sync_relationship_to_v2`, `revoke_relationship_v2`, `sync_person_profile_update`, `sync_household_update`, `parity_report`.
+
+### New endpoints (super-admin only)
+- `GET /api/admin/v2/parity` — comprehensive report covering 17 invariants (I1 citizens mapped, I2 mobile uniqueness, I3 one active membership per citizen, I4 no orphan memberships, I5 no orphan timeline events, I6 no orphan citizen persons, I7 all operational rows have `person_id`, I8 all operational rows have `origin_membership_id`).
+- `POST /api/admin/v2/parity/backfill-missing` — idempotent: lazy-mints any missing Persons + re-stamps any unstamped operational rows.
+
+### Test coverage
+- `tests/test_m3_dualwrite.py` — 14 unit tests (helpers, idempotency, parity assertions, staff-scope memberships, etc.)
+- `tests/test_m3_e2e_dualwrite.py` — 13 HTTP-layer end-to-end tests (created by backend testing agent)
+- `tests/test_m2_backfill.py` — 15 baseline tests still green
+- **Total: 42/42 passing.**
+
+### Live preview DB
+Parity endpoint returns `ok=True` across all 17 invariants on the running DB after running `POST /api/admin/v2/parity/backfill-missing` once.
+
+### Status: SHADOW MODE
+V1 still authoritative. Frontend untouched (no cutover yet). M4 frontend cutover comes AFTER the Constituency Transfer Workflow.
+
+## Next Priorities (post-M3)
+1. **Citizen Constituency Transfer Workflow (P0)** — lookup dialog, OTP transfer step, confirmation, membership archival API. Will leverage `sync_membership_archived` (to be added in next phase).
+2. **V2 Phase M4 — Frontend Cutover (P0)** — swap auth payloads to include `person_id`; update relationship/timeline components to use V2 endpoints.
+3. **Political CRM Module (P1)** — `parties`, `position_definitions`, `election_events`.
+4. **Three-Tier Privacy Gating & Consent Ledger (P1)**.
+5. **Access Audit Log + Politician Self-Service Report (P2)**.
+6. **Real OTP / Fast2SMS Integration (P1)** — keep provider-agnostic; plug-in pattern.
+7. **V2 Phase M5 — Decommission V1 schemas (P2)**.
+
+### Known minor backlog items (non-blocking)
+- Notifications composer: ward/village targeting in UI (P1)
+- Citizen feedback: missing state guard (P2)
+- Celebrations endpoint: 5000 full user docs without projection (P2)
+- Add a parity invariant for "every staff Person has staff-scope membership AND current_organisation_id is NULL" (currently only implicitly covered).
+- Strip `_dualwrite_marker` from V2 read API responses (cosmetic; harmless for shadow mode).

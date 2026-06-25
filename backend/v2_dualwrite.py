@@ -357,13 +357,20 @@ async def resolve_person_and_membership(db, user: dict) -> tuple[Optional[str], 
 # ----------------------------------------------------------------------------
 async def sync_person_profile_update(db, *, user_id: str, updates: dict,
                                      actor_user: Optional[dict] = None) -> None:
-    """Mirror a `users` profile update onto the corresponding Person doc."""
+    """Mirror a `users` profile update onto the corresponding Person doc.
+
+    The V1 PUT /api/persons/{id} endpoint accepts only profile metadata
+    (occupation, notes, profile_photo, status, etc). For V2 Person we mirror:
+      • profile_photo → person.photo_path
+      • status='deceased' → person.status='deceased'
+    Core identity fields (name/dob/gender/email/mobile) are NOT yet
+    mutable via V1 and therefore intentionally excluded here.
+    """
     try:
         pid = await _get_mapped_person_id(db, user_id)
         if not pid:
             return
-        allowed = {"name", "dob", "gender", "email"}
-        proj = {k: v for k, v in (updates or {}).items() if k in allowed}
+        proj: dict = {}
         photo = updates.get("profile_photo") or updates.get("photo_path")
         if photo:
             proj["photo_path"] = photo
