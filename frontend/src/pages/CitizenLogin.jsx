@@ -6,7 +6,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { toast } from "sonner";
-import { Phone, KeyRound, ArrowLeft } from "lucide-react";
+import { Phone, KeyRound, ArrowLeft, ShieldOff } from "lucide-react";
 
 const BG = "https://images.pexels.com/photos/19883685/pexels-photo-19883685.jpeg";
 
@@ -27,9 +27,10 @@ export default function CitizenLogin() {
     fetch(`${API}/portals/${slug}`)
       .then((r) => r.ok ? r.json() : Promise.reject(r))
       .then((data) => { setPortal(data); setPortalErr(null); })
-      .catch(() => setPortalErr("Portal not found or suspended"));
+      .catch(() => setPortalErr("Portal not found"));
   }, [slug]);
 
+  const suspended = portal?.portal_status === "suspended";
   const theme = portal?.theme_color || "#0A1128";
   const initials = useMemo(() => {
     const name = portal?.politician_name || portal?.constituency_name || "JANSETU";
@@ -37,6 +38,7 @@ export default function CitizenLogin() {
   }, [portal]);
 
   const sendOtp = async () => {
+    if (suspended) { toast.error("This portal is suspended"); return; }
     if (!/^\d{10}$/.test(mobile)) {
       toast.error("Enter a valid 10-digit mobile number");
       return;
@@ -119,7 +121,28 @@ export default function CitizenLogin() {
               </div>
             )}
 
-            {step === 1 ? (
+            {suspended && (
+              <div
+                className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-4"
+                data-testid="login-suspended-notice"
+                role="alert"
+              >
+                <div className="flex items-start gap-3">
+                  <ShieldOff className="text-amber-700 shrink-0 mt-0.5" size={18} />
+                  <div className="text-sm">
+                    <div className="font-heading font-bold text-amber-900">Account Suspended</div>
+                    <p className="text-amber-900/90 mt-1">
+                      This constituency portal has been temporarily suspended.
+                    </p>
+                    <p className="text-amber-900/80 mt-1">
+                      Please contact your service provider for assistance.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!suspended && step === 1 && (
               <div className="mt-7 space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="mobile" className="text-xs font-bold uppercase tracking-[0.1em] text-gray-500">Mobile number</Label>
@@ -150,7 +173,8 @@ export default function CitizenLogin() {
                   </p>
                 )}
               </div>
-            ) : (
+            )}
+            {!suspended && step === 2 && (
               <div className="mt-7 space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="otp" className="text-xs font-bold uppercase tracking-[0.1em] text-gray-500">6-digit OTP</Label>

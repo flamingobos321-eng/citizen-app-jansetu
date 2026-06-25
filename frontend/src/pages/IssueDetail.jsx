@@ -36,7 +36,7 @@ export default function IssueDetail() {
       for (const file of files) {
         const fd = new FormData();
         fd.append("file", file);
-        const r = await api.post("/files/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+        const r = await api.post("/files/upload", fd);
         uploaded.push(r.data.path);
       }
       setCompletionPhotos((p) => [...p, ...uploaded]);

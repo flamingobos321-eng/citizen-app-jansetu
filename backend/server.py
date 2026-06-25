@@ -599,14 +599,21 @@ async def update_setup_step(payload: dict, user: dict = Depends(require_roles("a
 @api.post("/admin/staff")
 async def create_staff(payload: StaffCreate, user: dict = Depends(require_roles("admin"))):
     tid = get_tenant_id_for_write(user)
+    email_norm = (payload.email or "").strip().lower()
+    if not email_norm:
+        raise HTTPException(400, "Email is required")
+    # Block reuse of any platform-level (super_admin) email for tenant staff.
+    platform_user = await db.users.find_one({"email": email_norm, "tenant_id": None})
+    if platform_user:
+        raise HTTPException(400, "This email is reserved for the platform and cannot be used for tenant staff")
     # Email uniqueness is per-tenant (rule 6 + clean multi-tenant semantics).
-    if await db.users.find_one({"email": payload.email, "tenant_id": tid}):
+    if await db.users.find_one({"email": email_norm, "tenant_id": tid}):
         raise HTTPException(400, "Email exists in this tenant")
     u = User(
         role=payload.role,
         name=payload.name,
         tenant_id=tid,
-        email=payload.email,
+        email=email_norm,
         password_hash=hash_password(payload.password),
         designation=payload.designation,
         mobile=payload.mobile,
@@ -1061,17 +1068,24 @@ async def approve_reassign(issue_id: str, new_worker_id: str = Query(...), user:
     issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
     if not issue:
         raise HTTPException(404, "Issue not found")
+    # Preserve workflow context: if work was already in progress, the new worker
+    # takes over without resetting the status. Otherwise, mark as Assigned.
+    prev_timeline = issue.get("timeline", []) or []
+    prev_had_progress = any(
+        (t or {}).get("status") == "In Progress" for t in prev_timeline
+    )
+    new_status = "In Progress" if prev_had_progress else "Assigned"
     await db.issues.update_one(
         tenant_filter(user, {"id": issue_id}),
         {
             "$set": {
                 "assigned_to": worker["id"],
                 "assigned_to_name": worker["name"],
-                "status": "Assigned",
+                "status": new_status,
                 "updated_at": now_iso(),
                 "reassignment_request": None,
             },
-            "$push": {"timeline": {"status": "Reassignment Approved", "at": now_iso(), "by": user["name"], "note": f"Reassigned to {worker['name']}"}},
+            "$push": {"timeline": {"status": "Reassigned", "at": now_iso(), "by": user["name"], "note": f"Reassigned to {worker['name']}"}},
         },
     )
     return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})

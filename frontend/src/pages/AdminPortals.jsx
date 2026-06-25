@@ -211,7 +211,7 @@ function EditDialog({ initial, onClose, onSaved }) {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const r = await api.post("/files/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      const r = await api.post("/files/upload", fd);
       set("logo_path", r.data.path);
       toast.success("Logo uploaded");
     } catch (err) {
