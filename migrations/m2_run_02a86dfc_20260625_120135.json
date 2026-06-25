@@ -1,0 +1,47 @@
+{
+  "_id": "run_02a86dfc_20260625_120135",
+  "started_at": "2026-06-25T12:01:35.731226+00:00",
+  "finished_at": "2026-06-25T12:01:35.737451+00:00",
+  "elapsed_s": 0.006216526031494141,
+  "dry_run": false,
+  "counts": {
+    "citizens_scanned": 1,
+    "visits_skipped_no_person_ref": 0,
+    "devworks_skipped_no_person_ref": 0,
+    "notifications_skipped_no_person_ref": 0
+  },
+  "errors": [],
+  "validation": {
+    "checks": {
+      "every_citizen_mapped": {
+        "expected": 1,
+        "actual": 1,
+        "ok": true
+      },
+      "one_active_membership_per_person": {
+        "violations": 0,
+        "ok": true,
+        "examples": []
+      },
+      "active_mobile_unique": {
+        "violations": 0,
+        "ok": true,
+        "examples": []
+      },
+      "issues_stamped": {
+        "violations": 0,
+        "ok": true
+      },
+      "relationships_v2_endpoints_valid": {
+        "violations": 0,
+        "ok": true
+      },
+      "unresolved_conflicts": {
+        "violations": 0,
+        "ok": true,
+        "mobiles": []
+      }
+    },
+    "ok": true
+  }
+}

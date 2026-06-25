@@ -1,0 +1,42 @@
+{
+  "_id": "run_c5601c17_20260625_120137",
+  "started_at": "2026-06-25T12:01:37.235677+00:00",
+  "finished_at": "2026-06-25T12:01:37.248116+00:00",
+  "elapsed_s": 0.012428522109985352,
+  "dry_run": true,
+  "counts": {
+    "citizens_scanned": 5,
+    "persons_created": 21,
+    "audit_entries": 21,
+    "credentials_created": 25,
+    "credentials_revoked": 2,
+    "staff_scanned": 16,
+    "staff_persons_created": 16,
+    "issues_scanned": 14,
+    "issues_stamped": 10,
+    "visits_skipped_no_person_ref": 3,
+    "devworks_skipped_no_person_ref": 4,
+    "notifications_skipped_no_person_ref": 3
+  },
+  "errors": [
+    "issue 92777e0b-5b1b-4ac9-b837-59879e2b415e has citizen_id=8aa512ec-ecc7-4978-83d3-86001950b0d7 not in user\u2192person map",
+    "issue 3e26501a-390e-4743-8ef3-aac1ad849402 has citizen_id=011396c4-da97-46ec-9425-b1ec1164fe7c not in user\u2192person map",
+    "issue 4936b657-1571-4c17-82a9-9285523c7fae has citizen_id=8aa512ec-ecc7-4978-83d3-86001950b0d7 not in user\u2192person map",
+    "issue 673c9925-7722-4d76-b225-c3102e78bfeb has citizen_id=8aa512ec-ecc7-4978-83d3-86001950b0d7 not in user\u2192person map"
+  ],
+  "validation": {
+    "checks": {
+      "every_citizen_mapped": {
+        "expected": 5,
+        "actual": 5,
+        "ok": true
+      },
+      "unresolved_conflicts": {
+        "violations": 0,
+        "ok": true,
+        "mobiles": []
+      }
+    },
+    "ok": true
+  }
+}

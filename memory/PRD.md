@@ -87,10 +87,20 @@ Identity / Membership / Privacy redesign. Person = permanent identity, Mobile = 
   - **Regression: V1 untouched.** Super admin / tenant admin / worker / citizen logins all 200; V2 collections empty.
 
 ### Sprint A — remaining (next sessions)
-- M2 backfill (V1 citizen rows → Person + Credential + Membership; stamp `person_id` on issues).
-- M3 dual-write window (1 week parity).
+- M3 dual-write window (1 week parity). Backend writes both V1 + V2 paths simultaneously.
 - M4 frontend cutover (auth `pid`, Person 360 reads V2).
 - M5 decommission V1 citizen rows.
+
+### M2 — Backfill Engine (DONE Feb 2026)
+- `/app/backend/migrations/m2_backfill.py` — `--dry-run | --commit | --rollback <run_id> | --report-only <run_id>`.
+- Idempotent via `_v2_user_to_person` anchor map; run-tagged via `_migration_run_id` on every row.
+- Dedupe CSV-driven (`--dedupe-csv`); `MERGE` collapses many users → one Person with archived memberships, `KEEP_SEPARATE` keeps separate Persons with older mobile credentials → `revoked`.
+- Staff also become Persons (`types=["worker"|"staff"|"politician"]`) to satisfy V2 spec D2 (Person = universal entity).
+- Hard validation gates: every-citizen-mapped, ≤1 active membership per person, active mobile uniqueness, every-issue-stamped, relationships_v2 endpoints valid, no unresolved conflicts. Fail = auto-rollback.
+- Audit/report written to `/app/migrations/m2_<run_id>.json` + `_v2_migration_runs` collection.
+- 15-case test suite at `/app/backend/tests/test_m2_backfill.py` (all pass): clean migration / dry-run write-nothing / idempotent re-run / duplicate mobile abort / MERGE / KEEP_SEPARATE / cross-tenant / Issue.person_id stamped / Interaction legacy person_id rewritten / Relationship → relationships_v2 / household preservation / rollback round-trip / orphan-issue validation / dedupe CSV blank-decision aborts / dedupe CSV parsing.
+- Verified on dev data: 21 persons (5 citizens + 16 staff), 23 credentials, 5 active memberships, 14/14 issues stamped, all 6 validations green, 57 ms full run.
+- Rollback round-trip verified: deleted 21 persons/23 creds/5 memberships/21 audits/10 consents/21 mappings, un-stamped 14 issues. Subsequent re-commit restored V2 state cleanly.
 
 ### Sprint B — Political CRM & Influence (after Sprint A stable for 30 days)
 - Party / position / party_memberships UIs.

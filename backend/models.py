@@ -311,6 +311,7 @@ VISIT_STATUSES = ["Draft", "Pending Approval", "Approved", "Published"]
 class Visit(BaseModel):
     id: str = Field(default_factory=new_id)
     tenant_id: Optional[str] = None
+    person_id: Optional[str] = None  # V2 — set only for person-specific visits (future)
     title: str
     description: Optional[str] = None
     date: str  # ISO date
@@ -343,6 +344,7 @@ class VisitCreate(BaseModel):
 class Notification(BaseModel):
     id: str = Field(default_factory=new_id)
     tenant_id: Optional[str] = None
+    person_id: Optional[str] = None  # V2 — set only for person-targeted notifications (future)
     title: str
     body: str
     notif_type: str  # Politician Visit / Public Meeting / Scheme / Emergency / etc
@@ -372,6 +374,7 @@ DEV_STATUSES = ["Planned", "Approved", "Tender Issued", "Work Started", "Complet
 class DevWork(BaseModel):
     id: str = Field(default_factory=new_id)
     tenant_id: Optional[str] = None
+    person_id: Optional[str] = None  # V2 — set only for beneficiary-tagged devworks (future)
     title: str
     description: str
     category: str

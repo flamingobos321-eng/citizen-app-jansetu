@@ -129,7 +129,7 @@ async def main(write_json: bool) -> int:
             "mobile", "row_index", "classification",
             "user_id", "tenant_slug", "name", "dob", "email",
             "gender", "household_id", "created_at",
-            "decision (MERGE | KEEP_SEPARATE | leave blank)",
+            "decision",  # one of: MERGE | KEEP_SEPARATE | (blank, only for AUTO_MERGE)
         ])
         for mobile, rows in sorted(duplicates.items()):
             cls = _classify(rows)
