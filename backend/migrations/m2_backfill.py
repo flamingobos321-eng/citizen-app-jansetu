@@ -384,6 +384,28 @@ class Backfill:
         await self._insert("person_audit", rec)
         self.counts["audit_entries"] += 1
 
+    async def _timeline_event(self, *, person_id: str, organisation_id: str | None,
+                              membership_id: str | None, event_type: str,
+                              at: str, ref_collection: str | None, ref_id: str | None,
+                              label: str, summary: str | None = None,
+                              tier: str = "operational") -> None:
+        """Amendment 1.1 — emit one denormalised timeline event."""
+        rec = {
+            "id": new_id("t_"),
+            "person_id": person_id,
+            "organisation_id": organisation_id,
+            "membership_id": membership_id,
+            "event_type": event_type,
+            "at": at,
+            "ref_collection": ref_collection,
+            "ref_id": ref_id,
+            "label": label,
+            "summary": summary,
+            "tier": tier,
+        }
+        await self._insert("person_timeline_events", rec)
+        self.counts["timeline_events_created"] += 1
+
     # ----------------------------------------------------------------
     #                         PHASE B — Memberships
     # ----------------------------------------------------------------
@@ -427,6 +449,9 @@ class Backfill:
                     "status": "active" if is_active else "archived",
                     "transfer_reason": ("migration" if not is_active else None),
                     "transferred_from_membership_id": None,
+                    "transferred_to_membership_id": None,         # Amendment 1.1
+                    "transferred_to_organisation_id": None,       # Amendment 1.1
+                    "archive_reason": (None if is_active else "transferred"),  # Amendment 1.1
                     "is_primary": True,
                     "created_at": now_iso(),
                     "updated_at": now_iso(),
@@ -436,6 +461,34 @@ class Backfill:
                 self.counts["memberships_created"] += 1
                 if not is_active:
                     self.counts["memberships_archived"] += 1
+                # Seed a "registered" timeline event for the citizen's first join.
+                await self._timeline_event(
+                    person_id=pid,
+                    organisation_id=u.get("tenant_id"),
+                    membership_id=m["id"],
+                    event_type="registered",
+                    at=u.get("created_at") or now_iso(),
+                    ref_collection="memberships", ref_id=m["id"],
+                    label=("Joined constituency"
+                           if is_active else "Joined (later transferred)"),
+                    tier="public",
+                )
+
+            # Cache active membership pointers on Person.
+            if not self.dry_run:
+                active_mem = await self.db.memberships.find_one(
+                    {"person_id": pid, "status": "active"},
+                    projection={"id": 1, "organisation_id": 1, "_id": 0},
+                )
+                if active_mem:
+                    await self.db.persons.update_one(
+                        {"id": pid},
+                        {"$set": {
+                            "current_organisation_id": active_mem.get("organisation_id"),
+                            "current_membership_id": active_mem.get("id"),
+                            "updated_at": now_iso(),
+                        }},
+                    )
 
             # Auto-grant tier1+tier2 consent for the active org
             if newest.get("tenant_id"):
@@ -488,8 +541,21 @@ class Backfill:
             async for u in self.db.users.find({}, projection={"id": 1, "_id": 0}):
                 u2p[u["id"]] = "dry_run_pid_for_" + u["id"]
 
-        # ISSUES (citizen_id → person_id)
-        async for issue in self.db.issues.find({}, projection={"_id": 0, "id": 1, "citizen_id": 1, "person_id": 1}):
+        # ISSUES (citizen_id → person_id + origin_membership_id)
+        # Build a (person_id, tenant_id) → membership_id lookup so we can pin
+        # each issue to the membership active at its creation. In dry-run we
+        # fall through to None.
+        pmem_lookup: dict[tuple[str, str], str] = {}
+        if not self.dry_run:
+            async for m in self.db.memberships.find(
+                {}, projection={"_id": 0, "id": 1, "person_id": 1, "organisation_id": 1}
+            ):
+                pmem_lookup[(m["person_id"], m["organisation_id"])] = m["id"]
+
+        async for issue in self.db.issues.find(
+            {}, projection={"_id": 0, "id": 1, "citizen_id": 1, "person_id": 1,
+                            "tenant_id": 1, "title": 1, "issue_code": 1, "created_at": 1}
+        ):
             self.counts["issues_scanned"] += 1
             if issue.get("person_id"):
                 self.counts["issues_already_stamped"] += 1
@@ -498,10 +564,25 @@ class Backfill:
             if not pid:
                 self.errors.append(f"issue {issue['id']} has citizen_id={issue.get('citizen_id')} not in user→person map")
                 continue
+            mem_id = pmem_lookup.get((pid, issue.get("tenant_id")))
             if not self.dry_run:
                 await self.db.issues.update_one(
                     {"id": issue["id"]},
-                    {"$set": {"person_id": pid, "_migration_run_id": self.run_id}},
+                    {"$set": {"person_id": pid,
+                              "origin_membership_id": mem_id,
+                              "_migration_run_id": self.run_id}},
+                )
+                # Emit timeline event for the complaint
+                await self._timeline_event(
+                    person_id=pid,
+                    organisation_id=issue.get("tenant_id"),
+                    membership_id=mem_id,
+                    event_type="complaint_raised",
+                    at=issue.get("created_at") or now_iso(),
+                    ref_collection="issues", ref_id=issue["id"],
+                    label=f"Complaint {issue.get('issue_code') or issue['id'][:8]}",
+                    summary=issue.get("title"),
+                    tier="operational",
                 )
             self.counts["issues_stamped"] += 1
 
@@ -721,6 +802,7 @@ class Rollback:
     V2_COLLECTIONS = [
         "persons", "credentials", "memberships", "person_audit",
         "person_consents", "relationships_v2", "_v2_user_to_person",
+        "person_timeline_events",   # Amendment 1.1
     ]
 
     def __init__(self, db: AsyncIOMotorDatabase, run_id: str):
@@ -737,9 +819,17 @@ class Rollback:
         for coll in ("issues", "interactions"):
             res = await self.db[coll].update_many(
                 {"_migration_run_id": self.run_id},
-                {"$set": {"person_id": None}, "$unset": {"_migration_run_id": "", "_v1_legacy_person_id": ""}},
+                {"$set": {"person_id": None},
+                 "$unset": {"_migration_run_id": "", "_v1_legacy_person_id": "",
+                            "origin_membership_id": ""}},
             )
             report["unstamped"][coll] = res.modified_count
+        # Clear cached current_* pointers on Persons we created (handled by
+        # the persons delete above, but also clear on any survivors)
+        await self.db.persons.update_many(
+            {"_migration_run_id": {"$ne": self.run_id}},
+            {"$set": {"current_organisation_id": None, "current_membership_id": None}},
+        )
         # Mark the run record as rolled back (don't delete — keep for audit)
         await self.db["_v2_migration_runs"].update_one(
             {"_id": self.run_id}, {"$set": {"rolled_back_at": now_iso()}}, upsert=False

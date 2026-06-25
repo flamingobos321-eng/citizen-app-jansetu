@@ -118,6 +118,7 @@ class Relationship(BaseModel):
     """Edge in the family graph: person_a is `type` of person_b."""
     id: str = Field(default_factory=new_id)
     tenant_id: Optional[str] = None
+    origin_membership_id: Optional[str] = None  # V2 — actor's active staff membership in tenant
     person_a: str
     person_b: str
     type: str  # one of RELATION_TYPES
@@ -139,6 +140,7 @@ class ServiceInteraction(BaseModel):
     id: str = Field(default_factory=new_id)
     tenant_id: Optional[str] = None
     person_id: str
+    origin_membership_id: Optional[str] = None  # V2 — subject person's active membership in tenant
     household_id: Optional[str] = None
     interaction_type: str  # Road Repair / Scheme Help / Medical / Meeting / Financial / etc
     description: str
@@ -250,6 +252,9 @@ class Issue(BaseModel):
     issue_code: str  # ISS-10001
     citizen_id: str
     person_id: Optional[str] = None  # V2: set during M2 backfill + M3 dual-write
+    # Amendment 1.1 — pins the record to the membership active at creation
+    # time. Tenant visibility on operational data is gated by this field.
+    origin_membership_id: Optional[str] = None
     household_id: Optional[str] = None
     category: str
     title: str
@@ -311,7 +316,8 @@ VISIT_STATUSES = ["Draft", "Pending Approval", "Approved", "Published"]
 class Visit(BaseModel):
     id: str = Field(default_factory=new_id)
     tenant_id: Optional[str] = None
-    person_id: Optional[str] = None  # V2 — set only for person-specific visits (future)
+    person_id: Optional[str] = None  # V2 — creator's Person id (set by dual-write)
+    origin_membership_id: Optional[str] = None  # V2 — creator's staff membership at write time
     title: str
     description: Optional[str] = None
     date: str  # ISO date
@@ -344,7 +350,8 @@ class VisitCreate(BaseModel):
 class Notification(BaseModel):
     id: str = Field(default_factory=new_id)
     tenant_id: Optional[str] = None
-    person_id: Optional[str] = None  # V2 — set only for person-targeted notifications (future)
+    person_id: Optional[str] = None  # V2 — creator's Person id (set by dual-write)
+    origin_membership_id: Optional[str] = None  # V2 — creator's staff membership at write time
     title: str
     body: str
     notif_type: str  # Politician Visit / Public Meeting / Scheme / Emergency / etc
@@ -374,7 +381,8 @@ DEV_STATUSES = ["Planned", "Approved", "Tender Issued", "Work Started", "Complet
 class DevWork(BaseModel):
     id: str = Field(default_factory=new_id)
     tenant_id: Optional[str] = None
-    person_id: Optional[str] = None  # V2 — set only for beneficiary-tagged devworks (future)
+    person_id: Optional[str] = None  # V2 — creator's Person id (set by dual-write)
+    origin_membership_id: Optional[str] = None  # V2 — creator's staff membership at write time
     title: str
     description: str
     category: str
@@ -539,6 +547,10 @@ class Person(BaseModel):
                         "politician", "staff", "journalist", "external"]] = ["citizen"]
     status: Literal["active", "redacted", "deceased", "merged"] = "active"
     merged_into_person_id: Optional[str] = None  # set only when status='merged'
+    # Amendment 1.1 — cached pointers to the current active membership for
+    # fast lookups. Source of truth = memberships collection. NULL for staff.
+    current_organisation_id: Optional[str] = None
+    current_membership_id: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
@@ -588,7 +600,7 @@ class Membership(BaseModel):
     id: str = Field(default_factory=new_id)
     person_id: str
     organisation_id: str  # = portal_configs.id; renamed in service layer
-    scope_type: Literal["constituency", "party_office", "ngo",
+    scope_type: Literal["constituency", "staff", "party_office", "ngo",
                         "municipal", "panchayat", "govt_dept", "csr"] = "constituency"
     household_id: Optional[str] = None
     ward_id: Optional[str] = None
@@ -602,6 +614,11 @@ class Membership(BaseModel):
     status: Literal["active", "archived", "pending_transfer", "superseded"] = "active"
     transfer_reason: Optional[str] = None  # marriage|migration|job|education|other
     transferred_from_membership_id: Optional[str] = None
+    # Amendment 1.1 — symmetric pointer set on the ARCHIVED row when transfer
+    # completes; powers the "Transferred to <Org>" banner without N-queries.
+    transferred_to_membership_id: Optional[str] = None
+    transferred_to_organisation_id: Optional[str] = None
+    archive_reason: Optional[Literal["transferred", "left", "merged", "deceased"]] = None
     is_primary: bool = True  # future multi-active will set is_primary=false on secondaries
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
@@ -734,3 +751,47 @@ class InfluenceSignal(BaseModel):
     scope_organisation_id: Optional[str] = None  # tenant-specific signal
     recorded_at: str = Field(default_factory=now_iso)
     recorded_by: Optional[str] = None
+
+
+# ---------- V2 Person Timeline (Amendment 1.1) ----------
+
+class PersonTimelineEvent(BaseModel):
+    """Denormalised, append-only event stream powering Person 360 and the
+    citizen's lifetime view. ONE row per civic event.
+
+    Tier-3 (political intelligence) events NEVER enter this collection — they
+    remain in tenant-scoped intelligence stores. Credential-management events
+    (added/revoked) also stay out per user policy; they live only in
+    person_audit (for super-admin + compliance).
+
+    Visibility at READ time:
+      • Citizen (self) → all rows for their person_id.
+      • Tenant staff   → rows where organisation_id == acting tenant's id.
+      • Super admin    → all rows.
+    """
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    person_id: str                               # indexed
+    organisation_id: Optional[str] = None        # tenant that generated the event (NULL for global events)
+    membership_id: Optional[str] = None          # which membership was active at the time
+    event_type: Literal[
+        # civic / operational
+        "registered", "complaint_raised", "complaint_assigned",
+        "complaint_in_progress", "complaint_reassigned",
+        "complaint_resolved", "complaint_feedback",
+        "visit_logged", "visit_announced", "visit_approved",
+        "devwork_announced", "devwork_completed", "devwork_benefited",
+        "scheme_applied", "meeting_attended", "interaction_logged",
+        "notification_published",
+        # lifecycle
+        "profile_updated", "household_changed",
+        "membership_created", "membership_archived", "membership_transferred",
+        "relationship_added", "relationship_removed",
+        "party_joined", "party_left",
+    ]
+    at: str = Field(default_factory=now_iso)
+    ref_collection: Optional[str] = None         # e.g. "issues", "memberships"
+    ref_id: Optional[str] = None
+    label: str                                   # human-readable, e.g. "Complaint #1042"
+    summary: Optional[str] = None
+    tier: Literal["public", "operational"] = "operational"

@@ -1,0 +1,49 @@
+{
+  "summary": "M3 dual-write backend verification: 42/42 tests pass — 13 new HTTP-layer E2E (test_m3_e2e_dualwrite.py) + 14 M3 unit (test_m3_dualwrite.py) + 15 M2 regression baseline (test_m2_backfill.py). Live parity report against the preview DB returns ok=True across all 17 invariants (I1–I8). V1 contract verified intact: citizen register/OTP login responses still carry id/role/tenant_id/household_id/issue_code/status AND now additionally carry person_id + origin_membership_id (additive, non-breaking). Issue full lifecycle (create→assign→In Progress→Resolved→feedback) returns V1 shape and emits the corresponding V2 timeline events. Visit/Notification/DevWork creation by PA/admin returns V1 shape and the parity stamping holds. Interaction creation by PA against citizen subject works and stamps person_id of the subject. Profile update via PUT /api/persons/{id} accepts allowed fields and mirrors. Parity endpoint correctly returns 403 for tenant admin + PA and 200 for super_admin; backfill is idempotent.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/admin/staff", "issue": "Response body does not include person_id / origin_membership_id even though dual-write stamps them in V2. Citizens' /auth/citizen/register response correctly includes both via the post-write update. For staff the V1 row itself isn't updated post-dualwrite (mapping lives in _v2_user_to_person collection). Not a contract regression (additive only) but inconsistent with the citizen flow — consider stamping for parity of UX/observability."},
+      {"endpoint": "PUT /api/persons/{id}", "issue": "Allowed update fields do not include core identity fields (name/dob/gender/email/mobile) — only profile metadata (occupation, notes, profile_photo, status, etc). v2_dualwrite.sync_person_profile_update declares 'name/dob/gender/email' as allowed but the V1 endpoint will never let them through, so that branch is effectively dead code from the HTTP layer."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_m3_e2e_dualwrite.py",
+    "/app/backend/tests/test_m3_dualwrite.py",
+    "/app/backend/tests/test_m2_backfill.py",
+    "/app/test_reports/pytest/m3_full_results.xml",
+    "/app/test_reports/pytest/m3_e2e_results.xml"
+  ],
+  "action_items": [
+    "(Optional, minor) After dual-write of a staff user in POST /api/admin/staff, write back person_id (and origin_membership_id) onto the V1 users row for symmetry with the citizen register flow — frontend can then read it directly without an extra mapping fetch.",
+    "(Optional, minor) Either expand the PUT /api/persons/{id} allowed-fields set to include name/dob/gender/email so sync_person_profile_update's full projection is reachable, or trim those keys from the helper to make the contract explicit.",
+    "(Optional) Add a dedicated assertion in the parity report for the inverse: 'every staff Person has staff-scope membership AND current_organisation_id IS NULL' — currently I3 only checks citizens; staff invariants are only implicitly covered by I4/I7."
+  ],
+  "critical_code_review_comments": [
+    "v2_dualwrite.py: dualwrite helpers correctly swallow exceptions and emit logger.exception — V1 durability is preserved. Idempotency proven via test_ensure_person_idempotent + test_parity_backfill_idempotent.",
+    "server.py citizen_register (557-625): after ensure_person_for_user it correctly writes person_id + origin_membership_id back onto the users row inside a try/except that never bubbles up — good pattern.",
+    "server.py create_staff (~715): returns u.model_dump() built BEFORE the dual-write, so staff V1 response lacks person_id. Either re-fetch after dual-write or move the response build below the try-block (minor).",
+    "server.py update_status uses query parameter style in some legacy callers but the route signature requires JSON body (IssueUpdateStatus). Verified body-style is the supported contract. No regression.",
+    "parity_report aggregates over potentially large collections without limits (I4/I5 iterate persons & timeline_events). For larger tenants this may become slow — consider adding an index on persons.id (unique) and person_timeline_events.person_id, and chunked scanning.",
+    "Per Rule: MongoDB _id excluded properly via projections in all read paths (server.py uses {'_id': 0} consistently).",
+    "All dual-write side-effects mark rows with _dualwrite_marker='dualwrite_m3', giving the nightly parity asserter a way to attribute V2 rows back to their write — good observability hook."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_m3_e2e_dualwrite.py (new — HTTP layer E2E test for M3)"
+  ],
+  "success_rate": {
+    "backend": "100% (42/42 — 13 new E2E + 14 M3 unit + 15 M2 regression)",
+    "frontend": "not tested (testing_type=backend only)"
+  },
+  "test_credentials": "Used credentials from /app/memory/test_credentials.md: super admin admin@jansetu.in/admin123; tenant admin admin@pune-cantonment.jansetu.in/G7mj8YJ7pr15; PA pa@jansetu.in/pa123; Worker worker1@jansetu.in/worker123; Citizen OTP=123456 (mocked).",
+  "seed_data_creation": "Created TEST_M3-prefixed: 1 fresh citizen per E2E run (random mobile 99XXXXXXXX), 1 TEST_M3 worker per run, 1 TEST_M3 issue (full lifecycle), 1 notification, 1 devwork (auto-set Completed), 1 visit, 1 interaction, profile metadata updates. None auto-cleaned but isolated by TEST_M3 prefix.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Three backend test files now form the M2+M3 regression suite — run with: cd /app/backend && python -m pytest tests/test_m3_e2e_dualwrite.py tests/test_m3_dualwrite.py tests/test_m2_backfill.py -v. The new test_m3_e2e_dualwrite.py hits the live preview backend via REACT_APP_BACKEND_URL; the other two run against an ephemeral Mongo DB per test. The parity report endpoint can be hit with super admin only — pa/tenant admin get 403 (verified). Frontend was intentionally skipped per the review request (testing_type=backend only). Citizen OTP login still mocked (any 6-digit OTP) — flagged.",
+  "rca of the issue": "No bug RCA needed — all assertions passed after correcting only test-script payload shapes to match server contract: (a) /api/auth/citizen/register requires region_type; (b) /api/issues/{id}/assign expects {assigned_to} not {worker_id}; (c) /api/issues/{id}/status requires JSON body {status}; (d) /api/issues/{id}/feedback requires {rating, comment, verified}; (e) PUT /api/persons/{id} is staff-only and only accepts a fixed allowed-fields set (occupation/notes/etc.). These are stable V1 contracts and were already documented in the older regression suite; the test fixes were applied to the script, not the backend."
+}

@@ -28,6 +28,7 @@ from models import (
     now_iso, new_id,
 )
 from storage_util import put_object, get_object, init_storage, APP_NAME
+import v2_dualwrite as v2dw
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -296,13 +297,22 @@ async def _ensure_v2_indexes():
         await db.influence_signals.create_index(
             [("person_id", ASCENDING), ("recorded_at", DESCENDING)])
 
+        # Amendment 1.1 — Person timeline + origin-membership index
+        await db.person_timeline_events.create_index(
+            [("person_id", ASCENDING), ("at", DESCENDING)])
+        await db.person_timeline_events.create_index(
+            [("organisation_id", ASCENDING), ("at", DESCENDING)],
+            sparse=True)
+        # Tenant-visibility gate on operational records
+        await db.issues.create_index([("origin_membership_id", ASCENDING)], sparse=True)
+
         # Stamp the V2 schema version so we know indexes are in place.
         await db.system_meta.update_one(
             {"_id": "v2_schema"},
-            {"$set": {"version": 1, "applied_at": now_iso()}},
+            {"$set": {"version": 2, "applied_at": now_iso()}},
             upsert=True,
         )
-        logger.info("V2 indexes ensured (M1).")
+        logger.info("V2 indexes ensured (M1 + Amendment 1.1).")
     except Exception as e:
         logger.warning(f"V2 index creation deferred: {e}")
 
@@ -599,6 +609,20 @@ async def citizen_register(payload: CitizenRegister):
         address=payload.address,
     )
     await db.users.insert_one(user.model_dump())
+    # M3 dual-write — mirror this citizen into the V2 identity model.
+    # Never raises; if V2 mirror fails the nightly parity check catches it.
+    try:
+        pid = await v2dw.ensure_person_for_user(db, user.model_dump())
+        if pid:
+            mem = await v2dw.resolve_active_membership(
+                db, person_id=pid, organisation_id=tid)
+            await db.users.update_one(
+                {"id": user.id},
+                {"$set": {"person_id": pid,
+                          "origin_membership_id": mem["id"] if mem else None}},
+            )
+    except Exception:
+        logger.exception("V2 dualwrite skipped for citizen registration")
     final_hh = await db.households.find_one({"id": hh_id}, {"_id": 0})
     token = create_token(user.id, "citizen", user.tenant_id)
     return {"token": token, "user": user.model_dump(exclude={"password_hash"}), "household": final_hh}
@@ -692,6 +716,11 @@ async def create_staff(payload: StaffCreate, user: dict = Depends(require_roles(
         mobile=payload.mobile,
     )
     await db.users.insert_one(u.model_dump())
+    # M3 dual-write — mirror staff into V2 (Person + staff Membership).
+    try:
+        await v2dw.ensure_person_for_user(db, u.model_dump())
+    except Exception:
+        logger.exception("V2 dualwrite skipped for staff creation")
     out = u.model_dump()
     out.pop("password_hash", None)
     return out
@@ -821,7 +850,13 @@ async def create_issue(payload: IssueCreate, user: dict = Depends(get_current_us
         timeline=[{"status": "New", "at": now_iso(), "by": user["name"], "note": "Issue raised"}],
     )
     await db.issues.insert_one(issue.model_dump())
-    return issue.model_dump()
+    # M3 dual-write — stamp person_id + origin_membership_id, emit timeline.
+    try:
+        await v2dw.sync_issue_to_v2(db, issue.model_dump(), citizen_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for issue creation")
+    # Return latest stamped doc so the frontend gets the V2 fields too.
+    return await db.issues.find_one({"id": issue.id}, {"_id": 0}) or issue.model_dump()
 
 
 @api.get("/issues")
@@ -901,6 +936,12 @@ async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends
     )
     if res.matched_count == 0:
         raise HTTPException(404, "Issue not found")
+    try:
+        await v2dw.sync_issue_event(
+            db, issue_id=issue_id, event_label="Assigned",
+            note=f"Assigned to {worker['name']}", actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for issue assign")
     return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
 
 
@@ -929,6 +970,13 @@ async def update_status(issue_id: str, payload: IssueUpdateStatus, user: dict = 
     )
     if res.matched_count == 0:
         raise HTTPException(404, "Issue not found")
+    try:
+        await v2dw.sync_issue_event(
+            db, issue_id=issue_id, event_label=payload.status,
+            note=payload.remarks or payload.completion_notes,
+            actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for issue status update")
     return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
 
 
@@ -951,6 +999,13 @@ async def feedback(issue_id: str, payload: IssueFeedback, user: dict = Depends(g
             "$push": {"timeline": {"status": update["status"], "at": now_iso(), "by": user["name"], "note": note}},
         },
     )
+    try:
+        await v2dw.sync_issue_event(
+            db, issue_id=issue_id, event_label="Feedback",
+            note=f"Rating {payload.rating}/5 — {payload.comment or ''}".strip(' —'),
+            actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for issue feedback")
     return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
 
 
@@ -966,9 +1021,14 @@ async def create_visit(payload: VisitCreate, user: dict = Depends(require_roles(
     else:
         v.status = "Pending Approval"
     await db.visits.insert_one(v.model_dump())
+    # M3 dual-write
+    try:
+        await v2dw.sync_visit_to_v2(db, visit=v.model_dump(), actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for visit creation")
     if v.status == "Published":
         await _publish_visit_notification(v, user)
-    return v.model_dump()
+    return await db.visits.find_one({"id": v.id}, {"_id": 0}) or v.model_dump()
 
 
 async def _publish_visit_notification(v: Visit, user: dict):
@@ -986,6 +1046,11 @@ async def _publish_visit_notification(v: Visit, user: dict):
         recipients_count=recipients,
     )
     await db.notifications.insert_one(notif.model_dump())
+    try:
+        await v2dw.sync_notification_to_v2(
+            db, notification=notif.model_dump(), actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for visit notification")
 
 
 @api.post("/visits/{visit_id}/approve")
@@ -998,6 +1063,10 @@ async def approve_visit(visit_id: str, user: dict = Depends(require_roles("polit
     await db.visits.update_one(tenant_filter(user, {"id": visit_id}), {"$set": {"status": "Published", "approved_by": user["id"], "approved_at": now_iso()}})
     visit = Visit(**{**v, "status": "Published", "approved_by": user["id"], "approved_at": now_iso()})
     await _publish_visit_notification(visit, user)
+    try:
+        await v2dw.sync_visit_approved(db, visit=visit.model_dump(), actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for visit approval")
     return await db.visits.find_one(tenant_filter(user, {"id": visit_id}), {"_id": 0})
 
 
@@ -1032,7 +1101,12 @@ async def create_notif(payload: NotificationCreate, user: dict = Depends(require
     recipients = await _count_recipients(user, payload.scope, payload.ward_ids, payload.village_ids)
     n = Notification(**payload.model_dump(), tenant_id=tid, created_by=user["id"], created_by_name=user["name"], recipients_count=recipients)
     await db.notifications.insert_one(n.model_dump())
-    return n.model_dump()
+    try:
+        await v2dw.sync_notification_to_v2(
+            db, notification=n.model_dump(), actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for notification creation")
+    return await db.notifications.find_one({"id": n.id}, {"_id": 0}) or n.model_dump()
 
 
 @api.get("/notifications")
@@ -1059,7 +1133,11 @@ async def create_dev(payload: DevWorkCreate, user: dict = Depends(require_roles(
         d.approved_by = user["id"]
         d.approved_at = now_iso()
     await db.devworks.insert_one(d.model_dump())
-    return d.model_dump()
+    try:
+        await v2dw.sync_devwork_to_v2(db, devwork=d.model_dump(), actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for devwork creation")
+    return await db.devworks.find_one({"id": d.id}, {"_id": 0}) or d.model_dump()
 
 
 @api.post("/devworks/{dev_id}/approve")
@@ -1107,7 +1185,12 @@ async def update_dev(dev_id: str, status: str = Query(...), user: dict = Depends
     res = await db.devworks.update_one(tenant_filter(user, {"id": dev_id}), {"$set": {"status": status, "updated_at": now_iso()}})
     if res.matched_count == 0:
         raise HTTPException(404, "Not found")
-    return await db.devworks.find_one(tenant_filter(user, {"id": dev_id}), {"_id": 0})
+    doc = await db.devworks.find_one(tenant_filter(user, {"id": dev_id}), {"_id": 0})
+    try:
+        await v2dw.sync_devwork_status(db, devwork=doc, status=status, actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for devwork status")
+    return doc
 
 
 # ----------------- WORKER actions -----------------
@@ -1164,6 +1247,12 @@ async def approve_reassign(issue_id: str, new_worker_id: str = Query(...), user:
             "$push": {"timeline": {"status": "Reassigned", "at": now_iso(), "by": user["name"], "note": f"Reassigned to {worker['name']}{mobile_part}"}},
         },
     )
+    try:
+        await v2dw.sync_issue_event(
+            db, issue_id=issue_id, event_label="Reassigned",
+            note=f"Reassigned to {worker['name']}", actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for issue reassign")
     return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
 
 
@@ -1344,6 +1433,11 @@ async def update_person(person_id: str, payload: dict, user: dict = Depends(requ
     res = await db.users.update_one(tenant_filter(user, {"id": person_id}), {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(404, "Person not found")
+    try:
+        await v2dw.sync_person_profile_update(
+            db, user_id=person_id, updates=update, actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for profile update")
     return await db.users.find_one(tenant_filter(user, {"id": person_id}), {"_id": 0, "password_hash": 0})
 
 
@@ -1368,12 +1462,20 @@ async def create_relationship(payload: RelationshipCreate, user: dict = Depends(
         raise HTTPException(409, "This relationship already exists")
     r = Relationship(**payload.model_dump(), tenant_id=get_tenant_id_for_write(user))
     await db.relationships.insert_one(r.model_dump())
-    return r.model_dump()
+    try:
+        await v2dw.sync_relationship_to_v2(db, rel=r.model_dump(), actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for relationship creation")
+    return await db.relationships.find_one({"id": r.id}, {"_id": 0}) or r.model_dump()
 
 
 @api.delete("/relationships/{rel_id}")
 async def delete_relationship(rel_id: str, user: dict = Depends(require_roles("pa", "admin"))):
     await db.relationships.delete_one(tenant_filter(user, {"id": rel_id}))
+    try:
+        await v2dw.revoke_relationship_v2(db, rel_id=rel_id, actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for relationship delete")
     return {"ok": True}
 
 
@@ -1391,7 +1493,15 @@ async def create_interaction(payload: ServiceInteractionCreate, user: dict = Dep
         data["worker_name"] = user["name"]
     interaction = ServiceInteraction(**data, tenant_id=get_tenant_id_for_write(user))
     await db.interactions.insert_one(interaction.model_dump())
-    return interaction.model_dump()
+    # M3 dual-write — fetch subject user for lazy person-mirror.
+    try:
+        subject = await db.users.find_one({"id": interaction.person_id})
+        await v2dw.sync_interaction_to_v2(
+            db, interaction=interaction.model_dump(),
+            subject_user=subject, actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for interaction creation")
+    return await db.interactions.find_one({"id": interaction.id}, {"_id": 0}) or interaction.model_dump()
 
 
 @api.get("/dashboard/celebrations")
@@ -1661,6 +1771,73 @@ async def activate_portal(portal_id: str, _: dict = Depends(require_roles("admin
 
 
 # ----------------- PLATFORM (Super Admin) -----------------
+@api.get("/admin/v2/parity")
+async def v2_parity(user: dict = Depends(get_current_user)):
+    """M3 — Parity report between V1 (authoritative) and V2 (shadow) collections.
+
+    Super-admin only. Returns a structured report; each check has `ok: bool`
+    and `delta: int`. Use as input to the nightly alerting job during the
+    dual-write window.
+    """
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    return await v2dw.parity_report(db)
+
+
+@api.post("/admin/v2/parity/backfill-missing")
+async def v2_parity_backfill(user: dict = Depends(get_current_user)):
+    """M3 — Best-effort: lazy-create Persons for any V1 users missing a V2
+    mirror, and re-stamp operational records whose person_id/origin_membership_id
+    are NULL. Super-admin only. Returns counts.
+    """
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    minted = 0
+    stamped = {"issues": 0, "interactions": 0}
+    # 1) Lazy mirror users (creates Persons + missing memberships). Idempotent.
+    async for u in db.users.find({}, {"_id": 0, "password_hash": 0}):
+        existed = await db["_v2_user_to_person"].find_one({"_id": u["id"]})
+        pid = await v2dw.ensure_person_for_user(db, u)
+        if pid and not existed:
+            minted += 1
+    # 2) Re-stamp issues that have no person_id OR no origin_membership_id.
+    async for i in db.issues.find(
+        {"$or": [
+            {"person_id": None}, {"person_id": {"$exists": False}},
+            {"origin_membership_id": None}, {"origin_membership_id": {"$exists": False}},
+        ]},
+        {"_id": 0},
+    ):
+        cu = await db.users.find_one({"id": i.get("citizen_id")})
+        await v2dw.sync_issue_to_v2(db, i, citizen_user=cu)
+        stamped["issues"] += 1
+    # 3) Re-stamp interactions that have no person_id (or whose subject not mirrored).
+    async for it in db.interactions.find({"$or": [{"origin_membership_id": None}, {"origin_membership_id": {"$exists": False}}]}, {"_id": 0}):
+        cu = await db.users.find_one({"id": it.get("person_id")})
+        await v2dw.sync_interaction_to_v2(db, interaction=it, subject_user=cu, actor_user=user)
+        stamped["interactions"] += 1
+    # 4) Re-stamp staff-owned records (visits / notifications / devworks).
+    for col, helper in (
+        ("visits", v2dw.sync_visit_to_v2),
+        ("notifications", v2dw.sync_notification_to_v2),
+        ("devworks", v2dw.sync_devwork_to_v2),
+    ):
+        stamped[col] = 0
+        async for d in db[col].find(
+            {"$or": [{"origin_membership_id": None},
+                     {"origin_membership_id": {"$exists": False}}]},
+            {"_id": 0},
+        ):
+            creator_id = d.get("created_by")
+            actor = await db.users.find_one({"id": creator_id}) if creator_id else None
+            if not actor:
+                continue
+            kw = {col[:-1]: d, "actor_user": actor}  # visit=..., notification=..., devwork=...
+            await helper(db, **kw)
+            stamped[col] += 1
+    return {"persons_minted": minted, "records_stamped": stamped}
+
+
 @api.get("/platform/stats")
 async def platform_stats(user: dict = Depends(get_current_user)):
     """Platform-wide aggregate counts. Super-admin only.
