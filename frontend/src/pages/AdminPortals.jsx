@@ -7,7 +7,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { toast } from "sonner";
-import { Plus, Globe, Pencil, Trash2, Star, X, ExternalLink, Upload } from "lucide-react";
+import { Plus, Globe, Pencil, Trash2, Star, X, ExternalLink, Upload, Pause, Play, Timer, CreditCard } from "lucide-react";
 
 const empty = {
   slug: "",
@@ -37,7 +37,7 @@ export default function AdminPortals() {
   const load = () => api.get("/admin/portals").then((r) => setList(r.data || []));
   useEffect(() => { load(); }, []);
 
-  if (user && user.role !== "admin") {
+  if (user && user.role !== "admin" && user.role !== "super_admin") {
     return <div className="p-8"><EmptyState title="Admin only" hint="You don't have access to manage portals." /></div>;
   }
 
@@ -45,6 +45,25 @@ export default function AdminPortals() {
     try {
       await api.post(`/admin/portals/${p.id}/set-default`);
       toast.success(`${p.politician_name} is now the default portal`);
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed");
+    }
+  };
+  const suspendPortal = async (p) => {
+    if (!window.confirm(`Suspend portal "${p.constituency_name}"? Citizens won't be able to access it until reactivated.`)) return;
+    try {
+      await api.post(`/admin/portals/${p.id}/suspend`);
+      toast.success("Portal suspended");
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed");
+    }
+  };
+  const activatePortal = async (p) => {
+    try {
+      await api.post(`/admin/portals/${p.id}/activate`);
+      toast.success("Portal activated");
       load();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed");
@@ -74,7 +93,9 @@ export default function AdminPortals() {
         <EmptyState title="No portals yet" hint="Create your first white-label portal to launch a constituency's public face." />
       ) : (
         <div className="bg-white border border-gray-200 rounded-lg divide-y divide-gray-100">
-          {list.map((p) => (
+          {list.map((p) => {
+            const isSuspended = p.portal_status === "suspended";
+            return (
             <div key={p.id} className="p-4 flex items-center gap-4 flex-wrap" data-testid={`portal-row-${p.slug}`}>
               <div className="w-12 h-12 rounded-md flex items-center justify-center text-white font-heading text-lg font-bold shrink-0" style={{ backgroundColor: p.theme_color || "#0A1128" }}>
                 {p.logo_path ? <img src={fileUrl(p.logo_path)} alt="" className="w-full h-full object-cover rounded-md" /> : (p.politician_name || "P").charAt(0)}
@@ -83,10 +104,20 @@ export default function AdminPortals() {
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-heading font-semibold text-gray-900">{p.politician_name}</span>
                   {p.is_default && <span className="pill pill-info inline-flex items-center gap-1"><Star size={11} /> Default</span>}
-                  {!p.is_active && <span className="pill pill-neutral">Inactive</span>}
+                  {!p.is_active ? (
+                    <span className="pill pill-neutral">Inactive</span>
+                  ) : isSuspended ? (
+                    <span className="pill pill-overdue">Suspended</span>
+                  ) : (
+                    <span className="pill pill-resolved">Active</span>
+                  )}
+                  {p.is_trial && <span className="pill pill-warn inline-flex items-center gap-1"><Timer size={11} /> Trial</span>}
+                  {p.subscription_plan && p.subscription_plan !== "trial" && (
+                    <span className="pill pill-info inline-flex items-center gap-1"><CreditCard size={11} /> {p.subscription_plan}</span>
+                  )}
                 </div>
                 <div className="text-xs text-gray-500 mt-0.5">{p.designation} · {p.constituency_name}</div>
-                <div className="text-[11px] text-gray-400 mt-0.5">/portal/{p.slug}</div>
+                <div className="text-[11px] text-gray-400 mt-0.5">/portal/{p.slug} {p.primary_admin_email && <>· Admin: {p.primary_admin_email}</>}</div>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <a href={`/portal/${p.slug}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid={`portal-open-${p.slug}`}>
@@ -95,6 +126,16 @@ export default function AdminPortals() {
                 {!p.is_default && p.is_active && (
                   <button onClick={() => setDefault(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid={`portal-default-${p.slug}`}>
                     <Star size={12} /> Set Default
+                  </button>
+                )}
+                {p.is_active && !isSuspended && (
+                  <button onClick={() => suspendPortal(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-amber-200 text-amber-800 hover:bg-amber-50" data-testid={`portal-suspend-${p.slug}`}>
+                    <Pause size={12} /> Suspend
+                  </button>
+                )}
+                {isSuspended && (
+                  <button onClick={() => activatePortal(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-green-200 text-green-800 hover:bg-green-50" data-testid={`portal-activate-${p.slug}`}>
+                    <Play size={12} /> Activate
                   </button>
                 )}
                 <button onClick={() => setEditing({ ...empty, ...p, social_links: { ...empty.social_links, ...(p.social_links || {}) } })} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid={`portal-edit-${p.slug}`}>
@@ -107,7 +148,8 @@ export default function AdminPortals() {
                 )}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

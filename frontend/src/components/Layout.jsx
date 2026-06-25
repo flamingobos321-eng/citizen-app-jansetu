@@ -15,6 +15,9 @@ import {
   ShieldCheck,
   Cake,
   Globe,
+  Crown,
+  CreditCard,
+  Timer,
 } from "lucide-react";
 
 const ROLE_LABEL = {
@@ -22,7 +25,8 @@ const ROLE_LABEL = {
   worker: "Field Worker",
   pa: "PA / Staff",
   politician: "Representative",
-  admin: "Super Admin",
+  admin: "Tenant Admin",
+  super_admin: "Super Admin",
 };
 
 function NavItem({ to, icon: Icon, label, testId }) {
@@ -45,6 +49,26 @@ function NavItem({ to, icon: Icon, label, testId }) {
   );
 }
 
+function SuperNavItem({ to, icon: Icon, label, testId }) {
+  return (
+    <NavLink
+      to={to}
+      data-testid={testId}
+      end
+      className={({ isActive }) =>
+        `flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+          isActive
+            ? "bg-amber-400 text-[#0A1128]"
+            : "text-white/70 hover:bg-white/10 hover:text-white"
+        }`
+      }
+    >
+      <Icon size={18} />
+      <span>{label}</span>
+    </NavLink>
+  );
+}
+
 export default function Layout({ children }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -55,6 +79,7 @@ export default function Layout({ children }) {
   };
 
   const isCitizen = user?.role === "citizen";
+  const isSuperAdmin = user?.role === "super_admin";
   const isAdmin = user?.role === "admin";
   const isMLA = user?.role === "politician";
   const isPA = user?.role === "pa";
@@ -64,20 +89,30 @@ export default function Layout({ children }) {
   return (
     <div className="min-h-screen flex">
       {/* Sidebar */}
-      <aside className="w-64 bg-white border-r border-gray-200 hidden lg:flex flex-col">
-        <div className="px-5 py-5 border-b border-gray-200">
-          <Link to="/" className="flex items-center gap-2" data-testid="sidebar-logo">
-            <div className="w-9 h-9 rounded-md bg-[#0A1128] text-white flex items-center justify-center font-heading font-bold">
-              JS
+      <aside className={`w-64 ${isSuperAdmin ? "bg-[#0A1128] text-white" : "bg-white"} border-r border-gray-200 hidden lg:flex flex-col`}>
+        <div className={`px-5 py-5 ${isSuperAdmin ? "border-white/10" : "border-gray-200"} border-b`}>
+          <Link to={isSuperAdmin ? "/app/platform" : "/"} className="flex items-center gap-2" data-testid="sidebar-logo">
+            <div className={`w-9 h-9 rounded-md ${isSuperAdmin ? "bg-amber-400 text-[#0A1128]" : "bg-[#0A1128] text-white"} flex items-center justify-center font-heading font-bold`}>
+              {isSuperAdmin ? <Crown size={18} /> : "JS"}
             </div>
             <div>
-              <div className="font-heading font-bold text-[#0A1128] leading-none">JANSETU</div>
-              <div className="text-[10px] uppercase tracking-widest text-gray-500 mt-0.5">My Constituency</div>
+              <div className={`font-heading font-bold leading-none ${isSuperAdmin ? "text-white" : "text-[#0A1128]"}`}>JANSETU</div>
+              <div className={`text-[10px] uppercase tracking-widest mt-0.5 ${isSuperAdmin ? "text-amber-300 font-bold" : "text-gray-500"}`}>
+                {isSuperAdmin ? "Platform Console" : "My Constituency"}
+              </div>
             </div>
           </Link>
         </div>
 
         <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
+          {isSuperAdmin && (
+            <>
+              <SuperNavItem to="/app/platform" icon={LayoutDashboard} label="Platform Dashboard" testId="nav-platform" />
+              <SuperNavItem to="/app/portals" icon={Globe} label="Client Portals" testId="nav-portals" />
+              <SuperNavItem to="/app/subscriptions" icon={CreditCard} label="Subscriptions" testId="nav-subscriptions" />
+              <SuperNavItem to="/app/trials" icon={Timer} label="Trials" testId="nav-trials" />
+            </>
+          )}
           {isCitizen && (
             <>
               <NavItem to="/app" icon={Home} label="Home" testId="nav-home" />
@@ -102,7 +137,6 @@ export default function Layout({ children }) {
                 <>
                   <NavItem to="/app/areas" icon={Map} label="Wards & Villages" testId="nav-areas" />
                   <NavItem to="/app/staff" icon={ShieldCheck} label="Staff & Roles" testId="nav-staff" />
-                  <NavItem to="/app/portals" icon={Globe} label="Client Portals" testId="nav-portals" />
                 </>
               )}
             </>
@@ -114,15 +148,18 @@ export default function Layout({ children }) {
           )}
         </nav>
 
-        <div className="p-3 border-t border-gray-200">
+        <div className={`p-3 ${isSuperAdmin ? "border-white/10" : "border-gray-200"} border-t`}>
           <div className="px-3 py-2 mb-2">
-            <div className="text-xs uppercase tracking-widest text-gray-500">{ROLE_LABEL[user?.role]}</div>
-            <div className="text-sm font-semibold text-gray-900 truncate">{user?.name}</div>
+            <div className={`flex items-center gap-1 text-[10px] uppercase tracking-widest font-bold ${isSuperAdmin ? "text-amber-300" : "text-gray-500"}`}>
+              {isSuperAdmin && <Crown size={11} />}
+              {ROLE_LABEL[user?.role]}
+            </div>
+            <div className={`text-sm font-semibold truncate ${isSuperAdmin ? "text-white" : "text-gray-900"}`}>{user?.name}</div>
           </div>
           <Button
             data-testid="logout-btn"
             variant="outline"
-            className="w-full justify-start"
+            className={`w-full justify-start ${isSuperAdmin ? "bg-transparent border-white/30 text-white hover:bg-white/10" : ""}`}
             onClick={onLogout}
           >
             <LogOut size={16} className="mr-2" /> Sign out

@@ -245,6 +245,21 @@ async def _migrate_to_multi_tenant():
         )
         backfill_counts[coll] = res.modified_count
 
+    # Step 2b: Backfill new lifecycle fields on portal_configs for existing portals.
+    await db.portal_configs.update_many(
+        {"subscription_plan": {"$exists": False}},
+        {"$set": {
+            "subscription_plan": "trial",
+            "is_trial": True,
+            "portal_status": "active",
+            "max_staff_limit": 25,
+            "timezone": "Asia/Kolkata",
+            "language": "en",
+            "whatsapp_config": {},
+            "sms_config": {},
+        }},
+    )
+
     # Step 3: Promote platform super-admin (admin@jansetu.in)
     await db.users.update_one(
         {"email": "admin@jansetu.in"},
@@ -1315,6 +1330,68 @@ async def delete_portal(portal_id: str, _: dict = Depends(require_roles("admin")
     if res.matched_count == 0:
         raise HTTPException(404, "Portal not found")
     return {"ok": True}
+
+
+@api.post("/admin/portals/{portal_id}/suspend")
+async def suspend_portal(portal_id: str, _: dict = Depends(require_roles("admin"))):
+    res = await db.portal_configs.update_one(
+        {"id": portal_id},
+        {"$set": {"portal_status": "suspended", "updated_at": now_iso()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Portal not found")
+    return await db.portal_configs.find_one({"id": portal_id}, {"_id": 0})
+
+
+@api.post("/admin/portals/{portal_id}/activate")
+async def activate_portal(portal_id: str, _: dict = Depends(require_roles("admin"))):
+    res = await db.portal_configs.update_one(
+        {"id": portal_id},
+        {"$set": {"portal_status": "active", "is_active": True, "updated_at": now_iso()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Portal not found")
+    return await db.portal_configs.find_one({"id": portal_id}, {"_id": 0})
+
+
+# ----------------- PLATFORM (Super Admin) -----------------
+@api.get("/platform/stats")
+async def platform_stats(user: dict = Depends(get_current_user)):
+    """Platform-wide aggregate counts. Super-admin only.
+    Returns only counts; never per-tenant data.
+    """
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+
+    total_portals = await db.portal_configs.count_documents({})
+    active_portals = await db.portal_configs.count_documents({"is_active": True, "portal_status": {"$ne": "suspended"}})
+    suspended_portals = await db.portal_configs.count_documents({"portal_status": "suspended"})
+    trial_portals = await db.portal_configs.count_documents({"is_trial": True, "is_active": True})
+
+    # Platform-wide entity counts (across all tenants).
+    total_citizens = await db.users.count_documents({"role": "citizen"})
+    total_staff = await db.users.count_documents({"role": {"$in": ["worker", "pa", "politician", "admin"]}})
+    total_issues = await db.issues.count_documents({})
+    total_visits = await db.visits.count_documents({})
+    total_notifications = await db.notifications.count_documents({})
+    total_devworks = await db.devworks.count_documents({})
+
+    return {
+        "portals": {
+            "total": total_portals,
+            "active": active_portals,
+            "suspended": suspended_portals,
+            "trial": trial_portals,
+        },
+        "entities": {
+            "citizens": total_citizens,
+            "staff": total_staff,
+            "issues": total_issues,
+            "visits": total_visits,
+            "notifications": total_notifications,
+            "devworks": total_devworks,
+        },
+    }
 
 
 # ----------------- SEED -----------------

@@ -28,6 +28,13 @@ export default function PortalLayout({ config, children }) {
   const social = config?.social_links || {};
   const slug = config?.slug;
 
+  // Multi-tenant session isolation:
+  // A signed-in user is "belonging" to this portal only if their tenant_id
+  // matches the portal/tenant id. Otherwise they're treated as anonymous on
+  // this portal (login buttons shown, no Open Workspace button).
+  const belongs = !!(user && user.tenant_id && config && user.tenant_id === config.id);
+  const showSwitchNotice = !!(user && !belongs);
+
   // remember portal slug for return-after-login UX
   const rememberSlug = () => {
     try { sessionStorage.setItem("portal_slug", slug || ""); } catch (e) { /* ignore */ }
@@ -52,7 +59,7 @@ export default function PortalLayout({ config, children }) {
             </div>
           </Link>
           <div className="ml-auto flex items-center gap-2">
-            {user ? (
+            {belongs ? (
               <Link to="/app" className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md portal-bg-primary hover:opacity-90" data-testid="portal-open-app">Open Workspace</Link>
             ) : (
               <>
@@ -62,6 +69,13 @@ export default function PortalLayout({ config, children }) {
             )}
           </div>
         </div>
+        {showSwitchNotice && (
+          <div className="bg-amber-50 border-t border-amber-200 text-amber-900 text-xs px-4 sm:px-6 py-2" data-testid="portal-cross-tenant-notice">
+            <span className="max-w-6xl mx-auto block">
+              You are signed in to a different constituency. Sign in below to access <span className="font-semibold">{config?.constituency_name}</span>.
+            </span>
+          </div>
+        )}
       </header>
 
       <main>{children}</main>

@@ -21,6 +21,9 @@ import CitizensList from "./pages/CitizensList";
 import AdminAreas from "./pages/AdminAreas";
 import AdminStaff from "./pages/AdminStaff";
 import AdminPortals from "./pages/AdminPortals";
+import SuperAdminDashboard from "./pages/SuperAdminDashboard";
+import SuperSubscriptions from "./pages/SuperSubscriptions";
+import SuperTrials from "./pages/SuperTrials";
 import Celebrations from "./pages/Celebrations";
 import PersonProfile from "./pages/PersonProfile";
 import PortalIndex from "./portal/PortalIndex";
@@ -33,8 +36,27 @@ function Guard({ children }) {
   return <Layout>{children}</Layout>;
 }
 
+// Super admin should never see tenant-scoped pages. Redirect them to platform home.
+function TenantGuard({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loading…</div>;
+  if (!user) return <Navigate to="/" replace />;
+  if (user.role === "super_admin") return <Navigate to="/app/platform" replace />;
+  return <Layout>{children}</Layout>;
+}
+
+// Super admin only.
+function SuperGuard({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loading…</div>;
+  if (!user) return <Navigate to="/" replace />;
+  if (user.role !== "super_admin") return <Navigate to="/app" replace />;
+  return <Layout>{children}</Layout>;
+}
+
 function HomeRoute() {
   const { user } = useAuth();
+  if (user?.role === "super_admin") return <Navigate to="/app/platform" replace />;
   if (user?.role === "citizen") return <CitizenHome />;
   if (user?.role === "worker") return <IssuesList />;
   return <StaffDashboard />;
@@ -54,20 +76,24 @@ export default function App() {
           <Route path="/staff/login" element={<StaffLogin />} />
 
           <Route path="/app" element={<Guard><HomeRoute /></Guard>} />
-          <Route path="/app/raise" element={<Guard><RaiseIssue /></Guard>} />
-          <Route path="/app/profile" element={<Guard><CitizenProfile /></Guard>} />
-          <Route path="/app/my-issues" element={<Guard><IssuesList /></Guard>} />
-          <Route path="/app/issues" element={<Guard><IssuesList /></Guard>} />
-          <Route path="/app/issues/:id" element={<Guard><IssueDetail /></Guard>} />
-          <Route path="/app/notifications" element={<Guard><Notifications /></Guard>} />
-          <Route path="/app/visits" element={<Guard><Visits /></Guard>} />
-          <Route path="/app/devworks" element={<Guard><DevWorks /></Guard>} />
-          <Route path="/app/citizens" element={<Guard><CitizensList /></Guard>} />
-          <Route path="/app/celebrations" element={<Guard><Celebrations /></Guard>} />
-          <Route path="/app/persons/:id" element={<Guard><PersonProfile /></Guard>} />
-          <Route path="/app/areas" element={<Guard><AdminAreas /></Guard>} />
-          <Route path="/app/staff" element={<Guard><AdminStaff /></Guard>} />
-          <Route path="/app/portals" element={<Guard><AdminPortals /></Guard>} />
+          <Route path="/app/platform" element={<SuperGuard><SuperAdminDashboard /></SuperGuard>} />
+          <Route path="/app/subscriptions" element={<SuperGuard><SuperSubscriptions /></SuperGuard>} />
+          <Route path="/app/trials" element={<SuperGuard><SuperTrials /></SuperGuard>} />
+          <Route path="/app/portals" element={<SuperGuard><AdminPortals /></SuperGuard>} />
+
+          <Route path="/app/raise" element={<TenantGuard><RaiseIssue /></TenantGuard>} />
+          <Route path="/app/profile" element={<TenantGuard><CitizenProfile /></TenantGuard>} />
+          <Route path="/app/my-issues" element={<TenantGuard><IssuesList /></TenantGuard>} />
+          <Route path="/app/issues" element={<TenantGuard><IssuesList /></TenantGuard>} />
+          <Route path="/app/issues/:id" element={<TenantGuard><IssueDetail /></TenantGuard>} />
+          <Route path="/app/notifications" element={<TenantGuard><Notifications /></TenantGuard>} />
+          <Route path="/app/visits" element={<TenantGuard><Visits /></TenantGuard>} />
+          <Route path="/app/devworks" element={<TenantGuard><DevWorks /></TenantGuard>} />
+          <Route path="/app/citizens" element={<TenantGuard><CitizensList /></TenantGuard>} />
+          <Route path="/app/celebrations" element={<TenantGuard><Celebrations /></TenantGuard>} />
+          <Route path="/app/persons/:id" element={<TenantGuard><PersonProfile /></TenantGuard>} />
+          <Route path="/app/areas" element={<TenantGuard><AdminAreas /></TenantGuard>} />
+          <Route path="/app/staff" element={<TenantGuard><AdminStaff /></TenantGuard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
