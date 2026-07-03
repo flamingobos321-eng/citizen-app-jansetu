@@ -19,6 +19,7 @@ const RELATIONS = [
 ];
 
 export function FamilyLinkCard() {
+  const [members, setMembers] = useState([]);
   const [outgoing, setOutgoing] = useState([]);
   const [incoming, setIncoming] = useState([]);
   const [open, setOpen] = useState(false);
@@ -26,6 +27,7 @@ export function FamilyLinkCard() {
   const [submitting, setSubmitting] = useState(false);
 
   const load = () => {
+    api.get("/family/members").then((r) => setMembers(r.data || [])).catch(() => setMembers([]));
     api.get("/family/invitations").then((r) => {
       setOutgoing(r.data.outgoing || []);
       setIncoming(r.data.incoming || []);
@@ -105,9 +107,31 @@ export function FamilyLinkCard() {
           </Button>
         </div>
         <div className="divide-y divide-gray-100">
-          {incoming.length === 0 && outgoing.length === 0 && (
+          {members.length === 0 && incoming.length === 0 && outgoing.length === 0 && (
             <div className="p-6 text-sm text-gray-500">
               Link parents, spouse, children so your family history is preserved across constituency transfers.
+            </div>
+          )}
+          {members.length > 0 && (
+            <div className="p-4 space-y-2" data-testid="family-members-list">
+              <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-500 flex items-center gap-1">
+                <Users size={11} /> Linked family ({members.length})
+              </div>
+              {members.map((m) => (
+                <div
+                  key={m.id}
+                  className="flex items-center gap-3 py-2"
+                  data-testid={`family-member-${m.id}`}
+                >
+                  <div className="w-8 h-8 rounded-full bg-[#0A1128] text-white flex items-center justify-center text-xs font-bold shrink-0">
+                    {(m.other_name || "?").charAt(0).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-sm text-gray-900 truncate">{m.other_name || m.other_mobile}</div>
+                    <div className="text-xs text-gray-500">{m.relation}{m.other_mobile ? ` · ${m.other_mobile}` : ""}</div>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
           {incoming.length > 0 && (

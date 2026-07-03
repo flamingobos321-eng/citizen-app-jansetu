@@ -2565,6 +2565,54 @@ async def family_link(payload: FamilyLinkRequest, user: dict = Depends(get_curre
     return {"linked": False, "invitation_id": inv["id"], "pending": True}
 
 
+@api.get("/family/members")
+async def list_family_members(user: dict = Depends(get_current_user)):
+    """Return all resolved family members of the current citizen — both
+    directions of `relationships` (person_a→person_b and person_b→person_a).
+    Each item includes the OTHER person's name + mobile + the relation label
+    from the CURRENT user's perspective (uses gender-aware `inverse_relation`
+    when we're on the `person_b` side of the edge)."""
+    if user.get("role") != "citizen":
+        raise HTTPException(403, "Citizens only")
+    uid = user["id"]
+    tid = user.get("tenant_id")
+    rels = await db.relationships.find(
+        {"tenant_id": tid, "$or": [{"person_a": uid}, {"person_b": uid}]},
+        {"_id": 0},
+    ).to_list(500)
+    other_ids = list({(r["person_b"] if r["person_a"] == uid else r["person_a"]) for r in rels})
+    users_by_id = {}
+    if other_ids:
+        for u in await db.users.find(
+            {"id": {"$in": other_ids}},
+            {"_id": 0, "id": 1, "name": 1, "mobile": 1, "gender": 1, "person_id": 1},
+        ).to_list(len(other_ids)):
+            users_by_id[u["id"]] = u
+    my_gender = user.get("gender")
+    out = []
+    for r in rels:
+        i_am_a = r["person_a"] == uid
+        other_id = r["person_b"] if i_am_a else r["person_a"]
+        other = users_by_id.get(other_id) or {}
+        # Relation FROM me TO other:
+        #   edge stores "person_a is <type> of person_b"
+        #   if I'm person_a → other is my `<type>` (label matches my perspective)
+        #   if I'm person_b → other is the inverse based on MY gender
+        rel_label = r["type"] if i_am_a else inverse_relation(r["type"], my_gender)
+        out.append({
+            "id": r["id"],
+            "other_user_id": other_id,
+            "other_person_id": other.get("person_id"),
+            "other_name": other.get("name"),
+            "other_mobile": other.get("mobile"),
+            "relation": rel_label,
+            "created_at": r.get("created_at"),
+        })
+    # Sort by relation then name for stable UI.
+    out.sort(key=lambda x: ((x.get("relation") or ""), (x.get("other_name") or "")))
+    return out
+
+
 @api.get("/family/invitations")
 async def list_family_invitations(user: dict = Depends(get_current_user)):
     """Citizen sees invitations they SENT (pending) and any they can accept
