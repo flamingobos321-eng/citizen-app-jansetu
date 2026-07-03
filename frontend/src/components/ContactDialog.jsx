@@ -16,6 +16,46 @@ export const CONTACT = {
   email: "hello@jansetu.in",
 };
 
+// FormSubmit.co inbox — sales-lead notifications land here directly from the
+// browser (so FormSubmit's browser-Referer anti-abuse check passes). Backend
+// still persists the row into `sales_leads` as the source of truth.
+const FORMSUBMIT_INBOX = "vikrantadams@gmail.com";
+const FORMSUBMIT_URL = `https://formsubmit.co/ajax/${FORMSUBMIT_INBOX}`;
+
+async function forwardLeadEmail(leadType, form) {
+  const subjectMap = { demo: "Book Demo", trial: "Free Trial Request", sales: "Contact Sales" };
+  const body = {
+    _subject: `[JanSetu] ${subjectMap[leadType] || "New Lead"} — ${form.name}`,
+    _captcha: "false",
+    _template: "table",
+    _replyto: form.email || "",
+    "Lead Type": leadType,
+    "Name": form.name,
+    "Email": form.email,
+    "Mobile": form.mobile,
+    "Organisation": form.organisation || "",
+    "Role": form.role || "",
+    "Message": form.message || "",
+    "Source URL": typeof window !== "undefined" ? window.location.href : "",
+    "Submitted At": new Date().toISOString(),
+  };
+  try {
+    const res = await fetch(FORMSUBMIT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    // FormSubmit returns 200 + {success:"true"} on success. `success:"false"`
+    // means the Referer/Origin check failed — surface for debugging.
+    if (data && data.success !== "true" && data.success !== true) {
+      console.warn("FormSubmit rejected lead forward:", data);
+    }
+  } catch (e) {
+    console.warn("FormSubmit lead forward network error:", e);
+  }
+}
+
 const TITLES = {
   demo: { title: "Book a Demo", desc: "See JanSetu in action with a 30-minute walkthrough tailored to your office." },
   trial: { title: "Request Free Trial", desc: "Get a sandboxed portal for your constituency to explore JanSetu risk-free." },
@@ -44,11 +84,15 @@ export function ContactDialog({ open, onOpenChange, leadType = "demo" }) {
     }
     setSubmitting(true);
     try {
+      // Save into JanSetu backend (source of truth + admin view).
       await api.post("/leads", {
         lead_type: leadType,
         ...form,
         source_url: typeof window !== "undefined" ? window.location.href : null,
       });
+      // Email notification to sales inbox — fire from the browser so
+      // FormSubmit's Referer-based anti-abuse check passes. Non-blocking.
+      forwardLeadEmail(leadType, form);
       setDone(true);
       toast.success("Thank you — our team will get back to you shortly.");
     } catch (e) {
