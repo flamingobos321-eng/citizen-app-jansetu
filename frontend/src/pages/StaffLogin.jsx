@@ -15,7 +15,10 @@ export default function StaffLogin() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [params] = useSearchParams();
-  const slug = (params.get("portal") || "").trim().toLowerCase();
+  // Accept either legacy `?portal=<slug>` or new `?office=JS####`.
+  const rawIdent = (params.get("office") || params.get("portal") || "").trim();
+  const isOfficeCode = /^JS\d{4,}$/i.test(rawIdent);
+  const slug = isOfficeCode ? rawIdent.toUpperCase() : rawIdent.toLowerCase();
   const [portal, setPortal] = useState(null);
   const [portalErr, setPortalErr] = useState(null);
   const { loginWithToken } = useAuth();
@@ -23,7 +26,8 @@ export default function StaffLogin() {
 
   useEffect(() => {
     if (!slug) { setPortal(null); return; }
-    fetch(`${API}/portals/${slug}`)
+    const path = isOfficeCode ? `/portals/office/${slug}` : `/portals/${slug}`;
+    fetch(`${API}${path}`)
       .then((r) => r.ok ? r.json() : Promise.reject(r))
       .then((data) => { setPortal(data); setPortalErr(null); })
       .catch(() => setPortalErr("Portal not found"));
@@ -73,7 +77,7 @@ export default function StaffLogin() {
       </div>
       <div className="relative min-h-screen flex items-center justify-center px-4">
         <div className="w-full max-w-md">
-          <Link to={slug ? `/portal/${slug}` : "/"} className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-6" data-testid="back-home">
+          <Link to={slug ? (isOfficeCode ? `/o/${slug}` : `/portal/${slug}`) : "/"} className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-6" data-testid="back-home">
             <ArrowLeft size={16} /> {slug ? "Back to portal" : "Back to home"}
           </Link>
           <form onSubmit={submit} className="bg-white border border-gray-200 rounded-lg p-8 shadow-sm">

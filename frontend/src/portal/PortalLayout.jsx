@@ -27,6 +27,9 @@ export default function PortalLayout({ config, children }) {
   };
   const social = config?.social_links || {};
   const slug = config?.slug;
+  const officeCode = config?.office_code;
+  const brandLink = officeCode ? `/o/${officeCode}` : `/portal/${slug}`;
+  const loginParam = officeCode ? `office=${officeCode}` : `portal=${slug}`;
 
   // Multi-tenant session isolation:
   // A signed-in user is "belonging" to this portal only if their tenant_id
@@ -58,7 +61,7 @@ export default function PortalLayout({ config, children }) {
       {/* HEADER */}
       <header className="sticky top-0 z-30 backdrop-blur bg-white/85 border-b border-gray-200">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-4">
-          <Link to={`/portal/${slug}`} className="flex items-center gap-3 min-w-0" data-testid="portal-brand">
+          <Link to={brandLink} className="flex items-center gap-3 min-w-0" data-testid="portal-brand">
             {config?.logo_path ? (
               <img src={portalAssetUrl(config.logo_path)} alt="" className="w-10 h-10 rounded-md object-cover portal-ring" />
             ) : (
@@ -78,8 +81,8 @@ export default function PortalLayout({ config, children }) {
               <Link to="/app" className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md portal-bg-primary hover:opacity-90" data-testid="portal-open-app">Open Workspace</Link>
             ) : (
               <>
-                <Link onClick={rememberSlug} to={`/citizen/login?portal=${slug}`} className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid="portal-citizen-login">Citizen Login</Link>
-                <Link onClick={rememberSlug} to={`/staff/login?portal=${slug}`} className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md portal-bg-primary hover:opacity-90" data-testid="portal-staff-login">Staff Login</Link>
+                <Link onClick={rememberSlug} to={`/citizen/login?${loginParam}`} className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid="portal-citizen-login">Citizen Login</Link>
+                <Link onClick={rememberSlug} to={`/staff/login?${loginParam}`} className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md portal-bg-primary hover:opacity-90" data-testid="portal-staff-login">Staff Login</Link>
               </>
             )}
           </div>

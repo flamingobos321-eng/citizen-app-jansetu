@@ -7,7 +7,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { toast } from "sonner";
-import { Plus, Globe, Pencil, Trash2, Star, X, ExternalLink, Upload, Pause, Play, Timer, CreditCard, Copy, CheckCircle2, KeyRound, Archive, RotateCcw, AlertTriangle } from "lucide-react";
+import { Plus, Globe, Pencil, Trash2, Star, X, ExternalLink, Upload, Pause, Play, Timer, CreditCard, Copy, CheckCircle2, KeyRound, Archive, RotateCcw, AlertTriangle, QrCode } from "lucide-react";
 
 const empty = {
   slug: "",
@@ -42,6 +42,7 @@ export default function AdminPortals() {
   const [includeArchived, setIncludeArchived] = useState(false);
   const [purgeTarget, setPurgeTarget] = useState(null); // portal being purged
   const [purgeForm, setPurgeForm] = useState({ slug: "", text: "" });
+  const [qrTarget, setQrTarget] = useState(null); // portal whose QR to display
 
   const load = () => api.get("/admin/portals", { params: { include_archived: includeArchived } }).then((r) => setList(r.data || []));
   useEffect(() => { load(); }, [includeArchived]);
@@ -179,14 +180,30 @@ export default function AdminPortals() {
                     <span className="pill pill-info inline-flex items-center gap-1"><CreditCard size={11} /> {p.subscription_plan}</span>
                   )}
                 </div>
+                {p.office_code && (
+                  <span className="pill pill-info font-mono" data-testid={`portal-code-${p.office_code}`}>{p.office_code}</span>
+                )}
                 <div className="text-xs text-gray-500 mt-0.5">{p.designation} · {p.constituency_name}</div>
-                <div className="text-[11px] text-gray-400 mt-0.5">/portal/{p.slug} {p.primary_admin_email && <>· Admin: {p.primary_admin_email}</>}</div>
+                <div className="text-[11px] text-gray-400 mt-0.5">
+                  {p.office_code ? `/o/${p.office_code}` : `/portal/${p.slug}`}
+                  {p.primary_admin_email && <> · Admin: {p.primary_admin_email}</>}
+                </div>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
-                {!isArchived && (
-                  <a href={`/portal/${p.slug}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid={`portal-open-${p.slug}`}>
+                {!isArchived && p.office_code && (
+                  <a href={`/o/${p.office_code}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid={`portal-open-${p.office_code}`}>
                     <ExternalLink size={12} /> Open
                   </a>
+                )}
+                {!isArchived && p.office_code && (
+                  <button
+                    onClick={() => setQrTarget(p)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50"
+                    data-testid={`portal-qr-${p.office_code}`}
+                    title="Show QR code — citizens scan this to onboard"
+                  >
+                    <QrCode size={12} /> QR
+                  </button>
                 )}
                 {!p.is_default && p.is_active && !isArchived && (
                   <button onClick={() => setDefault(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid={`portal-default-${p.slug}`}>
@@ -251,6 +268,9 @@ export default function AdminPortals() {
       {provisioned && (
         <ProvisionedDialog data={provisioned} onClose={() => setProvisioned(null)} />
       )}
+      {qrTarget && (
+        <QrDialog portal={qrTarget} onClose={() => setQrTarget(null)} />
+      )}
       {purgeTarget && (
         <PurgeDialog
           portal={purgeTarget}
@@ -261,6 +281,57 @@ export default function AdminPortals() {
         />
       )}
     </div>
+  );
+}
+
+function QrDialog({ portal, onClose }) {
+  const code = portal.office_code;
+  const qrSrc = code ? `${api.defaults.baseURL}/admin/office-code/${code}/qr?_t=${Date.now()}` : "";
+  const url = code ? `${window.location.origin}/o/${code}` : "";
+  const copy = () => {
+    navigator.clipboard?.writeText(url);
+    toast.success("Portal URL copied");
+  };
+  return createPortal(
+    <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg max-w-sm w-full shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()} data-testid="portal-qr-dialog">
+        <div className="p-5 border-b border-gray-200 flex items-center justify-between">
+          <div>
+            <div className="font-heading font-semibold text-gray-900">Office QR</div>
+            <div className="text-xs text-gray-500 mt-0.5">Citizens scan this to onboard</div>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100"><X size={16} /></button>
+        </div>
+        <div className="p-6 flex flex-col items-center gap-4">
+          <div className="p-3 bg-white border border-gray-200 rounded-md">
+            {qrSrc ? (
+              <img src={qrSrc} alt={`QR for ${code}`} className="w-56 h-56 object-contain" data-testid="portal-qr-image" />
+            ) : (
+              <div className="w-56 h-56 flex items-center justify-center text-xs text-gray-400">No code yet</div>
+            )}
+          </div>
+          <div className="text-center">
+            <div className="font-heading text-2xl font-bold text-gray-900 tracking-wider font-mono" data-testid="portal-qr-code">{code || "—"}</div>
+            <div className="text-xs text-gray-500 mt-1">{portal.politician_name}</div>
+          </div>
+          <div className="w-full flex items-center gap-2 border border-gray-200 rounded-md px-3 py-2">
+            <span className="text-xs text-gray-600 truncate flex-1" data-testid="portal-qr-url">{url}</span>
+            <button onClick={copy} className="p-1 rounded hover:bg-gray-100"><Copy size={14} /></button>
+          </div>
+          {code && (
+            <a
+              href={qrSrc}
+              download={`${code}-qr.png`}
+              className="w-full text-center px-4 py-2 text-sm font-semibold rounded-md bg-[#0A1128] text-white hover:opacity-90"
+              data-testid="portal-qr-download"
+            >
+              Download QR PNG
+            </a>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -340,9 +411,67 @@ function EditDialog({ initial, onClose, onSaved }) {
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
+  const [codeCheck, setCodeCheck] = useState(null); // null | "checking" | {available, reason}
+  const [codeLocked, setCodeLocked] = useState(false); // true when citizens already exist
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const setSocial = (k, v) => setForm((f) => ({ ...f, social_links: { ...f.social_links, [k]: v } }));
   const setOtp = (k, v) => setForm((f) => ({ ...f, otp_config: { ...(f.otp_config || {}), [k]: v } }));
+
+  // On mount for a NEW portal: fetch a fresh Office Code so the user sees
+  // a valid code in the form before they even start typing.
+  useEffect(() => {
+    if (isNew && !form.office_code) {
+      api.get("/admin/office-code/generate", { method: "POST" }).catch(() => {});
+      api.post("/admin/office-code/generate").then((r) => {
+        set("office_code", r.data.office_code);
+      }).catch(() => {});
+    }
+    // For EXISTING portals, check whether the Office Code is already locked
+    // (i.e. any citizen has registered). Uses the audit-friendly `is_active`
+    // approximation via /admin/portals — we don't need exact numbers here.
+    if (!isNew && form.id) {
+      // A simple heuristic: fetch the citizens count via /users?role=citizen
+      // scoped to this tenant. Super Admin sees all tenants; server enforces.
+      api.get("/users", { params: { role: "citizen", tenant_id: form.id } })
+        .then((r) => setCodeLocked((r.data || []).length > 0))
+        .catch(() => setCodeLocked(false));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const regenerateCode = async () => {
+    try {
+      const r = await api.post("/admin/office-code/generate");
+      set("office_code", r.data.office_code);
+      setCodeCheck({ available: true, reason: null });
+    } catch (e) {
+      toast.error("Could not fetch a fresh code");
+    }
+  };
+
+  const checkCode = async (code) => {
+    if (!code) return setCodeCheck(null);
+    setCodeCheck("checking");
+    try {
+      const r = await api.get(`/admin/office-code/${encodeURIComponent(code)}/available`);
+      setCodeCheck({ available: r.data.available, reason: r.data.reason });
+    } catch (e) {
+      setCodeCheck({ available: false, reason: "Check failed" });
+    }
+  };
+
+  // Debounce uniqueness check as the user edits.
+  useEffect(() => {
+    if (!form.office_code) return;
+    const code = String(form.office_code).toUpperCase();
+    if (!isNew && initial.office_code && code === String(initial.office_code).toUpperCase()) {
+      setCodeCheck({ available: true, reason: null });
+      return;
+    }
+    const t = setTimeout(() => checkCode(code), 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.office_code]);
 
   const uploadLogo = async (e) => {
     const file = e.target.files?.[0];
@@ -364,10 +493,10 @@ function EditDialog({ initial, onClose, onSaved }) {
   const save = async () => {
     // Diagnostic-friendly validation: name the missing field(s) and focus the first.
     const required = [
-      { key: "slug",               label: "Slug",            testId: "portal-slug" },
-      { key: "politician_name",    label: "Politician Name", testId: "portal-pname" },
+      { key: "office_code",        label: "Office Code",     testId: "portal-office-code" },
+      { key: "politician_name",    label: "Representative Name", testId: "portal-pname" },
       { key: "designation",        label: "Designation",     testId: "portal-designation" },
-      { key: "constituency_name",  label: "Constituency",    testId: "portal-cname" },
+      { key: "constituency_name",  label: "Assembly Constituency", testId: "portal-cname" },
       { key: "welcome_message",    label: "Welcome Message", testId: "portal-welcome" },
     ];
     const missing = required.filter((r) => !String(form[r.key] ?? "").trim());
@@ -421,8 +550,45 @@ function EditDialog({ initial, onClose, onSaved }) {
         {/* Scrollable body — min-h-0 is required so flexbox lets this child shrink and scroll */}
         <div className="flex-1 min-h-0 overflow-y-auto p-5 sm:p-6">
         <div className="grid sm:grid-cols-2 gap-4">
-          <F label="Slug (URL)" required hint="e.g. pune-cantonment">
-            <Input data-testid="portal-slug" value={form.slug} onChange={(e) => set("slug", e.target.value)} placeholder="pune-cantonment" />
+          <F label="Office Code" required hint="Auto-generated. Editable until first citizen registers. Becomes the Portal URL.">
+            <div className="flex gap-2">
+              <Input
+                data-testid="portal-office-code"
+                value={form.office_code || ""}
+                onChange={(e) => set("office_code", e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+                placeholder="JS1045"
+                maxLength={12}
+                disabled={codeLocked}
+                className={codeCheck?.available === false ? "border-red-500" : codeCheck?.available === true ? "border-green-500" : ""}
+              />
+              {!codeLocked && (
+                <button
+                  type="button"
+                  onClick={regenerateCode}
+                  className="px-3 py-2 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50 whitespace-nowrap"
+                  data-testid="portal-office-code-generate"
+                >
+                  Generate New
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              {codeCheck === "checking" && <span className="text-xs text-gray-400">checking…</span>}
+              {codeCheck && codeCheck !== "checking" && codeCheck.available && (
+                <span className="text-xs text-green-600 font-semibold" data-testid="office-code-ok">✓ Available</span>
+              )}
+              {codeCheck && codeCheck !== "checking" && !codeCheck.available && (
+                <span className="text-xs text-red-600 font-semibold" data-testid="office-code-bad">{codeCheck.reason || "Not available"}</span>
+              )}
+              {codeLocked && (
+                <span className="text-xs text-amber-700 font-semibold">🔒 Locked — citizens have registered under this office</span>
+              )}
+              {form.office_code && codeCheck?.available !== false && (
+                <span className="text-xs text-gray-500 ml-auto" data-testid="portal-url-preview">
+                  Portal URL: <span className="font-mono">/o/{form.office_code}</span>
+                </span>
+              )}
+            </div>
           </F>
           <F label="Constituency Name" required>
             <Input data-testid="portal-cname" value={form.constituency_name} onChange={(e) => set("constituency_name", e.target.value)} placeholder="Pune Cantonment" />

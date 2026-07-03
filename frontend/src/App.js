@@ -92,6 +92,8 @@ export default function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/portal" element={<PortalIndex />} />
           <Route path="/portal/:slug" element={<PortalHome />} />
+          {/* Canonical Office-Code URL (v1.1+). Matches /o/JS1045 and friends. */}
+          <Route path="/o/:code" element={<PortalHome />} />
           <Route path="/citizen/login" element={<CitizenLogin />} />
           <Route path="/citizen/register" element={<CitizenRegister />} />
           <Route path="/staff/login" element={<StaffLogin />} />

@@ -453,15 +453,24 @@ class PortalConfig(BaseModel):
     """
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=new_id)
-    slug: str  # unique URL-safe identifier, e.g. "pune-cantonment"
+    slug: str  # LEGACY URL fragment — kept for backwards compat; new tenants
+               # get a synthetic slug matching the office_code (lowercased).
+               # office_code is the canonical public identifier (v1.1+).
+    office_code: Optional[str] = None  # canonical Office Code, e.g. "JS1045".
+                                       # unique globally, immutable once any
+                                       # citizen has registered under it.
     is_active: bool = True
     is_default: bool = False
 
     # Identity
-    politician_name: str
+    politician_name: str          # Representative Name
     designation: str
-    constituency_name: str
-    constituency_id: Optional[str] = None  # filter content scope if set
+    constituency_name: str        # Assembly Constituency
+    constituency_id: Optional[str] = None
+    office_name: Optional[str] = None
+    office_type: Optional[str] = None   # MLA / MP / Corporator / Panchayat / Trust / Other
+    district: Optional[str] = None
+    state: Optional[str] = None
 
     # Primary tenant admin (auto-provisioned on creation)
     primary_admin_email: Optional[str] = None
@@ -530,12 +539,20 @@ class PortalConfig(BaseModel):
 
 
 class PortalConfigCreate(BaseModel):
-    slug: str
-    politician_name: str
+    slug: Optional[str] = None   # OPTIONAL — derived from office_code if omitted
+    office_code: Optional[str] = None  # Office Code (JS####) — auto-generated
+                                       # on the client via /admin/office-code/generate
+                                       # and passed here on create. If omitted,
+                                       # server generates a fresh one.
+    politician_name: str          # Representative name
     designation: str
-    constituency_name: str
+    constituency_name: str        # Assembly Constituency
     welcome_message: str
     constituency_id: Optional[str] = None
+    office_name: Optional[str] = None
+    office_type: Optional[str] = None
+    district: Optional[str] = None
+    state: Optional[str] = None
     is_active: bool = True
     is_default: bool = False
     logo_path: Optional[str] = None

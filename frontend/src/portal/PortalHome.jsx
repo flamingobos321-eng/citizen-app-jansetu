@@ -9,8 +9,20 @@ import UpcomingVisits from "./sections/UpcomingVisits";
 import PublicNotifications from "./sections/PublicNotifications";
 import ContactOffice from "./sections/ContactOffice";
 
+// Regex for the new Office-Code URLs — /o/JS1045.
+const OFFICE_CODE_RE = /^JS\d{4,}$/i;
+
 export default function PortalHome() {
-  const { slug } = useParams();
+  // The same component serves both routes:
+  //   /o/:code    — new Office-Code URL (canonical)
+  //   /portal/:slug — legacy URL (backwards compat)
+  const params = useParams();
+  const identifier = (params.code || params.slug || "").trim();
+  // Slug endpoints happily accept Office Codes too (see backend
+  // `_resolve_tenant_id`), so we can use ONE code path for both. But for the
+  // legacy per-slug endpoints (`/portals/{slug}/devworks|visits|notifications`)
+  // we need to resolve the actual slug when the URL is an Office Code.
+  const isCode = OFFICE_CODE_RE.test(identifier);
   const [config, setConfig] = useState(null);
   const [devworks, setDevworks] = useState([]);
   const [visits, setVisits] = useState([]);
@@ -18,13 +30,25 @@ export default function PortalHome() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (!slug) return;
+    if (!identifier) return;
     setError(null);
-    api.get(`/portals/${slug}`).then((r) => setConfig(r.data)).catch(() => setError("This portal is unavailable."));
-    api.get(`/portals/${slug}/devworks`).then((r) => setDevworks(r.data)).catch(() => {});
-    api.get(`/portals/${slug}/visits`).then((r) => setVisits(r.data)).catch(() => {});
-    api.get(`/portals/${slug}/notifications`).then((r) => setNotifs(r.data)).catch(() => {});
-  }, [slug]);
+    const upper = identifier.toUpperCase();
+    const bootstrap = isCode
+      ? api.get(`/portals/office/${upper}`)
+      : api.get(`/portals/${identifier}`);
+    bootstrap
+      .then((r) => {
+        setConfig(r.data);
+        // Downstream section calls always use the row's canonical slug so
+        // legacy `/portals/{slug}/…` endpoints keep working.
+        const slugForFeeds = r.data.slug;
+        if (!slugForFeeds) return;
+        api.get(`/portals/${slugForFeeds}/devworks`).then((x) => setDevworks(x.data)).catch(() => {});
+        api.get(`/portals/${slugForFeeds}/visits`).then((x) => setVisits(x.data)).catch(() => {});
+        api.get(`/portals/${slugForFeeds}/notifications`).then((x) => setNotifs(x.data)).catch(() => {});
+      })
+      .catch(() => setError("This portal is unavailable."));
+  }, [identifier, isCode]);
 
   if (error) {
     return (

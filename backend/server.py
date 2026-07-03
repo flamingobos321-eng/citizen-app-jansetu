@@ -245,6 +245,26 @@ async def on_start():
     await _sync_tenant_counters()
     # V2 indexes (M1, additive, idempotent — see migrations/__init__.py)
     await _ensure_v2_indexes()
+    # Backfill office_code for portals created before v1.1.
+    await _backfill_office_codes()
+
+
+async def _backfill_office_codes():
+    """Assign an Office Code (JS####) to any portal_configs row that doesn't
+    have one yet. Idempotent — only touches rows without office_code."""
+    missing = await db.portal_configs.find(
+        {"$or": [{"office_code": None}, {"office_code": {"$exists": False}}, {"office_code": ""}]},
+        {"_id": 0, "id": 1, "slug": 1},
+    ).to_list(500)
+    if not missing:
+        return
+    for p in missing:
+        code = await _next_office_code()
+        await db.portal_configs.update_one(
+            {"id": p["id"]},
+            {"$set": {"office_code": code, "updated_at": now_iso()}},
+        )
+        logger.info("Backfilled office_code %s for portal slug=%s", code, p.get("slug"))
 
 
 async def _ensure_v2_indexes():
@@ -561,19 +581,29 @@ async def meta_cats():
     return {"issue_categories": ISSUE_CATEGORIES, "issue_statuses": ISSUE_STATUSES, "dev_statuses": DEV_STATUSES, "visit_statuses": VISIT_STATUSES}
 
 
-async def _resolve_tenant_id(slug: Optional[str], allow_archived_for_super_admin: bool = False) -> Optional[str]:
-    """Resolve a portal slug to its tenant_id. Returns None if no slug provided.
+async def _resolve_tenant_id(identifier: Optional[str], allow_archived_for_super_admin: bool = False) -> Optional[str]:
+    """Resolve a portal identifier (Office Code preferred, legacy slug fallback)
+    to its tenant_id. Returns None if no identifier provided.
+
+    Accepts EITHER:
+        - Office Code (e.g. "JS1045") — canonical v1.1+
+        - Slug (e.g. "pune-cantonment") — legacy, still supported
 
     Archived portals reject all new logins by default (per production rule).
     Only super_admin flows may pass ``allow_archived_for_super_admin=True`` and
     still authenticate against an archived portal — used from staff login when
     the caller turns out to be super_admin."""
-    if not slug:
+    if not identifier:
         return None
-    # Include archived rows so we can produce a specific error message.
+    ident = identifier.strip()
+    # Match Office Code first (uppercase JS-prefixed). Fall back to slug otherwise.
+    q: dict
+    if _is_valid_office_code(ident.upper()):
+        q = {"office_code": ident.upper()}
+    else:
+        q = {"slug": ident.lower()}
     portal = await db.portal_configs.find_one(
-        {"slug": slug.strip().lower()},
-        {"id": 1, "portal_status": 1, "is_active": 1},
+        q, {"id": 1, "portal_status": 1, "is_active": 1, "office_code": 1, "slug": 1},
     )
     if not portal:
         raise HTTPException(404, "Portal not found")
@@ -623,12 +653,16 @@ async def request_otp(payload: CitizenOTPRequest):
     own SMS provider config — credentials are strictly per-tenant (see
     ``portal_configs.otp_config``).
     """
-    # Validate slug + resolve to tenant id (also enforces archive/suspend gates).
+    # Validate identifier + resolve to tenant id (also enforces archive/suspend gates).
+    # Backwards-compat: `tenant_slug` on the payload accepts either the legacy
+    # slug or the new Office Code (JS####).
     await _resolve_tenant_id(payload.tenant_slug)
     portal = None
     if payload.tenant_slug:
+        ident = payload.tenant_slug.strip()
+        q = {"office_code": ident.upper()} if _is_valid_office_code(ident.upper()) else {"slug": ident.lower()}
         portal = await db.portal_configs.find_one(
-            {"slug": payload.tenant_slug.strip().lower()},
+            q,
             {"_id": 0, "communication_mode": 1, "otp_config": 1, "id": 1},
         )
     is_dev = not portal or (portal.get("communication_mode") or "development") != "production"
@@ -2208,15 +2242,137 @@ def _generate_password(n: int = 12) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
 
+_OFFICE_CODE_PREFIX = "JS"
+_OFFICE_CODE_START = 1000
+
+
+def _is_valid_office_code(code: str) -> bool:
+    """Office Code format: JS + 4 or more digits, uppercase."""
+    if not code or not isinstance(code, str):
+        return False
+    c = code.strip().upper()
+    if not c.startswith(_OFFICE_CODE_PREFIX):
+        return False
+    tail = c[len(_OFFICE_CODE_PREFIX):]
+    return tail.isdigit() and len(tail) >= 4
+
+
+async def _office_code_taken(code: str) -> bool:
+    return bool(await db.portal_configs.find_one({"office_code": code}, {"_id": 1}))
+
+
+async def _next_office_code() -> str:
+    """Return the next unused office code — JS + (max_existing+1), no less
+    than 1000. Race-safe via double-check on insert."""
+    # Find the highest existing numeric tail across portal_configs.
+    highest = _OFFICE_CODE_START - 1
+    async for doc in db.portal_configs.find(
+        {"office_code": {"$regex": f"^{_OFFICE_CODE_PREFIX}\\d+$"}},
+        {"office_code": 1, "_id": 0},
+    ):
+        try:
+            n = int(doc["office_code"][len(_OFFICE_CODE_PREFIX):])
+            if n > highest:
+                highest = n
+        except (ValueError, TypeError):
+            continue
+    # First code should be JS1000.
+    candidate_num = max(_OFFICE_CODE_START, highest + 1)
+    for _ in range(20):  # unrealistic safety loop
+        candidate = f"{_OFFICE_CODE_PREFIX}{candidate_num}"
+        if not await _office_code_taken(candidate):
+            return candidate
+        candidate_num += 1
+    raise HTTPException(500, "Could not allocate a fresh office code")
+
+
+@api.post("/admin/office-code/generate")
+async def generate_office_code(_: dict = Depends(require_roles("super_admin"))):
+    """Return a fresh unused Office Code. Does NOT persist — the caller sends
+    it back in the create-portal payload."""
+    code = await _next_office_code()
+    return {"office_code": code}
+
+
+@api.get("/admin/office-code/{code}/available")
+async def check_office_code_available(code: str, _: dict = Depends(require_roles("super_admin"))):
+    code = (code or "").strip().upper()
+    if not _is_valid_office_code(code):
+        return {"office_code": code, "available": False, "reason": "Invalid format (expected JS + digits, e.g. JS1045)"}
+    taken = await _office_code_taken(code)
+    return {"office_code": code, "available": not taken, "reason": "Already in use" if taken else None}
+
+
+@api.get("/admin/office-code/{code}/qr")
+async def office_code_qr(code: str, _: dict = Depends(get_current_user), size: int = 240):
+    """PNG QR code encoding the Office Code. The scanned string is exactly the
+    Office Code (e.g. "JS1045"); the citizen app resolves it via
+    /api/portals/office/{code}. Returns image/png."""
+    code = (code or "").strip().upper()
+    if not _is_valid_office_code(code):
+        raise HTTPException(400, "Invalid office code")
+    try:
+        import qrcode
+        img = qrcode.make(code)
+    except ImportError:
+        raise HTTPException(500, "qrcode library not installed")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+async def _office_has_citizens(portal_id: str) -> bool:
+    """Once any citizen has registered under this office, office_code freezes."""
+    return bool(await db.users.find_one(
+        {"tenant_id": portal_id, "role": "citizen"},
+        {"_id": 1},
+    ))
+
+
+@api.get("/portals/office/{code}")
+async def get_portal_by_office_code(code: str):
+    """Public lookup of a portal by Office Code — used by the citizen app
+    before login to render the "You are joining this office" preview. Returns
+    the same shape as GET /api/portals/{slug} for compatibility."""
+    code = (code or "").strip().upper()
+    if not _is_valid_office_code(code):
+        raise HTTPException(400, "Invalid office code")
+    p = await db.portal_configs.find_one({"office_code": code}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Office not found")
+    if p.get("portal_status") == "suspended" and not p.get("is_active"):
+        raise HTTPException(404, "Office not found")
+    return _public_portal(p)
+
+
+
 @api.post("/admin/portals")
 async def create_portal(payload: PortalConfigCreate, user: dict = Depends(require_roles("super_admin"))):
-    slug = _normalize_slug(payload.slug)
+    # ---- Office Code resolution ----
+    # Preferred (v1.1+) — Super Admin supplies an auto-generated / manually
+    # edited Office Code from the New Portal form. Legacy slug is derived
+    # from the code so old URL patterns keep working.
+    office_code = (payload.office_code or "").strip().upper()
+    if office_code:
+        if not _is_valid_office_code(office_code):
+            raise HTTPException(400, "Invalid office_code — expected JS + 4+ digits (e.g. JS1045)")
+        if await _office_code_taken(office_code):
+            raise HTTPException(409, "office_code already in use")
+    else:
+        office_code = await _next_office_code()
+
+    # Derive slug from office_code if not provided (legacy compat).
+    raw_slug = payload.slug or office_code.lower()
+    slug = _normalize_slug(raw_slug)
     if not slug:
         raise HTTPException(400, "Invalid slug")
     if await db.portal_configs.find_one({"slug": slug}):
         raise HTTPException(409, "Slug already exists")
+
     data = payload.model_dump()
     data["slug"] = slug
+    data["office_code"] = office_code
     # Default trial: 14-day trial, on trial plan, active.
     from datetime import date, timedelta
     today = date.today()
@@ -2256,9 +2412,13 @@ async def create_portal(payload: PortalConfigCreate, user: dict = Depends(requir
             "must_change_password": True,
         },
         "urls": {
-            "portal_url": f"/portal/{slug}",
-            "staff_login_url": f"/staff/login?portal={slug}",
-            "citizen_portal_url": f"/portal/{slug}",
+            # Canonical Office-Code URL (v1.1+).
+            "portal_url": f"/o/{cfg.office_code}",
+            "office_url": f"/o/{cfg.office_code}",
+            "staff_login_url": f"/staff/login?office={cfg.office_code}",
+            "citizen_portal_url": f"/o/{cfg.office_code}",
+            # Legacy slug URLs — kept for anything already deployed.
+            "legacy_portal_url": f"/portal/{slug}",
         },
     }
 
@@ -2283,14 +2443,28 @@ async def reset_admin_password(portal_id: str, user: dict = Depends(require_role
 async def update_portal(portal_id: str, payload: dict, _: dict = Depends(require_roles("admin"))):
     allowed = {
         "politician_name", "designation", "constituency_name", "constituency_id",
+        "office_name", "office_type", "district", "state",
         "welcome_message", "tagline",
         "logo_path", "hero_image_path", "theme_color", "accent_color",
         "contact_phone", "contact_email", "contact_address", "office_hours", "social_links",
-        "is_active", "slug",
+        "is_active", "slug", "office_code",
         # OTP / communication (per-tenant, isolated).
         "communication_mode", "otp_config",
     }
     update = {k: v for k, v in payload.items() if k in allowed}
+    if "office_code" in update:
+        code = (update["office_code"] or "").strip().upper()
+        if not _is_valid_office_code(code):
+            raise HTTPException(400, "Invalid office_code (expected JS + 4+ digits)")
+        current = await db.portal_configs.find_one({"id": portal_id}, {"office_code": 1})
+        if current and current.get("office_code") != code:
+            # Immutability: once any citizen has registered under this office,
+            # the office_code is frozen.
+            if await _office_has_citizens(portal_id):
+                raise HTTPException(409, "Office Code cannot be changed after the first citizen has registered under this office.")
+            if await db.portal_configs.find_one({"office_code": code, "id": {"$ne": portal_id}}):
+                raise HTTPException(409, "office_code already in use")
+        update["office_code"] = code
     if "communication_mode" in update and update["communication_mode"] not in ("development", "production"):
         raise HTTPException(400, "communication_mode must be 'development' or 'production'")
     if "otp_config" in update and update["otp_config"] is not None:
