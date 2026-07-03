@@ -6,6 +6,7 @@ import logging
 import asyncio
 from datetime import datetime, timezone, timedelta
 
+import httpx
 import otp_service
 from pathlib import Path
 from typing import List, Literal, Optional
@@ -554,16 +555,66 @@ class LeadCreate(BaseModel):
     source_url: Optional[str] = None
 
 
+# FormSubmit.co endpoint — free service that emails form submissions to the
+# configured inbox without needing an SMTP setup. First submission to a NEW
+# recipient triggers a one-time email confirmation link — the recipient must
+# click it once to activate the pipe.
+_FORMSUBMIT_INBOX = "vikrantadams@gmail.com"
+_FORMSUBMIT_URL = f"https://formsubmit.co/ajax/{_FORMSUBMIT_INBOX}"
+
+
+async def _forward_lead_to_email(doc: dict) -> None:
+    """Best-effort: forward the lead as a plain email via FormSubmit.co.
+    Never raises — persisting to the DB is the source of truth; email is a
+    convenience notification and must not affect the API response."""
+    subject_map = {"demo": "Book Demo", "trial": "Free Trial Request", "sales": "Contact Sales"}
+    subject = f"[JanSetu] {subject_map.get(doc.get('lead_type'), 'New Lead')} — {doc.get('name', '')}"
+    payload = {
+        "_subject": subject,
+        "_captcha": "false",           # skip FormSubmit's captcha page
+        "_template": "table",          # render fields as a table in the email
+        "_replyto": doc.get("email") or "",
+        "Lead Type": doc.get("lead_type"),
+        "Name": doc.get("name"),
+        "Email": doc.get("email"),
+        "Mobile": doc.get("mobile"),
+        "Organisation": doc.get("organisation") or "",
+        "Role": doc.get("role") or "",
+        "Message": doc.get("message") or "",
+        "Source URL": doc.get("source_url") or "",
+        "Lead ID": doc.get("id"),
+        "Submitted At (UTC)": doc.get("created_at"),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            resp = await client.post(_FORMSUBMIT_URL, json=payload,
+                                     headers={"accept": "application/json"})
+        ok = 200 <= resp.status_code < 300
+        if not ok:
+            logger.warning("FormSubmit lead forward returned %s: %s",
+                           resp.status_code, resp.text[:200])
+    except Exception:
+        logger.exception("FormSubmit lead forward failed")
+
+
 @api.post("/leads")
 async def create_lead(payload: LeadCreate):
     """Public endpoint used by the Landing hero + Final CTA (Book Demo /
     Request Free Trial / Contact Sales) forms. Persists the lead into
-    `sales_leads` so the office can follow up. No auth required."""
+    `sales_leads` so the office can follow up, AND forwards a copy via
+    FormSubmit.co so the sales inbox gets an immediate email notification.
+    No auth required."""
     doc = payload.model_dump()
     doc["id"] = str(uuid.uuid4())
     doc["status"] = "new"
     doc["created_at"] = now_iso()
     await db.sales_leads.insert_one(doc)
+    # Fire-and-forget email notification. Sending is best-effort; DB row is
+    # already saved so the lead is never lost even if FormSubmit is down.
+    asyncio.create_task(_forward_lead_to_email(doc))
+    await _audit("lead.captured", None,
+                 {"lead_id": doc["id"], "lead_type": doc["lead_type"],
+                  "source_url": doc.get("source_url")})
     return {"ok": True, "lead_id": doc["id"]}
 
 
