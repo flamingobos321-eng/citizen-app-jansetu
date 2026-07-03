@@ -7,7 +7,8 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
 } from "recharts";
-import { Download } from "lucide-react";
+import { Download, Cake, Heart, UserCog } from "lucide-react";
+import { Link } from "react-router-dom";
 
 const COLORS = ["#0A1128", "#10B981", "#F59E0B", "#EF4444", "#3B82F6", "#8B5CF6", "#14B8A6", "#F97316"];
 
@@ -15,11 +16,14 @@ export default function StaffDashboard() {
   const { user } = useAuth();
   const [stats, setStats] = useState(null);
   const [areas, setAreas] = useState([]);
+  const [kCel, setKCel] = useState(null);
 
   useEffect(() => {
     const fetch = () => {
       api.get("/dashboard/stats").then((r) => setStats(r.data));
       api.get("/areas").then((r) => setAreas(r.data));
+      api.get("/dashboard/karyakarta-celebrations", { params: { days: 7 } })
+        .then((r) => setKCel(r.data)).catch(() => setKCel(null));
     };
     fetch();
     const t = setInterval(fetch, 15000);
@@ -116,6 +120,69 @@ export default function StaffDashboard() {
           </div>
         </ChartCard>
       </div>
+
+      {/* Karyakarta celebrations */}
+      {kCel && (
+        <div className="grid lg:grid-cols-2 gap-6" data-testid="karyakarta-celebrations">
+          <KaryakartaCelebSection
+            title="Karyakarta birthdays"
+            icon={Cake}
+            today={kCel.birthdays?.today || []}
+            upcoming={kCel.birthdays?.upcoming || []}
+            emptyMsg="No karyakarta birthdays in the next 7 days."
+            testId="k-bdays"
+          />
+          <KaryakartaCelebSection
+            title="Karyakarta anniversaries"
+            icon={Heart}
+            today={kCel.anniversaries?.today || []}
+            upcoming={kCel.anniversaries?.upcoming || []}
+            emptyMsg="No karyakarta anniversaries in the next 7 days."
+            testId="k-anns"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KaryakartaCelebSection({ title, icon: Icon, today, upcoming, emptyMsg, testId }) {
+  const total = today.length + upcoming.length;
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg" data-testid={testId}>
+      <div className="p-5 border-b border-gray-200 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Icon size={16} className="text-[#0A1128]" />
+          <h3 className="font-heading font-semibold text-gray-900">{title}</h3>
+        </div>
+        <Link to="/app/karyakartas" className="text-xs font-semibold text-[#0A1128] flex items-center gap-1">
+          <UserCog size={12} /> Manage
+        </Link>
+      </div>
+      {total === 0 ? (
+        <div className="p-6 text-sm text-gray-500">{emptyMsg}</div>
+      ) : (
+        <div className="divide-y divide-gray-100">
+          {today.map((k) => (
+            <div key={`t-${k.id}`} className="p-4 flex items-center gap-3">
+              <span className="pill pill-resolved">Today</span>
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold text-sm text-gray-900 truncate">{k.name}</div>
+                <div className="text-xs text-gray-500">{k.designation || "—"} · {k.mobile}</div>
+              </div>
+            </div>
+          ))}
+          {upcoming.map((k) => (
+            <div key={`u-${k.id}`} className="p-4 flex items-center gap-3">
+              <span className="pill pill-pending">in {k.in_days}d</span>
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold text-sm text-gray-900 truncate">{k.name}</div>
+                <div className="text-xs text-gray-500">{k.designation || "—"} · {k.mobile}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

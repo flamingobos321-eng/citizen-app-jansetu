@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { StatCard, SectionTitle, StatusPill } from "../components/Common";
 import { PersonTimeline } from "../components/PersonTimeline";
+import { FamilyLinkCard } from "../components/FamilyLinkCard";
 import { Plus, FileText, Calendar, Bell, Hammer, ArrowRight, ArrowRightLeft } from "lucide-react";
 import { Button } from "../components/ui/button";
 
@@ -145,6 +146,9 @@ export default function CitizenHome() {
           </div>
         </div>
       </div>
+
+      {/* Family linking */}
+      <FamilyLinkCard />
 
       {/* Person 360 — lifetime timeline (V2 cross-tenant self-view) */}
       <div className="bg-white border border-gray-200 rounded-lg">

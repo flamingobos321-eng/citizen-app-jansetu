@@ -800,6 +800,9 @@ async def citizen_register(payload: CitizenRegister):
                 tenant_id=tid, person_id=pid or "", user_id=user.id,
                 name=pending_k["name"] or user.name, mobile=user.mobile,
                 designation=pending_k.get("designation"),
+                ward_id=pending_k.get("ward_id"), village_id=pending_k.get("village_id"),
+                dob=pending_k.get("dob"), anniversary=pending_k.get("anniversary"),
+                notes=pending_k.get("notes"),
             ).model_dump()
             await db.karyakartas.insert_one(k_doc)
             await db.users.update_one(
@@ -1275,7 +1278,7 @@ async def create_visit(payload: VisitCreate, user: dict = Depends(require_roles(
         await v2dw.sync_visit_to_v2(db, visit=v.model_dump(), actor_user=user)
     except Exception:
         logger.exception("V2 dualwrite skipped for visit creation")
-    if v.status == "Published":
+    if v.status == "Published" and v.visibility != "internal":
         await _publish_visit_notification(v, user)
     return await db.visits.find_one({"id": v.id}, {"_id": 0}) or v.model_dump()
 
@@ -1311,7 +1314,8 @@ async def approve_visit(visit_id: str, user: dict = Depends(require_roles("polit
         return {**{k: v[k] for k in v if k != "_id"}}
     await db.visits.update_one(tenant_filter(user, {"id": visit_id}), {"$set": {"status": "Published", "approved_by": user["id"], "approved_at": now_iso()}})
     visit = Visit(**{**v, "status": "Published", "approved_by": user["id"], "approved_at": now_iso()})
-    await _publish_visit_notification(visit, user)
+    if visit.visibility != "internal":
+        await _publish_visit_notification(visit, user)
     try:
         await v2dw.sync_visit_approved(db, visit=visit.model_dump(), actor_user=user)
     except Exception:
@@ -2445,7 +2449,6 @@ async def seed_demo_data():
     logger.info("Seed complete.")
 
 
-app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -2468,7 +2471,7 @@ async def list_castes(user: dict = Depends(get_current_user)):
 async def create_caste(payload: TaxonomyCreate, user: dict = Depends(require_roles("pa", "admin"))):
     tid = get_tenant_id_for_write(user)
     doc = Caste(tenant_id=tid, **payload.model_dump()).model_dump()
-    await db.castes.insert_one(doc)
+    await db.castes.insert_one(dict(doc))
     return doc
 
 
@@ -2487,7 +2490,7 @@ async def list_religions(user: dict = Depends(get_current_user)):
 async def create_religion(payload: TaxonomyCreate, user: dict = Depends(require_roles("pa", "admin"))):
     tid = get_tenant_id_for_write(user)
     doc = Religion(tenant_id=tid, **payload.model_dump()).model_dump()
-    await db.religions.insert_one(doc)
+    await db.religions.insert_one(dict(doc))
     return doc
 
 
@@ -2639,7 +2642,12 @@ async def list_karyakartas(user: dict = Depends(require_roles("pa", "politician"
 
 
 async def _create_or_link_karyakarta(*, tid: str, name: str, mobile: str,
-                                     designation: Optional[str], actor_id: str) -> dict:
+                                     designation: Optional[str], actor_id: str,
+                                     ward_id: Optional[str] = None,
+                                     village_id: Optional[str] = None,
+                                     dob: Optional[str] = None,
+                                     anniversary: Optional[str] = None,
+                                     notes: Optional[str] = None) -> dict:
     mobile = (mobile or "").strip()
     if not mobile or not name:
         raise HTTPException(400, "name and mobile required")
@@ -2665,15 +2673,19 @@ async def _create_or_link_karyakarta(*, tid: str, name: str, mobile: str,
         doc = Karyakarta(
             tenant_id=tid, person_id=pid or "", user_id=existing["id"],
             name=existing["name"] or name, mobile=mobile, designation=designation,
+            ward_id=ward_id, village_id=village_id,
+            dob=dob, anniversary=anniversary, notes=notes,
         ).model_dump()
-        await db.karyakartas.insert_one(doc)
+        await db.karyakartas.insert_one(dict(doc))
         return {"linked": True, "karyakarta": doc, "user_id": existing["id"]}
     # Else pending karyakarta.
     doc = PendingKaryakarta(
         tenant_id=tid, name=name, mobile=mobile, designation=designation,
+        ward_id=ward_id, village_id=village_id,
+        dob=dob, anniversary=anniversary, notes=notes,
         imported_by=actor_id,
     ).model_dump()
-    await db.pending_karyakartas.insert_one(doc)
+    await db.pending_karyakartas.insert_one(dict(doc))
     return {"linked": False, "pending_karyakarta": doc}
 
 
@@ -2683,6 +2695,8 @@ async def create_karyakarta(payload: KaryakartaCreate, user: dict = Depends(requ
     return await _create_or_link_karyakarta(
         tid=tid, name=payload.name, mobile=payload.mobile,
         designation=payload.designation, actor_id=user["id"],
+        ward_id=payload.ward_id, village_id=payload.village_id,
+        dob=payload.dob, anniversary=payload.anniversary, notes=payload.notes,
     )
 
 
@@ -2697,6 +2711,8 @@ async def bulk_import_karyakartas(rows: List[KaryakartaCreate], user: dict = Dep
             r = await _create_or_link_karyakarta(
                 tid=tid, name=row.name, mobile=row.mobile,
                 designation=row.designation, actor_id=user["id"],
+                ward_id=row.ward_id, village_id=row.village_id,
+                dob=row.dob, anniversary=row.anniversary, notes=row.notes,
             )
             if r.get("linked"): linked += 1
             else: pending += 1
@@ -2826,3 +2842,6 @@ async def update_subscription(portal_id: str, payload: SubscriptionUpdate,
 @app.on_event("shutdown")
 async def shutdown():
     client.close()
+
+
+app.include_router(api)

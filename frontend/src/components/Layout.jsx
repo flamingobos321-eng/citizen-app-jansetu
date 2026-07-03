@@ -19,6 +19,8 @@ import {
   Crown,
   CreditCard,
   Timer,
+  UserCog,
+  Tags,
 } from "lucide-react";
 
 const ROLE_LABEL = {
@@ -140,11 +142,13 @@ export default function Layout({ children }) {
               <NavItem to="/app/notifications" icon={Bell} label="Notifications" testId="nav-notifs" />
               <NavItem to="/app/devworks" icon={Hammer} label="Development Works" testId="nav-devworks" />
               <NavItem to="/app/celebrations" icon={Cake} label="Celebrations" testId="nav-celeb" />
+              <NavItem to="/app/karyakartas" icon={UserCog} label="Karyakartas" testId="nav-karyakartas" />
               <NavItem to="/app/reports" icon={Download} label="Reports" testId="nav-reports" />
               {isAdmin && (
                 <>
                   <NavItem to="/app/areas" icon={Map} label="Wards & Villages" testId="nav-areas" />
                   <NavItem to="/app/staff" icon={ShieldCheck} label="Staff & Roles" testId="nav-staff" />
+                  <NavItem to="/app/taxonomy" icon={Tags} label="Caste & Religion" testId="nav-taxonomy" />
                 </>
               )}
             </>

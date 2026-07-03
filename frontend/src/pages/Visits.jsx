@@ -72,6 +72,9 @@ export default function Visits() {
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="pill pill-info">{v.visit_type}</span>
                 <StatusPill status={v.status} />
+                {v.visibility === "internal" && (
+                  <span className="pill pill-neutral" data-testid={`visit-visibility-${v.id}`}>Internal only</span>
+                )}
                 <span className="text-xs text-gray-500">{v.date} · {v.time}</span>
               </div>
               <h3 className="font-heading font-semibold text-gray-900 mt-3">{v.title}</h3>
@@ -97,7 +100,7 @@ export default function Visits() {
 
 function Composer({ onCreated, isAdmin }) {
   const [form, setForm] = useState({
-    title: "", description: "", date: "", time: "", location: "", visit_type: "Janata Darbar", target_audience: "",
+    title: "", description: "", date: "", time: "", location: "", visit_type: "Janata Darbar", target_audience: "", visibility: "public",
   });
   const upd = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const submit = async () => {
@@ -105,7 +108,7 @@ function Composer({ onCreated, isAdmin }) {
     try {
       await api.post("/visits", form);
       toast.success(isAdmin ? "Visit published" : "Visit created — pending MLA approval");
-      setForm({ title: "", description: "", date: "", time: "", location: "", visit_type: "Janata Darbar", target_audience: "" });
+      setForm({ title: "", description: "", date: "", time: "", location: "", visit_type: "Janata Darbar", target_audience: "", visibility: "public" });
       onCreated();
     } catch {
       toast.error("Failed");
@@ -132,6 +135,15 @@ function Composer({ onCreated, isAdmin }) {
         <F label="Time *"><Input type="time" data-testid="visit-time" value={form.time} onChange={(e) => upd("time", e.target.value)} /></F>
         <F label="Location *"><Input data-testid="visit-location" value={form.location} onChange={(e) => upd("location", e.target.value)} /></F>
         <F label="Target Audience"><Input data-testid="visit-audience" value={form.target_audience} onChange={(e) => upd("target_audience", e.target.value)} /></F>
+        <F label="Visibility">
+          <Select value={form.visibility} onValueChange={(v) => upd("visibility", v)}>
+            <SelectTrigger data-testid="visit-visibility"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="public">Public — citizens see &amp; get notified</SelectItem>
+              <SelectItem value="internal">Internal only — office view, no citizen notification</SelectItem>
+            </SelectContent>
+          </Select>
+        </F>
         <div className="sm:col-span-2"><F label="Description"><Textarea data-testid="visit-desc" rows={2} value={form.description} onChange={(e) => upd("description", e.target.value)} /></F></div>
       </div>
       <Button className="mt-4 bg-[#0A1128] hover:bg-[#0A1128]/90 text-white" onClick={submit} data-testid="visit-submit">

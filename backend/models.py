@@ -965,8 +965,11 @@ class Karyakarta(BaseModel):
     name: str
     mobile: str
     designation: Optional[str] = None
+    ward_id: Optional[str] = None
+    village_id: Optional[str] = None
     dob: Optional[str] = None
     anniversary: Optional[str] = None
+    notes: Optional[str] = None
     is_active: bool = True
     created_at: str = Field(default_factory=now_iso)
 
@@ -980,6 +983,11 @@ class PendingKaryakarta(BaseModel):
     name: str
     mobile: str
     designation: Optional[str] = None
+    ward_id: Optional[str] = None
+    village_id: Optional[str] = None
+    dob: Optional[str] = None
+    anniversary: Optional[str] = None
+    notes: Optional[str] = None
     imported_by: Optional[str] = None
     imported_at: str = Field(default_factory=now_iso)
     status: Literal["pending", "linked", "cancelled"] = "pending"
@@ -990,4 +998,9 @@ class KaryakartaCreate(BaseModel):
     name: str
     mobile: str
     designation: Optional[str] = None
+    ward_id: Optional[str] = None
+    village_id: Optional[str] = None
+    dob: Optional[str] = None
+    anniversary: Optional[str] = None
+    notes: Optional[str] = None
 

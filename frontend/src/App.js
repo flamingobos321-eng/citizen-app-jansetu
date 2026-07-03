@@ -27,6 +27,8 @@ import SuperTrials from "./pages/SuperTrials";
 import Celebrations from "./pages/Celebrations";
 import Reports from "./pages/Reports";
 import PersonProfile from "./pages/PersonProfile";
+import AdminKaryakartas from "./pages/AdminKaryakartas";
+import AdminTaxonomy from "./pages/AdminTaxonomy";
 import PortalIndex from "./portal/PortalIndex";
 import PortalHome from "./portal/PortalHome";
 import ChangePassword from "./pages/ChangePassword";
@@ -115,6 +117,8 @@ export default function App() {
           <Route path="/app/persons/:id" element={<TenantGuard><PersonProfile /></TenantGuard>} />
           <Route path="/app/areas" element={<TenantGuard><AdminAreas /></TenantGuard>} />
           <Route path="/app/staff" element={<TenantGuard><AdminStaff /></TenantGuard>} />
+          <Route path="/app/karyakartas" element={<TenantGuard><AdminKaryakartas /></TenantGuard>} />
+          <Route path="/app/taxonomy" element={<TenantGuard><AdminTaxonomy /></TenantGuard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
