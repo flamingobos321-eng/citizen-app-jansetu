@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { SectionTitle, StatCard } from "../components/Common";
+import { FamilyLinkCard } from "../components/FamilyLinkCard";
 
 export default function CitizenProfile() {
   const { user } = useAuth();
@@ -39,6 +40,9 @@ export default function CitizenProfile() {
         <StatCard label="Resolved" value={stats.resolved} accent="text-[#10B981]" testId="profile-resolved" />
         <StatCard label="Pending" value={stats.pending} accent="text-[#B45309]" testId="profile-pending" />
       </div>
+
+      {/* Family linking — pending invitations + outgoing requests */}
+      <FamilyLinkCard />
     </div>
   );
 }
