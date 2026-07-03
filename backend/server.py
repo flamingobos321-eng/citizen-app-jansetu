@@ -1968,12 +1968,15 @@ async def portal_devworks(slug: str, limit: int = 6):
     p = await db.portal_configs.find_one({"slug": slug, "is_active": True}, {"_id": 0})
     if not p:
         raise HTTPException(404, "Portal not found")
-    q = {"approved": True}
+    # Strict tenant isolation — devworks belong to a specific tenant/portal.
+    q = {"approved": True, "tenant_id": p["id"]}
     if p.get("constituency_id"):
-        # filter by ward/village that belongs to this constituency
+        # Optional secondary filter by ward/village that belongs to this constituency.
+        # Absence of areas means "no records yet" — that's the correct clean state.
         areas = await db.areas.find({"constituency_id": p["constituency_id"]}, {"id": 1}).to_list(500)
         area_ids = [a["id"] for a in areas]
-        q["$or"] = [{"ward_id": {"$in": area_ids}}, {"village_id": {"$in": area_ids}}]
+        if area_ids:
+            q["$or"] = [{"ward_id": {"$in": area_ids}}, {"village_id": {"$in": area_ids}}]
     docs = await db.devworks.find(q, {"_id": 0}).sort("created_at", -1).limit(max(1, min(limit, 50))).to_list(50)
     return docs
 
@@ -1984,16 +1987,22 @@ async def portal_visits(slug: str, limit: int = 5):
     if not p:
         raise HTTPException(404, "Portal not found")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    q = {"status": {"$in": ["Approved", "Published"]}, "date": {"$gte": today}}
+    # Strict tenant isolation + hide internal-only visits from public feed.
+    q = {
+        "tenant_id": p["id"],
+        "status": {"$in": ["Approved", "Published"]},
+        "date": {"$gte": today},
+        "visibility": {"$ne": "internal"},
+    }
     if p.get("constituency_id"):
         areas = await db.areas.find({"constituency_id": p["constituency_id"]}, {"id": 1}).to_list(500)
         area_ids = [a["id"] for a in areas]
-        # visits are tagged with ward_ids/village_ids lists or untagged (all)
-        q["$or"] = [
-            {"ward_ids": {"$in": area_ids}},
-            {"village_ids": {"$in": area_ids}},
-            {"$and": [{"ward_ids": {"$size": 0}}, {"village_ids": {"$size": 0}}]},
-        ]
+        if area_ids:
+            q["$or"] = [
+                {"ward_ids": {"$in": area_ids}},
+                {"village_ids": {"$in": area_ids}},
+                {"$and": [{"ward_ids": {"$size": 0}}, {"village_ids": {"$size": 0}}]},
+            ]
     docs = await db.visits.find(q, {"_id": 0}).sort("date", 1).limit(max(1, min(limit, 20))).to_list(20)
     return docs
 
@@ -2003,8 +2012,8 @@ async def portal_notifications(slug: str, limit: int = 5):
     p = await db.portal_configs.find_one({"slug": slug, "is_active": True}, {"_id": 0})
     if not p:
         raise HTTPException(404, "Portal not found")
-    # Only broadcast / public notifications
-    q = {"scope": "all"}
+    # Only broadcast / public notifications — scoped to THIS tenant.
+    q = {"scope": "all", "tenant_id": p["id"]}
     docs = await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(max(1, min(limit, 20))).to_list(20)
     return docs
 
