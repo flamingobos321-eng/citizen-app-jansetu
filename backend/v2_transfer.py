@@ -78,6 +78,9 @@ async def detect_transfer_need(db, *, mobile: str, target_tenant_id: str,
     be re-routed through the transfer workflow.
 
     Returns a structured payload the frontend uses to drive the UX dialog.
+    Defensively handles missing portal_configs rows (data-integrity drift):
+    if the source or target org can't be resolved we downgrade the response
+    so the frontend can show a graceful error instead of an empty dialog.
     """
     user = await lookup_existing_citizen(db, mobile=mobile)
     if not user:
@@ -99,6 +102,25 @@ async def detect_transfer_need(db, *, mobile: str, target_tenant_id: str,
         {"slug": target_tenant_slug}, {"_id": 0, "id": 1, "slug": 1, "politician_name": 1, "tenant_name": 1, "constituency_name": 1},
     )
     person_id = user.get("person_id")
+    # Data-integrity guard: if either side is missing, tell the frontend to
+    # abort with a specific reason instead of showing an empty transfer dialog.
+    if not current:
+        return {
+            "exists": True, "same_tenant": False, "can_transfer": False,
+            "reason": "source_portal_missing",
+            "message": (
+                "This mobile is linked to an account whose original portal "
+                "record has been removed. Please contact support to restore it."
+            ),
+            "current_tenant_id": current_tenant_id,
+            "person_id": person_id,
+        }
+    if not target:
+        return {
+            "exists": True, "same_tenant": False, "can_transfer": False,
+            "reason": "target_portal_missing",
+            "message": "The target constituency portal was not found.",
+        }
     return {
         "exists": True,
         "same_tenant": False,

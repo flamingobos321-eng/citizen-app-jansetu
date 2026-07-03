@@ -2093,6 +2093,30 @@ async def v2_parity(user: dict = Depends(get_current_user)):
     return await v2dw.parity_report(db)
 
 
+@api.get("/admin/v2/integrity")
+async def v2_integrity(user: dict = Depends(get_current_user)):
+    """Full DB integrity audit — orphaned records, broken FKs, duplicates.
+    Read-only. Super-admin only."""
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    from migrations.integrity_audit import run
+    return await run(db)
+
+
+@api.post("/admin/v2/integrity/cleanup")
+async def v2_integrity_cleanup(
+    dry_run: bool = True,
+    user: dict = Depends(get_current_user),
+):
+    """Cleanup orphaned rows. Defaults to dry_run=true. Super-admin only.
+    Call with `?dry_run=false` to actually apply."""
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    from migrations.integrity_cleanup import cleanup
+    return await cleanup(db, apply=not dry_run)
+
+
+
 @api.post("/admin/v2/parity/backfill-missing")
 async def v2_parity_backfill(user: dict = Depends(get_current_user)):
     """M3 — Best-effort: lazy-create Persons for any V1 users missing a V2
