@@ -3,17 +3,32 @@ import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { SectionTitle, EmptyState } from "../components/Common";
-import { Crown, Globe, Users, ShieldCheck, FileText, Calendar, Bell, Hammer, CreditCard, Timer, Plus, ExternalLink } from "lucide-react";
+import { Crown, Globe, Users, ShieldCheck, FileText, Calendar, Bell, Hammer, CreditCard, Timer, Plus, ExternalLink, AlertTriangle } from "lucide-react";
+import { toast } from "sonner";
 
 export default function SuperAdminDashboard() {
   const { user } = useAuth();
   const [stats, setStats] = useState(null);
   const [portals, setPortals] = useState([]);
+  const [running, setRunning] = useState(false);
 
   useEffect(() => {
     api.get("/platform/stats").then((r) => setStats(r.data)).catch(() => {});
     api.get("/admin/portals").then((r) => setPortals(r.data || [])).catch(() => {});
   }, []);
+
+  const runEscalations = async () => {
+    setRunning(true);
+    try {
+      const r = await api.post("/admin/issues/run-escalations");
+      const n = r.data?.escalated?.length ?? 0;
+      toast.success(`Escalation pass complete — ${n} issue(s) escalated. Scanned ${r.data?.scanned ?? 0}.`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed");
+    } finally {
+      setRunning(false);
+    }
+  };
 
   if (user && user.role !== "super_admin") {
     return <div className="p-8"><EmptyState title="Super Admin only" hint="This area is restricted to platform administrators." /></div>;
@@ -31,9 +46,20 @@ export default function SuperAdminDashboard() {
           <h1 className="font-heading text-3xl sm:text-4xl font-bold text-gray-900 tracking-tight mt-1">Platform Dashboard</h1>
           <p className="text-sm text-gray-500 mt-1">Cross-tenant platform health. Per-tenant data is not visible here by design.</p>
         </div>
-        <Link to="/app/portals" data-testid="super-new-portal" className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-[#0A1128] text-white hover:opacity-90">
-          <Plus size={16} /> Manage Portals
-        </Link>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={runEscalations}
+            disabled={running}
+            data-testid="run-escalations-btn"
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-md border border-amber-300 text-amber-800 bg-amber-50 hover:bg-amber-100 disabled:opacity-60"
+            title="Fires the 3d→worker / 7d→PA / 15d→MLA escalation loop once."
+          >
+            <AlertTriangle size={14} /> {running ? "Running…" : "Run Escalations"}
+          </button>
+          <Link to="/app/portals" data-testid="super-new-portal" className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-[#0A1128] text-white hover:opacity-90">
+            <Plus size={16} /> Manage Portals
+          </Link>
+        </div>
       </div>
 
       {/* PORTAL SUMMARY */}

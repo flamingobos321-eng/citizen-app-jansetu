@@ -282,6 +282,14 @@ class Issue(BaseModel):
     rating: Optional[int] = None
     feedback_comment: Optional[str] = None
     timeline: List[dict] = []  # [{status, at, by, note}]
+    # Escalation reminders (P0). `escalation_level` values:
+    #   0 = never escalated
+    #   1 = worker reminded  (3-day threshold)
+    #   2 = PA reminded      (7-day threshold)
+    #   3 = MLA/politician reminded (15-day threshold)
+    # Reset to 0 whenever the issue is updated / assigned / status-changed.
+    escalation_level: int = 0
+    last_escalated_at: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
@@ -366,9 +374,10 @@ class Notification(BaseModel):
     title: str
     body: str
     notif_type: str  # Politician Visit / Public Meeting / Scheme / Emergency / etc
-    scope: Literal["all", "ward", "village", "wards", "villages"] = "all"
+    scope: Literal["all", "ward", "village", "wards", "villages", "user"] = "all"
     ward_ids: List[str] = []
     village_ids: List[str] = []
+    user_ids: List[str] = []  # populated when scope == "user" (e.g. escalation reminders)
     created_by: str
     created_by_name: Optional[str] = None
     recipients_count: int = 0

@@ -7,7 +7,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { toast } from "sonner";
-import { Plus, Globe, Pencil, Trash2, Star, X, ExternalLink, Upload, Pause, Play, Timer, CreditCard, Copy, CheckCircle2, KeyRound } from "lucide-react";
+import { Plus, Globe, Pencil, Trash2, Star, X, ExternalLink, Upload, Pause, Play, Timer, CreditCard, Copy, CheckCircle2, KeyRound, Archive, RotateCcw, AlertTriangle } from "lucide-react";
 
 const empty = {
   slug: "",
@@ -36,9 +36,12 @@ export default function AdminPortals() {
   const [list, setList] = useState([]);
   const [editing, setEditing] = useState(null);
   const [provisioned, setProvisioned] = useState(null); // { portal, credentials, urls }
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const [purgeTarget, setPurgeTarget] = useState(null); // portal being purged
+  const [purgeForm, setPurgeForm] = useState({ slug: "", text: "" });
 
-  const load = () => api.get("/admin/portals").then((r) => setList(r.data || []));
-  useEffect(() => { load(); }, []);
+  const load = () => api.get("/admin/portals", { params: { include_archived: includeArchived } }).then((r) => setList(r.data || []));
+  useEffect(() => { load(); }, [includeArchived]);
 
   if (user && user.role !== "admin" && user.role !== "super_admin") {
     return <div className="p-8"><EmptyState title="Admin only" hint="You don't have access to manage portals." /></div>;
@@ -73,10 +76,40 @@ export default function AdminPortals() {
     }
   };
   const deletePortal = async (p) => {
-    if (!window.confirm(`Disable portal "${p.constituency_name}"? It can be re-enabled later by editing it.`)) return;
+    // Legacy button removed. New flow uses archive -> permanent-delete.
+    setPurgeTarget(p);
+    setPurgeForm({ slug: "", text: "" });
+  };
+  const archivePortal = async (p) => {
+    if (!window.confirm(`Archive portal "${p.constituency_name}"? It will be hidden from public and admin lists, but can be restored anytime.`)) return;
     try {
-      await api.delete(`/admin/portals/${p.id}`);
-      toast.success("Portal disabled");
+      await api.post(`/admin/portals/${p.id}/archive`);
+      toast.success("Portal archived");
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed");
+    }
+  };
+  const restorePortal = async (p) => {
+    try {
+      await api.post(`/admin/portals/${p.id}/restore`);
+      toast.success("Portal restored");
+      load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed");
+    }
+  };
+  const purgePortal = async () => {
+    if (!purgeTarget) return;
+    try {
+      const r = await api.delete(`/admin/portals/${purgeTarget.id}`, {
+        data: { confirm_slug: purgeForm.slug, confirm_text: purgeForm.text },
+      });
+      const counts = r.data?.counts || {};
+      const total = Object.values(counts).filter((v) => typeof v === "number").reduce((a, b) => a + b, 0);
+      toast.success(`Purged "${purgeTarget.constituency_name}" — ${total} rows deleted across ${Object.keys(counts).length} collections.`);
+      setPurgeTarget(null);
+      setPurgeForm({ slug: "", text: "" });
       load();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed");
@@ -102,9 +135,15 @@ export default function AdminPortals() {
     <div className="space-y-6 animate-fade-up">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <SectionTitle subtitle="White-label client portals. One portal per constituency. Same platform, different branding.">Client Portals</SectionTitle>
-        <button onClick={() => setEditing({ ...empty })} data-testid="new-portal-btn" className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-[#0A1128] text-white hover:opacity-90">
-          <Plus size={16} /> New Portal
-        </button>
+        <div className="flex items-center gap-3 flex-wrap">
+          <label className="flex items-center gap-2 text-xs font-semibold text-gray-600 cursor-pointer select-none" data-testid="toggle-archived">
+            <input type="checkbox" checked={includeArchived} onChange={(e) => setIncludeArchived(e.target.checked)} className="rounded" />
+            Show archived
+          </label>
+          <button onClick={() => setEditing({ ...empty })} data-testid="new-portal-btn" className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-md bg-[#0A1128] text-white hover:opacity-90">
+            <Plus size={16} /> New Portal
+          </button>
+        </div>
       </div>
 
       {list.length === 0 ? (
@@ -113,8 +152,9 @@ export default function AdminPortals() {
         <div className="bg-white border border-gray-200 rounded-lg divide-y divide-gray-100">
           {list.map((p) => {
             const isSuspended = p.portal_status === "suspended";
+            const isArchived = p.portal_status === "archived";
             return (
-            <div key={p.id} className="p-4 flex items-center gap-4 flex-wrap" data-testid={`portal-row-${p.slug}`}>
+            <div key={p.id} className={`p-4 flex items-center gap-4 flex-wrap ${isArchived ? "bg-gray-50 opacity-75" : ""}`} data-testid={`portal-row-${p.slug}`}>
               <div className="w-12 h-12 rounded-md flex items-center justify-center text-white font-heading text-lg font-bold shrink-0" style={{ backgroundColor: p.theme_color || "#0A1128" }}>
                 {p.logo_path ? <img src={fileUrl(p.logo_path)} alt="" className="w-full h-full object-cover rounded-md" /> : (p.politician_name || "P").charAt(0)}
               </div>
@@ -122,7 +162,9 @@ export default function AdminPortals() {
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-heading font-semibold text-gray-900">{p.politician_name}</span>
                   {p.is_default && <span className="pill pill-info inline-flex items-center gap-1"><Star size={11} /> Default</span>}
-                  {!p.is_active ? (
+                  {isArchived ? (
+                    <span className="pill pill-neutral inline-flex items-center gap-1"><Archive size={11} /> Archived</span>
+                  ) : !p.is_active ? (
                     <span className="pill pill-neutral">Inactive</span>
                   ) : isSuspended ? (
                     <span className="pill pill-overdue">Suspended</span>
@@ -138,36 +180,50 @@ export default function AdminPortals() {
                 <div className="text-[11px] text-gray-400 mt-0.5">/portal/{p.slug} {p.primary_admin_email && <>· Admin: {p.primary_admin_email}</>}</div>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
-                <a href={`/portal/${p.slug}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid={`portal-open-${p.slug}`}>
-                  <ExternalLink size={12} /> Open
-                </a>
-                {!p.is_default && p.is_active && (
+                {!isArchived && (
+                  <a href={`/portal/${p.slug}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid={`portal-open-${p.slug}`}>
+                    <ExternalLink size={12} /> Open
+                  </a>
+                )}
+                {!p.is_default && p.is_active && !isArchived && (
                   <button onClick={() => setDefault(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid={`portal-default-${p.slug}`}>
                     <Star size={12} /> Set Default
                   </button>
                 )}
-                {p.is_active && !isSuspended && (
+                {p.is_active && !isSuspended && !isArchived && (
                   <button onClick={() => suspendPortal(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-amber-200 text-amber-800 hover:bg-amber-50" data-testid={`portal-suspend-${p.slug}`}>
                     <Pause size={12} /> Suspend
                   </button>
                 )}
-                {isSuspended && (
+                {isSuspended && !isArchived && (
                   <button onClick={() => activatePortal(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-green-200 text-green-800 hover:bg-green-50" data-testid={`portal-activate-${p.slug}`}>
                     <Play size={12} /> Activate
                   </button>
                 )}
-                <button onClick={() => setEditing({ ...empty, ...p, social_links: { ...empty.social_links, ...(p.social_links || {}) } })} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid={`portal-edit-${p.slug}`}>
-                  <Pencil size={12} /> Edit
-                </button>
-                {p.is_active && (
+                {!isArchived && (
+                  <button onClick={() => setEditing({ ...empty, ...p, social_links: { ...empty.social_links, ...(p.social_links || {}) } })} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid={`portal-edit-${p.slug}`}>
+                    <Pencil size={12} /> Edit
+                  </button>
+                )}
+                {p.is_active && !isArchived && (
                   <button onClick={() => resetAdminPassword(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-blue-200 text-blue-700 hover:bg-blue-50" data-testid={`portal-reset-pwd-${p.slug}`}>
                     <KeyRound size={12} /> Reset Admin
                   </button>
                 )}
-                {p.is_active && (
-                  <button onClick={() => deletePortal(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-red-200 text-red-700 hover:bg-red-50" data-testid={`portal-delete-${p.slug}`}>
-                    <Trash2 size={12} /> Disable
+                {!isArchived && (
+                  <button onClick={() => archivePortal(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50" data-testid={`portal-archive-${p.slug}`}>
+                    <Archive size={12} /> Archive
                   </button>
+                )}
+                {isArchived && (
+                  <>
+                    <button onClick={() => restorePortal(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-green-200 text-green-800 hover:bg-green-50" data-testid={`portal-restore-${p.slug}`}>
+                      <RotateCcw size={12} /> Restore
+                    </button>
+                    <button onClick={() => deletePortal(p)} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-md border border-red-300 text-red-700 hover:bg-red-50" data-testid={`portal-delete-${p.slug}`}>
+                      <Trash2 size={12} /> Delete Permanently
+                    </button>
+                  </>
                 )}
               </div>
             </div>
@@ -192,7 +248,87 @@ export default function AdminPortals() {
       {provisioned && (
         <ProvisionedDialog data={provisioned} onClose={() => setProvisioned(null)} />
       )}
+      {purgeTarget && (
+        <PurgeDialog
+          portal={purgeTarget}
+          form={purgeForm}
+          setForm={setPurgeForm}
+          onCancel={() => { setPurgeTarget(null); setPurgeForm({ slug: "", text: "" }); }}
+          onConfirm={purgePortal}
+        />
+      )}
     </div>
+  );
+}
+
+function PurgeDialog({ portal, form, setForm, onCancel, onConfirm }) {
+  const canDelete = form.slug === portal.slug && form.text === "DELETE PERMANENTLY";
+  return createPortal(
+    <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onCancel}>
+      <div className="bg-white rounded-lg max-w-lg w-full shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()} data-testid="portal-purge-dialog">
+        <div className="p-5 border-b border-gray-200 flex items-center gap-3 bg-red-50">
+          <AlertTriangle size={20} className="text-red-600 shrink-0" />
+          <div>
+            <div className="font-heading font-semibold text-gray-900">Delete portal permanently</div>
+            <div className="text-xs text-gray-600 mt-0.5">"{portal.constituency_name}" — this cannot be undone.</div>
+          </div>
+        </div>
+        <div className="p-5 space-y-4 text-sm text-gray-700">
+          <p>All tenant data for this portal will be irreversibly deleted:</p>
+          <ul className="list-disc pl-5 text-xs text-gray-600 space-y-0.5">
+            <li>All staff and citizen accounts, households, wards/villages</li>
+            <li>All issues, feedback, visits, dev-works, notifications</li>
+            <li>All karyakartas, caste/religion taxonomy, family invitations</li>
+            <li>All uploaded files, leads, staff invitations, subscription record</li>
+          </ul>
+          <p className="text-xs text-gray-500">
+            Global Person records (V2) are preserved — their membership in this constituency is archived, so their cross-tenant history stays intact.
+          </p>
+          <div className="space-y-2">
+            <Label className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-500">
+              Type the portal slug to confirm: <span className="font-mono text-red-700">{portal.slug}</span>
+            </Label>
+            <Input
+              data-testid="purge-slug-input"
+              value={form.slug}
+              onChange={(e) => setForm((f) => ({ ...f, slug: e.target.value }))}
+              placeholder={portal.slug}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-500">
+              Type <span className="font-mono text-red-700">DELETE PERMANENTLY</span> to enable the button
+            </Label>
+            <Input
+              data-testid="purge-text-input"
+              value={form.text}
+              onChange={(e) => setForm((f) => ({ ...f, text: e.target.value }))}
+              placeholder="DELETE PERMANENTLY"
+            />
+          </div>
+        </div>
+        <div className="p-4 border-t border-gray-200 bg-gray-50 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-4 py-2 text-sm font-semibold rounded-md border border-gray-200 hover:bg-white"
+            data-testid="purge-cancel"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={!canDelete}
+            className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-md text-white ${canDelete ? "bg-red-600 hover:bg-red-700" : "bg-red-300 cursor-not-allowed"}`}
+            data-testid="purge-confirm"
+          >
+            <Trash2 size={14} /> Delete permanently
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 

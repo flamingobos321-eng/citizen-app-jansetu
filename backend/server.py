@@ -3,6 +3,7 @@ import os
 import io
 import uuid
 import logging
+import asyncio
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Literal, Optional
@@ -1175,6 +1176,10 @@ async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends
         "remarks": payload.remarks,
         "status": "Assigned",
         "updated_at": now_iso(),
+        # Reassigning stops the escalation clock — worker gets a fresh 3-day
+        # window before the next reminder fires.
+        "escalation_level": 0,
+        "last_escalated_at": None,
     }
     res = await db.issues.update_one(
         tenant_filter(user, {"id": issue_id}),
@@ -1203,7 +1208,9 @@ async def update_status(issue_id: str, payload: IssueUpdateStatus, user: dict = 
         issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
         if not issue or issue.get("assigned_to") != user["id"]:
             raise HTTPException(403, "Not your assignment")
-    update = {"status": payload.status, "updated_at": now_iso()}
+    update = {"status": payload.status, "updated_at": now_iso(),
+              # Any staff action stops the escalation clock.
+              "escalation_level": 0, "last_escalated_at": None}
     if payload.completion_notes:
         update["completion_notes"] = payload.completion_notes
     if payload.completion_photos:
@@ -1371,12 +1378,19 @@ async def list_notifs(user: dict = Depends(get_current_user)):
     # filter for citizen by scope
     q = tenant_filter(user)
     if user["role"] == "citizen":
-        clauses = [{"scope": "all"}]
+        clauses = [{"scope": "all"}, {"scope": "user", "user_ids": user["id"]}]
         if user.get("ward_id"):
             clauses.append({"ward_ids": user["ward_id"]})
         if user.get("village_id"):
             clauses.append({"village_ids": user["village_id"]})
         q["$or"] = clauses
+    else:
+        # Staff see all broadcasts in their tenant + any user-scoped
+        # notifications targeting them personally (e.g., escalation reminders).
+        q["$or"] = [
+            {"scope": {"$ne": "user"}},
+            {"scope": "user", "user_ids": user["id"]},
+        ]
     return await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
 
 
@@ -1957,7 +1971,10 @@ async def list_portals_public():
 
 @api.get("/portals/{slug}")
 async def get_portal_public(slug: str):
-    p = await db.portal_configs.find_one({"slug": slug, "is_active": True}, {"_id": 0})
+    p = await db.portal_configs.find_one(
+        {"slug": slug, "is_active": True, "portal_status": {"$ne": "archived"}},
+        {"_id": 0},
+    )
     if not p:
         raise HTTPException(404, "Portal not found")
     return _public_portal(p)
@@ -2013,6 +2030,7 @@ async def portal_notifications(slug: str, limit: int = 5):
     if not p:
         raise HTTPException(404, "Portal not found")
     # Only broadcast / public notifications — scoped to THIS tenant.
+    # `scope=user` (personal escalation reminders etc.) are never public.
     q = {"scope": "all", "tenant_id": p["id"]}
     docs = await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(max(1, min(limit, 20))).to_list(20)
     return docs
@@ -2020,11 +2038,14 @@ async def portal_notifications(slug: str, limit: int = 5):
 
 # --- Admin write endpoints ---
 @api.get("/admin/portals")
-async def list_portals_admin(user: dict = Depends(get_current_user)):
+async def list_portals_admin(user: dict = Depends(get_current_user),
+                             include_archived: bool = False):
     if user.get("role") not in ("super_admin", "admin"):
         raise HTTPException(403, "Forbidden")
     # Tenant admin sees only their own portal; super_admin sees all.
-    q = {} if user.get("role") == "super_admin" else {"id": user.get("tenant_id")}
+    q: dict = {} if user.get("role") == "super_admin" else {"id": user.get("tenant_id")}
+    if not include_archived:
+        q["portal_status"] = {"$ne": "archived"}
     return await db.portal_configs.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
 
 
@@ -2139,15 +2160,6 @@ async def set_default_portal(portal_id: str, _: dict = Depends(require_roles("ad
     await db.portal_configs.update_many({}, {"$set": {"is_default": False}})
     await db.portal_configs.update_one({"id": portal_id}, {"$set": {"is_default": True, "is_active": True, "updated_at": now_iso()}})
     return await db.portal_configs.find_one({"id": portal_id}, {"_id": 0})
-
-
-@api.delete("/admin/portals/{portal_id}")
-async def delete_portal(portal_id: str, _: dict = Depends(require_roles("admin"))):
-    # Soft delete: mark inactive and remove default flag
-    res = await db.portal_configs.update_one({"id": portal_id}, {"$set": {"is_active": False, "is_default": False, "updated_at": now_iso()}})
-    if res.matched_count == 0:
-        raise HTTPException(404, "Portal not found")
-    return {"ok": True}
 
 
 @api.post("/admin/portals/{portal_id}/suspend")
@@ -2884,10 +2896,11 @@ class SubscriptionUpdate(BaseModel):
 
 
 @api.get("/admin/subscriptions")
-async def list_subscriptions(user: dict = Depends(get_current_user)):
+async def list_subscriptions(user: dict = Depends(get_current_user), include_archived: bool = False):
     if user.get("role") != "super_admin":
         raise HTTPException(403, "Super admin only")
-    rows = await db.portal_configs.find({}, {
+    q: dict = {} if include_archived else {"portal_status": {"$ne": "archived"}}
+    rows = await db.portal_configs.find(q, {
         "_id": 0, "id": 1, "slug": 1, "constituency_name": 1, "politician_name": 1,
         "tenant_name": 1, "is_active": 1, "portal_status": 1,
         "service_start_date": 1, "billing_cycle": 1, "agreed_amount": 1,
@@ -2909,6 +2922,287 @@ async def update_subscription(portal_id: str, payload: SubscriptionUpdate,
     if res.matched_count == 0:
         raise HTTPException(404, "Portal not found")
     return await db.portal_configs.find_one({"id": portal_id}, {"_id": 0})
+
+
+# ============================================================================
+# AUDIT LOG (lightweight, single collection)
+# ============================================================================
+async def _audit(event: str, actor: Optional[dict], meta: Optional[dict] = None) -> None:
+    """Append a row to `audit_logs`. Non-blocking on failure — audit must never
+    take a caller's request down."""
+    try:
+        doc = {
+            "id": new_id(),
+            "event": event,
+            "actor_id": (actor or {}).get("id"),
+            "actor_role": (actor or {}).get("role"),
+            "actor_tenant_id": (actor or {}).get("tenant_id"),
+            "actor_name": (actor or {}).get("name"),
+            "meta": meta or {},
+            "created_at": now_iso(),
+        }
+        await db.audit_logs.insert_one(doc)
+    except Exception:
+        logger.exception("audit_log write failed for %s", event)
+
+
+@api.get("/admin/audit-logs")
+async def list_audit_logs(user: dict = Depends(require_roles("super_admin")),
+                          limit: int = 200, event_prefix: Optional[str] = None):
+    q: dict = {}
+    if event_prefix:
+        q["event"] = {"$regex": f"^{event_prefix}"}
+    return await db.audit_logs.find(q, {"_id": 0}).sort("created_at", -1).limit(max(1, min(limit, 1000))).to_list(1000)
+
+
+# ============================================================================
+# ESCALATION REMINDERS — 3d Worker → 7d PA → 15d MLA (once per level)
+# ============================================================================
+_ESCALATION_THRESHOLDS_DAYS = [3, 7, 15]
+_ACTIVE_ISSUE_STATUSES = ("New", "Assigned", "In Progress")
+
+
+async def _create_user_notification(*, tenant_id: str, title: str, body: str,
+                                    user_ids: List[str], actor_id: str) -> None:
+    """Insert a user-scoped notification visible only to `user_ids`."""
+    if not user_ids:
+        return
+    doc = Notification(
+        tenant_id=tenant_id, title=title, body=body,
+        notif_type="Escalation Reminder", scope="user", user_ids=user_ids,
+        created_by=actor_id, created_by_name="System",
+        recipients_count=len(user_ids),
+    ).model_dump()
+    await db.notifications.insert_one(dict(doc))
+
+
+async def _escalate_one_issue(issue: dict) -> Optional[dict]:
+    """Compute the next escalation level for a single issue and, if the age
+    threshold has been crossed, fanout a personal notification to the correct
+    recipient(s). Returns audit meta if an escalation occurred, else None."""
+    try:
+        created = datetime.fromisoformat((issue["created_at"] or "").replace("Z", "+00:00"))
+    except Exception:
+        return None
+    age_days = (datetime.now(timezone.utc) - created).days
+    current_level = int(issue.get("escalation_level") or 0)
+    # Determine the highest level whose threshold this issue has crossed.
+    target_level = 0
+    for lvl, days in enumerate(_ESCALATION_THRESHOLDS_DAYS, start=1):
+        if age_days >= days:
+            target_level = lvl
+    if target_level <= current_level:
+        return None
+    tid = issue.get("tenant_id")
+    if not tid:
+        return None
+    recipient_ids: List[str] = []
+    recipient_role_label = ""
+    if target_level == 1:
+        # Assigned worker
+        if issue.get("assigned_to"):
+            recipient_ids = [issue["assigned_to"]]
+            recipient_role_label = "worker"
+    elif target_level == 2:
+        # All active PAs in the tenant
+        pas = await db.users.find(
+            {"tenant_id": tid, "role": "pa", "is_active": True}, {"id": 1, "_id": 0},
+        ).to_list(50)
+        recipient_ids = [p["id"] for p in pas]
+        recipient_role_label = "pa"
+    elif target_level == 3:
+        # Politician (MLA/MP) in the tenant + admin as fallback
+        mlas = await db.users.find(
+            {"tenant_id": tid, "role": {"$in": ["politician", "admin"]}, "is_active": True},
+            {"id": 1, "_id": 0},
+        ).to_list(20)
+        recipient_ids = [m["id"] for m in mlas]
+        recipient_role_label = "politician"
+    if not recipient_ids:
+        # No eligible recipient — bump the level anyway so we don't retry every hour.
+        await db.issues.update_one(
+            {"id": issue["id"]},
+            {"$set": {"escalation_level": target_level, "last_escalated_at": now_iso()}},
+        )
+        return {"issue_id": issue["id"], "level": target_level, "skipped": "no_recipient"}
+    title = f"[Escalation L{target_level}] Issue {issue.get('issue_code') or issue['id']} is {age_days} day(s) old"
+    body = (issue.get("title") or "Unresolved issue") + \
+           f" — please act. Category: {issue.get('category')}. Status: {issue.get('status')}."
+    await _create_user_notification(
+        tenant_id=tid, title=title, body=body,
+        user_ids=recipient_ids, actor_id="system",
+    )
+    await db.issues.update_one(
+        {"id": issue["id"]},
+        {"$set": {"escalation_level": target_level, "last_escalated_at": now_iso()},
+         "$push": {"timeline": {
+             "status": issue.get("status") or "Open",
+             "at": now_iso(), "by": "System",
+             "note": f"Auto-escalated to {recipient_role_label} (L{target_level}) at age {age_days}d",
+         }}},
+    )
+    return {
+        "issue_id": issue["id"], "issue_code": issue.get("issue_code"),
+        "level": target_level, "recipient_role": recipient_role_label,
+        "recipient_count": len(recipient_ids), "age_days": age_days,
+    }
+
+
+async def _run_escalations() -> dict:
+    """Scan all active (non-Resolved) issues and fire due escalations."""
+    cursor = db.issues.find(
+        {"status": {"$in": list(_ACTIVE_ISSUE_STATUSES)},
+         "escalation_level": {"$lt": len(_ESCALATION_THRESHOLDS_DAYS)}},
+        {"_id": 0},
+    )
+    escalated: List[dict] = []
+    scanned = 0
+    async for issue in cursor:
+        scanned += 1
+        meta = await _escalate_one_issue(issue)
+        if meta:
+            escalated.append(meta)
+    if escalated:
+        await _audit("escalation.batch", None,
+                     {"scanned": scanned, "escalated_count": len(escalated),
+                      "sample": escalated[:20]})
+    return {"scanned": scanned, "escalated": escalated, "ran_at": now_iso()}
+
+
+@api.post("/admin/issues/run-escalations")
+async def run_escalations_manual(user: dict = Depends(require_roles("super_admin", "admin"))):
+    result = await _run_escalations()
+    await _audit("escalation.manual_run", user, {"summary": {
+        "scanned": result["scanned"], "escalated_count": len(result["escalated"])}})
+    return result
+
+
+_ESCALATION_TASK: Optional[asyncio.Task] = None
+
+
+async def _escalation_loop() -> None:
+    # Wait a moment on boot so indexes / seed data finish.
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await _run_escalations()
+        except Exception:
+            logger.exception("Escalation loop iteration failed")
+        # Sleep 1 hour between passes.
+        await asyncio.sleep(60 * 60)
+
+
+@app.on_event("startup")
+async def _start_escalation_loop():
+    global _ESCALATION_TASK
+    if _ESCALATION_TASK is None or _ESCALATION_TASK.done():
+        _ESCALATION_TASK = asyncio.create_task(_escalation_loop())
+
+
+# ============================================================================
+# PORTAL ARCHIVE / RESTORE / PERMANENT DELETE  (Super Admin only)
+# ============================================================================
+@api.post("/admin/portals/{portal_id}/archive")
+async def archive_portal(portal_id: str, user: dict = Depends(require_roles("super_admin"))):
+    """Soft-delete: mark portal as archived and inactive. Hides it from
+    public/admin lists (unless explicitly requested). Reversible via
+    /admin/portals/{id}/restore."""
+    p = await db.portal_configs.find_one({"id": portal_id})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    if p.get("portal_status") == "archived":
+        return {"ok": True, "already_archived": True}
+    await db.portal_configs.update_one(
+        {"id": portal_id},
+        {"$set": {"portal_status": "archived", "is_active": False,
+                  "archived_at": now_iso(), "archived_by": user["id"],
+                  "updated_at": now_iso()}},
+    )
+    await _audit("portal.archive", user, {"portal_id": portal_id, "slug": p.get("slug")})
+    return {"ok": True, "portal_id": portal_id}
+
+
+@api.post("/admin/portals/{portal_id}/restore")
+async def restore_portal(portal_id: str, user: dict = Depends(require_roles("super_admin"))):
+    p = await db.portal_configs.find_one({"id": portal_id})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    if p.get("portal_status") != "archived":
+        raise HTTPException(400, "Portal is not archived")
+    await db.portal_configs.update_one(
+        {"id": portal_id},
+        {"$set": {"portal_status": "active", "is_active": True,
+                  "archived_at": None, "archived_by": None,
+                  "restored_at": now_iso(), "restored_by": user["id"],
+                  "updated_at": now_iso()}},
+    )
+    await _audit("portal.restore", user, {"portal_id": portal_id, "slug": p.get("slug")})
+    return {"ok": True, "portal_id": portal_id}
+
+
+# Collections that are strictly tenant-scoped (have a `tenant_id` field).
+# Deleting rows keyed on tenant_id is the safe cascade. Global collections
+# (persons, relationships_v2, person_timeline_events, memberships) are handled
+# separately below (memberships archived, timeline preserved).
+_TENANT_SCOPED_COLLECTIONS = [
+    "users", "households", "areas", "issues", "issue_history",
+    "notifications", "visits", "devworks", "files",
+    "karyakartas", "pending_karyakartas", "castes", "religions",
+    "family_invitations", "relationships",
+    "staff_invitations", "leads",
+    # V2 shadow / dual-write collections that ARE tenant-scoped
+    "issue_events_v2",
+]
+
+
+class PortalPurgeRequest(BaseModel):
+    confirm_slug: str
+    confirm_text: str  # must equal 'DELETE PERMANENTLY'
+
+
+@api.delete("/admin/portals/{portal_id}")
+async def purge_portal(portal_id: str, payload: PortalPurgeRequest,
+                        user: dict = Depends(require_roles("super_admin"))):
+    """Irreversibly delete an ARCHIVED portal + all its tenant-scoped data.
+    Global Person / RelationshipV2 / PersonTimelineEvent records are kept;
+    memberships to this tenant are archived so cross-tenant history stays intact."""
+    p = await db.portal_configs.find_one({"id": portal_id})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    if p.get("portal_status") != "archived":
+        raise HTTPException(400, "Portal must be archived before permanent delete")
+    if payload.confirm_slug != p.get("slug"):
+        raise HTTPException(400, "confirm_slug must match the portal slug")
+    if payload.confirm_text != "DELETE PERMANENTLY":
+        raise HTTPException(400, "confirm_text must equal 'DELETE PERMANENTLY'")
+    counts: dict = {}
+    for coll in _TENANT_SCOPED_COLLECTIONS:
+        try:
+            res = await db[coll].delete_many({"tenant_id": portal_id})
+            counts[coll] = res.deleted_count
+        except Exception as e:
+            logger.exception("purge %s failed", coll)
+            counts[coll] = f"error: {e}"
+    # V2 — Preserve global Persons; archive their memberships in this tenant.
+    try:
+        mres = await db.memberships.update_many(
+            {"organisation_id": portal_id, "status": "active"},
+            {"$set": {"status": "archived",
+                      "archived_at": now_iso(),
+                      "archived_reason": "portal_purged"}},
+        )
+        counts["memberships_archived"] = mres.modified_count
+    except Exception:
+        logger.exception("memberships archive failed")
+    # Finally, the portal_config row itself.
+    del_res = await db.portal_configs.delete_one({"id": portal_id})
+    counts["portal_configs"] = del_res.deleted_count
+    await _audit("portal.permanent_delete", user, {
+        "portal_id": portal_id, "slug": p.get("slug"),
+        "constituency_name": p.get("constituency_name"),
+        "deleted_counts": counts,
+    })
+    return {"ok": True, "portal_id": portal_id, "counts": counts}
 
 
 @app.on_event("shutdown")
