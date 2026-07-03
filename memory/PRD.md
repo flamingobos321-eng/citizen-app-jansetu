@@ -257,3 +257,33 @@ V1 still authoritative. Frontend untouched (no cutover yet). M4 frontend cutover
 - Sidebar (`Layout.jsx`) gains a "Reports" nav entry for staff roles.
 
 **Tests:** 43/43 backend pytest pass.
+
+## 12-Point Live Deployment Checklist — COMPLETED (Feb 2026)
+
+**Backend (server.py + models.py):**
+- **Caste / Religion (tenant taxonomy):** `POST/GET/DELETE /api/castes`, `/api/religions` (admin write, tenant-scoped, ObjectId-safe insert).
+- **Family Linking:**
+  - `POST /api/family/link` — if target mobile is a registered citizen in the same tenant, creates the relationship both sides + `relationships_v2` dual-write. Otherwise creates a `family_invitations` pending row keyed by mobile.
+  - `GET /api/family/invitations` returns `{outgoing, incoming}` for the current citizen.
+  - `POST /api/family/invitations/{id}/accept | decline | cancel`.
+- **Karyakartas:**
+  - `POST /api/karyakartas` (single), `POST /api/karyakartas/bulk-import` (JSON array), `GET /api/karyakartas` returns `{linked, pending}`, `DELETE /api/karyakartas/{id}`.
+  - If target mobile already a citizen, immediately attach `karyakarta` role + `karyakarta_designation` on the V1 user and add `karyakarta` to Person `types`. Otherwise create `pending_karyakartas`.
+  - `_promote_pending_karyakartas` on citizen register auto-links. `POST /api/auth/citizen/register` response now includes `pending_family_invitations`.
+  - `GET /api/dashboard/karyakarta-celebrations?days=7` returns `{birthdays:{today,upcoming}, anniversaries:{today,upcoming}}`.
+- **Visit Visibility:** `visibility` field on Visit (public/internal). `_publish_visit_notification` is skipped when `visibility=internal`. Citizen `GET /api/visits` filters `visibility != internal`; staff sees both.
+- **Super Admin Subscriptions:** `GET /api/admin/subscriptions`, `PUT /api/admin/subscriptions/{portal_id}` (billing_cycle, agreed_amount, service_start_date, next_renewal_date, billing_notes).
+- **Public image bug fix:** `GET /portal-asset/{path}` unauthenticated proxy for public logos.
+- **Router include moved to end of server.py** so all late-added routes are registered.
+
+**Frontend:**
+- `FamilyLinkCard.jsx` — citizen-facing family linking widget rendered in `CitizenHome.jsx` (relations dropdown, mobile input, marriage anniversary for spouse, incoming/outgoing lists with accept/decline/cancel).
+- `AdminKaryakartas.jsx` (new page `/app/karyakartas`) — Add dialog (name/mobile/designation/ward/village/DOB/anniversary/notes) + Bulk-import dialog (CSV template download, parse, preview, import summary).
+- `AdminTaxonomy.jsx` (new page `/app/taxonomy`) — two panels for Castes (+ category) and Religions.
+- `SuperSubscriptions.jsx` — rewritten with real data from `/api/admin/subscriptions`, edit dialog for billing fields, renewal-in-days badges (green/amber/red).
+- `Visits.jsx` — composer has `Visibility` select; internal visits get an "Internal only" pill.
+- `StaffDashboard.jsx` — Karyakarta birthdays + anniversaries widgets at bottom (7-day window).
+- `Layout.jsx` sidebar entries added for Karyakartas + Caste & Religion. `App.js` routes wired.
+
+**Tests:** iteration_5 test agent — 23/23 backend pytest PASS, 100% frontend automated checks PASS (see `/app/backend/tests/test_iteration5_features.py`).
+

@@ -831,7 +831,9 @@ async def citizen_register(payload: CitizenRegister):
         pending_invs = []
     final_hh = await db.households.find_one({"id": hh_id}, {"_id": 0})
     token = create_token(user.id, "citizen", user.tenant_id)
-    return {"token": token, "user": user.model_dump(exclude={"password_hash"}),
+    # Refetch user so promoted roles (extra_roles) are reflected in response.
+    fresh_user = await db.users.find_one({"id": user.id}, {"_id": 0, "password_hash": 0}) or user.model_dump(exclude={"password_hash"})
+    return {"token": token, "user": fresh_user,
             "household": final_hh, "pending_family_invitations": pending_invs}
 
 
