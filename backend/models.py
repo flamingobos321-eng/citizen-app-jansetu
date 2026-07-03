@@ -50,6 +50,9 @@ class User(BaseModel):
     dob: Optional[str] = None
     anniversary: Optional[str] = None
     occupation: Optional[str] = None
+    caste_id: Optional[str] = None      # V2: Jaat (caste) taxonomy id
+    religion_id: Optional[str] = None   # V2: Dharm (religion) taxonomy id
+    marriage_anniversary: Optional[str] = None  # ISO date — set when Husband/Wife rel created
     household_id: Optional[str] = None
     constituency_id: Optional[str] = None
     ward_id: Optional[str] = None
@@ -72,6 +75,9 @@ class User(BaseModel):
     influence_level: Optional[str] = None  # Low / Medium / High
     political_notes: Optional[str] = None
     family_lineage: List[dict] = []  # [{leader_name, era, since_year, notes}]
+    # Multi-role support: a single Person can be Citizen + Karyakarta + Worker etc
+    extra_roles: List[Literal["karyakarta"]] = []
+    karyakarta_designation: Optional[str] = None
     is_active: bool = True
     created_at: str = Field(default_factory=now_iso)
 
@@ -328,6 +334,10 @@ class Visit(BaseModel):
     ward_ids: List[str] = []
     village_ids: List[str] = []
     status: str = "Pending Approval"
+    # V2: publication visibility. "public" (default) = citizens see it &
+    # notifications fire. "internal" = office-only (MLA/PA/Staff), no citizen
+    # portal visibility, no citizen notifications.
+    visibility: Literal["public", "internal"] = "public"
     approved_by: Optional[str] = None
     approved_at: Optional[str] = None
     created_by: str
@@ -344,6 +354,7 @@ class VisitCreate(BaseModel):
     target_audience: Optional[str] = None
     ward_ids: List[str] = []
     village_ids: List[str] = []
+    visibility: Literal["public", "internal"] = "public"
 
 
 # ---------- Notifications ----------
@@ -467,6 +478,12 @@ class PortalConfig(BaseModel):
     subscription_plan: str = "trial"            # one of SUBSCRIPTION_PLANS
     subscription_start: Optional[str] = None    # ISO date
     subscription_expiry: Optional[str] = None   # ISO date
+    # Extended billing (super-admin managed)
+    service_start_date: Optional[str] = None
+    billing_cycle: Optional[Literal["monthly", "quarterly", "half_yearly", "yearly"]] = None
+    agreed_amount: Optional[float] = None       # INR
+    next_renewal_date: Optional[str] = None
+    billing_notes: Optional[str] = None
     is_trial: bool = True
     trial_expiry: Optional[str] = None
     portal_status: str = "active"               # active | suspended
@@ -873,3 +890,104 @@ class TransferVerify(BaseModel):
 class CitizenMobileCheck(BaseModel):
     mobile: str
     tenant_slug: str
+
+
+# ==============================================================================
+# Taxonomy (Caste / Religion) — tenant-scoped configurable lookups.
+# ==============================================================================
+class Caste(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    tenant_id: str
+    name: str                  # e.g. "Maratha", "Brahmin"
+    code: Optional[str] = None
+    category: Optional[str] = None  # e.g. General / OBC / SC / ST / EWS
+    created_at: str = Field(default_factory=now_iso)
+
+
+class Religion(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    tenant_id: str
+    name: str                  # e.g. "Hindu", "Muslim", "Christian"
+    code: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class TaxonomyCreate(BaseModel):
+    name: str
+    code: Optional[str] = None
+    category: Optional[str] = None
+
+
+# ==============================================================================
+# Family Invitations — pending links keyed by mobile until the target registers.
+# ==============================================================================
+class FamilyInvitation(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    tenant_id: str
+    from_user_id: str                    # V1 user who initiated
+    from_person_id: str
+    target_mobile: str                   # mobile of the invitee
+    target_name: Optional[str] = None
+    relation_type: str                   # RELATION_TYPES value
+    marriage_anniversary: Optional[str] = None  # captured only for Husband/Wife
+    status: Literal["pending", "accepted", "declined", "linked"] = "pending"
+    resolved_user_id: Optional[str] = None
+    resolved_at: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+
+
+class FamilyLinkRequest(BaseModel):
+    """Payload for `POST /api/family/link`. Either links to an existing citizen
+    (mobile already registered) or creates a Pending Family Invitation."""
+    relation_type: str
+    mobile: str
+    target_name: Optional[str] = None
+    marriage_anniversary: Optional[str] = None
+
+
+# ==============================================================================
+# Karyakarta (party worker / volunteer) — role attached to a Person.
+# When mobile is not yet registered, we keep a PendingKaryakarta row that will
+# auto-link on registration.
+# ==============================================================================
+class Karyakarta(BaseModel):
+    """A karyakarta record is always linked to a resolved Person id. If the
+    person's mobile was not yet registered at import time, a `PendingKaryakarta`
+    is created instead and auto-promoted to `Karyakarta` on registration."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    tenant_id: str
+    person_id: str
+    user_id: Optional[str] = None        # V1 user id if any
+    name: str
+    mobile: str
+    designation: Optional[str] = None
+    dob: Optional[str] = None
+    anniversary: Optional[str] = None
+    is_active: bool = True
+    created_at: str = Field(default_factory=now_iso)
+
+
+class PendingKaryakarta(BaseModel):
+    """Waiting for the mobile owner to register. Consumed by
+    citizen_register (fully) or by a super-admin manual attach step."""
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    tenant_id: str
+    name: str
+    mobile: str
+    designation: Optional[str] = None
+    imported_by: Optional[str] = None
+    imported_at: str = Field(default_factory=now_iso)
+    status: Literal["pending", "linked", "cancelled"] = "pending"
+    linked_person_id: Optional[str] = None
+
+
+class KaryakartaCreate(BaseModel):
+    name: str
+    mobile: str
+    designation: Optional[str] = None
+

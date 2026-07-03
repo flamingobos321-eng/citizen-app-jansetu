@@ -27,6 +27,9 @@ from models import (
     PortalConfig, PortalConfigCreate,
     ServiceInteraction, ServiceInteractionCreate,
     TransferInitiate, TransferVerify, CitizenMobileCheck,
+    Caste, Religion, TaxonomyCreate,
+    FamilyInvitation, FamilyLinkRequest,
+    Karyakarta, PendingKaryakarta, KaryakartaCreate,
     ISSUE_CATEGORIES, ISSUE_STATUSES, DEV_STATUSES, VISIT_STATUSES,
     now_iso, new_id,
 )
@@ -786,9 +789,47 @@ async def citizen_register(payload: CitizenRegister):
             )
     except Exception:
         logger.exception("V2 dualwrite skipped for citizen registration")
+    # ---- Pending Karyakarta promotion: attach role if we imported this mobile earlier ----
+    try:
+        pending_k = await db.pending_karyakartas.find_one(
+            {"mobile": payload.mobile.strip(), "tenant_id": tid, "status": "pending"})
+        if pending_k:
+            pid_row = await db["_v2_user_to_person"].find_one({"_id": user.id})
+            pid = pid_row.get("person_id") if pid_row else None
+            k_doc = Karyakarta(
+                tenant_id=tid, person_id=pid or "", user_id=user.id,
+                name=pending_k["name"] or user.name, mobile=user.mobile,
+                designation=pending_k.get("designation"),
+            ).model_dump()
+            await db.karyakartas.insert_one(k_doc)
+            await db.users.update_one(
+                {"id": user.id},
+                {"$addToSet": {"extra_roles": "karyakarta"},
+                 "$set": {"karyakarta_designation": pending_k.get("designation")}},
+            )
+            if pid:
+                await db.persons.update_one(
+                    {"id": pid}, {"$addToSet": {"types": "karyakarta"}})
+            await db.pending_karyakartas.update_one(
+                {"id": pending_k["id"]},
+                {"$set": {"status": "linked", "linked_person_id": pid,
+                          "resolved_at": now_iso()}},
+            )
+    except Exception:
+        logger.exception("Pending karyakarta promotion failed")
+    # ---- Pending Family Invitations: return them so the UI can prompt ----
+    pending_invs: List[dict] = []
+    try:
+        pending_invs = await db.family_invitations.find(
+            {"target_mobile": user.mobile, "tenant_id": tid, "status": "pending"},
+            {"_id": 0},
+        ).to_list(50)
+    except Exception:
+        pending_invs = []
     final_hh = await db.households.find_one({"id": hh_id}, {"_id": 0})
     token = create_token(user.id, "citizen", user.tenant_id)
-    return {"token": token, "user": user.model_dump(exclude={"password_hash"}), "household": final_hh}
+    return {"token": token, "user": user.model_dump(exclude={"password_hash"}),
+            "household": final_hh, "pending_family_invitations": pending_invs}
 
 
 @api.post("/auth/staff/login")
@@ -1285,6 +1326,8 @@ async def list_visits(upcoming: bool = False, user: dict = Depends(get_current_u
         q["date"] = {"$gte": datetime.now(timezone.utc).strftime("%Y-%m-%d")}
     if user["role"] == "citizen":
         q["status"] = "Published"
+        # Internal-only visits are strictly hidden from citizens.
+        q["visibility"] = {"$ne": "internal"}
     return await db.visits.find(q, {"_id": 0}).sort("date", 1).limit(200).to_list(200)
 
 
@@ -1581,6 +1624,41 @@ async def serve_file(path: str, user: dict = Depends(get_current_user_flexible))
     except Exception:
         raise HTTPException(404, "Not found")
     return Response(content=data, media_type=ctype)
+
+
+@api.get("/portal-asset/{path:path}")
+async def serve_portal_asset(path: str):
+    """PUBLIC endpoint serving portal branding assets (logo / hero / favicon).
+
+    The image bug: earlier all files were behind auth so citizens visiting the
+    branded portal (before login) could not see logos. Portal branding is
+    inherently public — we scope this endpoint to only paths that are actually
+    referenced from portal_configs (logo_path, hero_image_path, favicon_path).
+    """
+    referenced = await db.portal_configs.find_one(
+        {"$or": [
+            {"logo_path": path},
+            {"hero_image_path": path},
+            {"favicon_path": path},
+        ]},
+        {"id": 1},
+    )
+    if not referenced:
+        raise HTTPException(404, "Not a portal asset")
+    rec = await db.files.find_one({"storage_path": path, "is_deleted": False})
+    if rec and rec.get("in_db") and rec.get("data_b64"):
+        import base64
+        return Response(
+            content=base64.b64decode(rec["data_b64"]),
+            media_type=rec.get("content_type", "application/octet-stream"),
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    try:
+        data, ctype = get_object(path)
+    except Exception:
+        raise HTTPException(404, "Not found")
+    return Response(content=data, media_type=ctype,
+                    headers={"Cache-Control": "public, max-age=3600"})
 
 
 # ----------------- REPORTS -----------------
@@ -2375,6 +2453,374 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+
+# ============================================================================
+# CASTE / RELIGION (Tenant-scoped taxonomy)
+# ============================================================================
+@api.get("/castes")
+async def list_castes(user: dict = Depends(get_current_user)):
+    return await db.castes.find(tenant_filter(user), {"_id": 0}).sort("name", 1).to_list(500)
+
+
+@api.post("/castes")
+async def create_caste(payload: TaxonomyCreate, user: dict = Depends(require_roles("pa", "admin"))):
+    tid = get_tenant_id_for_write(user)
+    doc = Caste(tenant_id=tid, **payload.model_dump()).model_dump()
+    await db.castes.insert_one(doc)
+    return doc
+
+
+@api.delete("/castes/{cid}")
+async def delete_caste(cid: str, user: dict = Depends(require_roles("admin"))):
+    await db.castes.delete_one(tenant_filter(user, {"id": cid}))
+    return {"ok": True}
+
+
+@api.get("/religions")
+async def list_religions(user: dict = Depends(get_current_user)):
+    return await db.religions.find(tenant_filter(user), {"_id": 0}).sort("name", 1).to_list(500)
+
+
+@api.post("/religions")
+async def create_religion(payload: TaxonomyCreate, user: dict = Depends(require_roles("pa", "admin"))):
+    tid = get_tenant_id_for_write(user)
+    doc = Religion(tenant_id=tid, **payload.model_dump()).model_dump()
+    await db.religions.insert_one(doc)
+    return doc
+
+
+@api.delete("/religions/{rid}")
+async def delete_religion(rid: str, user: dict = Depends(require_roles("admin"))):
+    await db.religions.delete_one(tenant_filter(user, {"id": rid}))
+    return {"ok": True}
+
+
+# ============================================================================
+# FAMILY LINKING (Citizen self-service) — creates relationship if target exists,
+# else creates a Pending Family Invitation.
+# ============================================================================
+def _inverse_relation(rel: str, target_gender: Optional[str]) -> str:
+    """Returns the reciprocal relation label for the target person."""
+    from models import INVERSE_RELATION
+    pair = INVERSE_RELATION.get(rel, ("Other", "Other"))
+    g = (target_gender or "").lower()
+    return pair[1] if g in ("female", "f") else pair[0]
+
+
+@api.post("/family/link")
+async def family_link(payload: FamilyLinkRequest, user: dict = Depends(get_current_user)):
+    """Citizen initiates a family link by mobile.
+    - If mobile is registered in same tenant → create Relationship immediately.
+    - Else → create Pending FamilyInvitation, do NOT create a citizen account.
+    """
+    if user.get("role") != "citizen":
+        raise HTTPException(403, "Only citizens can link family members")
+    tid = user.get("tenant_id")
+    target = await db.users.find_one({
+        "mobile": payload.mobile.strip(), "role": "citizen",
+        "tenant_id": tid, "is_active": True,
+    }, {"_id": 0, "password_hash": 0})
+    if target:
+        # Create V1 relationship
+        rel_doc = {
+            "id": str(uuid.uuid4()),
+            "tenant_id": tid,
+            "person_a": user["id"],
+            "person_b": target["id"],
+            "type": payload.relation_type,
+            "created_at": now_iso(),
+        }
+        await db.relationships.insert_one(rel_doc)
+        # V2 mirror
+        try:
+            await v2dw.sync_relationship_to_v2(db, rel=rel_doc, actor_user=user)
+        except Exception:
+            logger.exception("family_link dualwrite")
+        # For Husband/Wife: capture anniversary on both users
+        if payload.relation_type in ("Husband", "Wife") and payload.marriage_anniversary:
+            await db.users.update_many(
+                {"id": {"$in": [user["id"], target["id"]]}},
+                {"$set": {"marriage_anniversary": payload.marriage_anniversary}},
+            )
+        return {"linked": True, "target": target, "relationship_id": rel_doc["id"]}
+
+    # Not registered → pending invitation
+    inv = FamilyInvitation(
+        tenant_id=tid,
+        from_user_id=user["id"],
+        from_person_id=user.get("person_id") or "",
+        target_mobile=payload.mobile.strip(),
+        target_name=payload.target_name,
+        relation_type=payload.relation_type,
+        marriage_anniversary=payload.marriage_anniversary,
+    ).model_dump()
+    await db.family_invitations.insert_one(inv)
+    return {"linked": False, "invitation_id": inv["id"], "pending": True}
+
+
+@api.get("/family/invitations")
+async def list_family_invitations(user: dict = Depends(get_current_user)):
+    """Citizen sees invitations they SENT (pending) and any they can accept
+    (target_mobile matches theirs, status=pending)."""
+    outgoing = await db.family_invitations.find(
+        {"from_user_id": user["id"], "status": "pending"}, {"_id": 0}
+    ).to_list(200)
+    incoming = []
+    if user.get("mobile"):
+        incoming = await db.family_invitations.find(
+            {"target_mobile": user["mobile"], "status": "pending"}, {"_id": 0}
+        ).to_list(200)
+    return {"outgoing": outgoing, "incoming": incoming}
+
+
+@api.post("/family/invitations/{inv_id}/accept")
+async def accept_family_invitation(inv_id: str, user: dict = Depends(get_current_user)):
+    inv = await db.family_invitations.find_one({"id": inv_id, "status": "pending"})
+    if not inv:
+        raise HTTPException(404, "Invitation not found or already resolved")
+    if (user.get("mobile") or "") != inv["target_mobile"]:
+        raise HTTPException(403, "This invitation is for a different mobile")
+    # Create reciprocal relationship
+    rel_doc = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": inv["tenant_id"],
+        "person_a": inv["from_user_id"],
+        "person_b": user["id"],
+        "type": inv["relation_type"],
+        "created_at": now_iso(),
+    }
+    await db.relationships.insert_one(rel_doc)
+    try:
+        actor = await db.users.find_one({"id": inv["from_user_id"]})
+        await v2dw.sync_relationship_to_v2(db, rel=rel_doc, actor_user=actor or user)
+    except Exception:
+        pass
+    if inv["relation_type"] in ("Husband", "Wife") and inv.get("marriage_anniversary"):
+        await db.users.update_many(
+            {"id": {"$in": [inv["from_user_id"], user["id"]]}},
+            {"$set": {"marriage_anniversary": inv["marriage_anniversary"]}},
+        )
+    await db.family_invitations.update_one(
+        {"id": inv_id},
+        {"$set": {"status": "linked", "resolved_user_id": user["id"],
+                  "resolved_at": now_iso()}},
+    )
+    return {"ok": True, "relationship_id": rel_doc["id"]}
+
+
+@api.post("/family/invitations/{inv_id}/decline")
+async def decline_family_invitation(inv_id: str, user: dict = Depends(get_current_user)):
+    await db.family_invitations.update_one(
+        {"id": inv_id, "target_mobile": user.get("mobile") or ""},
+        {"$set": {"status": "declined", "resolved_at": now_iso()}},
+    )
+    return {"ok": True}
+
+
+@api.post("/family/invitations/{inv_id}/cancel")
+async def cancel_family_invitation(inv_id: str, user: dict = Depends(get_current_user)):
+    await db.family_invitations.update_one(
+        {"id": inv_id, "from_user_id": user["id"]},
+        {"$set": {"status": "cancelled", "resolved_at": now_iso()}},
+    )
+    return {"ok": True}
+
+
+# ============================================================================
+# KARYAKARTA MODULE
+# ============================================================================
+@api.get("/karyakartas")
+async def list_karyakartas(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    linked = await db.karyakartas.find(tenant_filter(user, {"is_active": True}), {"_id": 0}).sort("name", 1).to_list(5000)
+    pending = await db.pending_karyakartas.find(tenant_filter(user, {"status": "pending"}), {"_id": 0}).sort("name", 1).to_list(5000)
+    return {"linked": linked, "pending": pending}
+
+
+async def _create_or_link_karyakarta(*, tid: str, name: str, mobile: str,
+                                     designation: Optional[str], actor_id: str) -> dict:
+    mobile = (mobile or "").strip()
+    if not mobile or not name:
+        raise HTTPException(400, "name and mobile required")
+    # If already a citizen in this tenant, attach karyakarta role.
+    existing = await db.users.find_one(
+        {"mobile": mobile, "tenant_id": tid, "role": "citizen", "is_active": True},
+        {"_id": 0, "id": 1, "person_id": 1, "name": 1},
+    )
+    if existing:
+        pid = existing.get("person_id")
+        # Ensure Person exists (safety); attach karyakarta type + designation.
+        if pid:
+            await db.persons.update_one(
+                {"id": pid},
+                {"$addToSet": {"types": "karyakarta"}, "$set": {"updated_at": now_iso()}},
+            )
+        # Attach karyakarta role on V1 user extra_roles.
+        await db.users.update_one(
+            {"id": existing["id"]},
+            {"$addToSet": {"extra_roles": "karyakarta"},
+             "$set": {"karyakarta_designation": designation}},
+        )
+        doc = Karyakarta(
+            tenant_id=tid, person_id=pid or "", user_id=existing["id"],
+            name=existing["name"] or name, mobile=mobile, designation=designation,
+        ).model_dump()
+        await db.karyakartas.insert_one(doc)
+        return {"linked": True, "karyakarta": doc, "user_id": existing["id"]}
+    # Else pending karyakarta.
+    doc = PendingKaryakarta(
+        tenant_id=tid, name=name, mobile=mobile, designation=designation,
+        imported_by=actor_id,
+    ).model_dump()
+    await db.pending_karyakartas.insert_one(doc)
+    return {"linked": False, "pending_karyakarta": doc}
+
+
+@api.post("/karyakartas")
+async def create_karyakarta(payload: KaryakartaCreate, user: dict = Depends(require_roles("pa", "admin"))):
+    tid = get_tenant_id_for_write(user)
+    return await _create_or_link_karyakarta(
+        tid=tid, name=payload.name, mobile=payload.mobile,
+        designation=payload.designation, actor_id=user["id"],
+    )
+
+
+@api.post("/karyakartas/bulk-import")
+async def bulk_import_karyakartas(rows: List[KaryakartaCreate], user: dict = Depends(require_roles("pa", "admin"))):
+    """Bulk import (frontend parses CSV → posts as JSON array)."""
+    tid = get_tenant_id_for_write(user)
+    linked, pending = 0, 0
+    errors: list[dict] = []
+    for row in rows:
+        try:
+            r = await _create_or_link_karyakarta(
+                tid=tid, name=row.name, mobile=row.mobile,
+                designation=row.designation, actor_id=user["id"],
+            )
+            if r.get("linked"): linked += 1
+            else: pending += 1
+        except HTTPException as e:
+            errors.append({"row": row.model_dump(), "error": e.detail})
+        except Exception as e:
+            errors.append({"row": row.model_dump(), "error": str(e)})
+    return {"linked": linked, "pending": pending, "errors": errors, "total": len(rows)}
+
+
+@api.delete("/karyakartas/{kid}")
+async def delete_karyakarta(kid: str, user: dict = Depends(require_roles("pa", "admin"))):
+    doc = await db.karyakartas.find_one(tenant_filter(user, {"id": kid}))
+    if doc:
+        await db.karyakartas.delete_one({"id": kid})
+        # Remove karyakarta role from user + person
+        if doc.get("user_id"):
+            await db.users.update_one({"id": doc["user_id"]}, {"$pull": {"extra_roles": "karyakarta"}, "$set": {"karyakarta_designation": None}})
+        if doc.get("person_id"):
+            await db.persons.update_one({"id": doc["person_id"]}, {"$pull": {"types": "karyakarta"}})
+        return {"ok": True}
+    # try pending
+    await db.pending_karyakartas.delete_one(tenant_filter(user, {"id": kid}))
+    return {"ok": True}
+
+
+# ============================================================================
+# KARYAKARTA CELEBRATIONS (dashboard widget) — birthdays & anniversaries
+# for karyakartas ONLY (not all citizens).
+# ============================================================================
+@api.get("/dashboard/karyakarta-celebrations")
+async def karyakarta_celebrations(days: int = 7,
+                                  user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    from datetime import date
+    today = date.today()
+    def _bucket(d_str: str) -> Optional[int]:
+        if not d_str: return None
+        try:
+            dt = datetime.fromisoformat(d_str.split("T")[0]).date()
+        except Exception:
+            return None
+        try:
+            this_year = dt.replace(year=today.year)
+        except ValueError:
+            this_year = dt.replace(year=today.year, day=28)
+        delta = (this_year - today).days
+        if delta < 0:
+            try:
+                next_year = dt.replace(year=today.year + 1)
+            except ValueError:
+                next_year = dt.replace(year=today.year + 1, day=28)
+            delta = (next_year - today).days
+        return delta
+
+    ks = await db.karyakartas.find(tenant_filter(user, {"is_active": True}), {"_id": 0}).to_list(5000)
+    # Also pull dob/anniversary from the underlying V1 user rows if karyakarta row doesn't carry it.
+    user_ids = [k["user_id"] for k in ks if k.get("user_id")]
+    users_by_id = {}
+    if user_ids:
+        async for u in db.users.find({"id": {"$in": user_ids}}, {"_id": 0, "id": 1, "dob": 1, "marriage_anniversary": 1, "anniversary": 1, "name": 1, "profile_photo": 1}):
+            users_by_id[u["id"]] = u
+
+    bday_today, bday_soon, ann_today, ann_soon = [], [], [], []
+    for k in ks:
+        u = users_by_id.get(k.get("user_id") or "", {})
+        dob = k.get("dob") or u.get("dob")
+        ann = k.get("anniversary") or u.get("marriage_anniversary") or u.get("anniversary")
+        info = {"id": k["id"], "name": k.get("name") or u.get("name"),
+                "mobile": k.get("mobile"), "designation": k.get("designation"),
+                "user_id": k.get("user_id"), "photo": u.get("profile_photo")}
+        if dob:
+            d = _bucket(dob)
+            if d == 0: bday_today.append({**info, "dob": dob})
+            elif d is not None and d <= days: bday_soon.append({**info, "dob": dob, "in_days": d})
+        if ann:
+            d = _bucket(ann)
+            if d == 0: ann_today.append({**info, "anniversary": ann})
+            elif d is not None and d <= days: ann_soon.append({**info, "anniversary": ann, "in_days": d})
+
+    bday_soon.sort(key=lambda x: x["in_days"])
+    ann_soon.sort(key=lambda x: x["in_days"])
+    return {
+        "birthdays": {"today": bday_today, "upcoming": bday_soon},
+        "anniversaries": {"today": ann_today, "upcoming": ann_soon},
+    }
+
+
+# ============================================================================
+# SUBSCRIPTION MANAGEMENT (Super Admin)
+# ============================================================================
+class SubscriptionUpdate(BaseModel):
+    service_start_date: Optional[str] = None
+    billing_cycle: Optional[Literal["monthly", "quarterly", "half_yearly", "yearly"]] = None
+    agreed_amount: Optional[float] = None
+    next_renewal_date: Optional[str] = None
+    billing_notes: Optional[str] = None
+
+
+@api.get("/admin/subscriptions")
+async def list_subscriptions(user: dict = Depends(get_current_user)):
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    rows = await db.portal_configs.find({}, {
+        "_id": 0, "id": 1, "slug": 1, "constituency_name": 1, "politician_name": 1,
+        "tenant_name": 1, "is_active": 1, "portal_status": 1,
+        "service_start_date": 1, "billing_cycle": 1, "agreed_amount": 1,
+        "next_renewal_date": 1, "billing_notes": 1, "created_at": 1,
+    }).sort("created_at", -1).to_list(1000)
+    return rows
+
+
+@api.put("/admin/subscriptions/{portal_id}")
+async def update_subscription(portal_id: str, payload: SubscriptionUpdate,
+                              user: dict = Depends(get_current_user)):
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    update = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(400, "No fields to update")
+    update["updated_at"] = now_iso()
+    res = await db.portal_configs.update_one({"id": portal_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Portal not found")
+    return await db.portal_configs.find_one({"id": portal_id}, {"_id": 0})
 
 
 @app.on_event("shutdown")
