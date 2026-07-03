@@ -118,7 +118,10 @@ export function FamilyLinkCard() {
               {incoming.map((inv) => (
                 <div key={inv.id} className="flex items-center justify-between gap-3 flex-wrap" data-testid={`family-incoming-${inv.id}`}>
                   <div className="text-sm">
-                    <span className="font-semibold">{inv.target_name || "Someone"}</span> wants to add you as their <span className="font-semibold">{inv.relation_type}</span>
+                    <span className="font-semibold">{inv.from_user_name || "Someone"}</span> wants to add you as their <span className="font-semibold">{inv.relation_type}</span>
+                    {inv.from_user_mobile && (
+                      <span className="text-xs text-gray-500 ml-2">· {inv.from_user_mobile}</span>
+                    )}
                   </div>
                   <div className="flex gap-2">
                     <Button size="sm" variant="outline" onClick={() => decline(inv.id)} data-testid={`family-decline-${inv.id}`}>

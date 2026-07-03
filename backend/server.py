@@ -2568,7 +2568,9 @@ async def family_link(payload: FamilyLinkRequest, user: dict = Depends(get_curre
 @api.get("/family/invitations")
 async def list_family_invitations(user: dict = Depends(get_current_user)):
     """Citizen sees invitations they SENT (pending) and any they can accept
-    (target_mobile matches theirs, status=pending)."""
+    (target_mobile matches theirs, status=pending). Incoming invitations are
+    enriched with the SENDER's name so the invitee sees "<Sender> wants to add
+    you as their <Relation>" (not their own name)."""
     outgoing = await db.family_invitations.find(
         {"from_user_id": user["id"], "status": "pending"}, {"_id": 0}
     ).to_list(200)
@@ -2577,6 +2579,17 @@ async def list_family_invitations(user: dict = Depends(get_current_user)):
         incoming = await db.family_invitations.find(
             {"target_mobile": user["mobile"], "status": "pending"}, {"_id": 0}
         ).to_list(200)
+        # Resolve each sender's name (single batched lookup).
+        sender_ids = list({i["from_user_id"] for i in incoming if i.get("from_user_id")})
+        if sender_ids:
+            senders = await db.users.find(
+                {"id": {"$in": sender_ids}}, {"_id": 0, "id": 1, "name": 1, "mobile": 1},
+            ).to_list(len(sender_ids))
+            name_by_id = {s["id"]: s.get("name") for s in senders}
+            mobile_by_id = {s["id"]: s.get("mobile") for s in senders}
+            for inv in incoming:
+                inv["from_user_name"] = name_by_id.get(inv.get("from_user_id"))
+                inv["from_user_mobile"] = mobile_by_id.get(inv.get("from_user_id"))
     return {"outgoing": outgoing, "incoming": incoming}
 
 
