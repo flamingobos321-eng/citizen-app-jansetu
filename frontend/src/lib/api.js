@@ -63,3 +63,11 @@ export const fileUrl = (path) => {
   const token = localStorage.getItem("jansetu_token");
   return `${API}/files/${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`;
 };
+
+// Public URL for portal branding assets (logo / hero / favicon) — no auth required.
+// Backend validates the path is actually referenced in portal_configs before serving.
+// Use this on any page that renders before the user signs in.
+export const portalAssetUrl = (path) => {
+  if (!path) return "";
+  return `${API}/portal-asset/${path}`;
+};

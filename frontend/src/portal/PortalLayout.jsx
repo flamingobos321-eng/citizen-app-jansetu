@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { useAuth } from "../lib/auth";
-import { fileUrl } from "../lib/api";
+import { portalAssetUrl } from "../lib/api";
 import { Facebook, Twitter, Instagram, Youtube, Phone, Mail, MapPin, Clock, ExternalLink } from "lucide-react";
 import "./portal.css";
 
@@ -47,7 +47,7 @@ export default function PortalLayout({ config, children }) {
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-4">
           <Link to={`/portal/${slug}`} className="flex items-center gap-3 min-w-0" data-testid="portal-brand">
             {config?.logo_path ? (
-              <img src={fileUrl(config.logo_path)} alt="" className="w-10 h-10 rounded-md object-cover portal-ring" />
+              <img src={portalAssetUrl(config.logo_path)} alt="" className="w-10 h-10 rounded-md object-cover portal-ring" />
             ) : (
               <div className="w-10 h-10 rounded-md portal-bg-primary flex items-center justify-center font-heading text-base font-bold">
                 {(config?.politician_name || "P").charAt(0)}

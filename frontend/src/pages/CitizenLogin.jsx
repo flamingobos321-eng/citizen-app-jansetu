@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams, Link } from "react-router-dom";
-import { api, API } from "../lib/api";
+import { api, API, portalAssetUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -94,7 +94,7 @@ export default function CitizenLogin() {
   return (
     <div className="min-h-screen relative">
       <div className="absolute inset-0">
-        <img src={portal?.hero_image_path ? `${API}/files/${portal.hero_image_path}` : BG} alt="" className="w-full h-full object-cover" />
+        <img src={portal?.hero_image_path ? portalAssetUrl(portal.hero_image_path) : BG} alt="" className="w-full h-full object-cover" />
         <div className="absolute inset-0 bg-white/92 backdrop-blur-sm" />
       </div>
       <div className="relative min-h-screen flex items-center justify-center px-4 py-10">
@@ -111,7 +111,7 @@ export default function CitizenLogin() {
                 data-testid="login-brand-mark"
               >
                 {portal?.logo_path ? (
-                  <img src={`${API}/files/${portal.logo_path}`} alt="" className="w-full h-full object-cover" />
+                  <img src={portalAssetUrl(portal.logo_path)} alt="" className="w-full h-full object-cover" />
                 ) : initials}
               </div>
               <div className="font-heading font-bold text-lg" style={{ color: theme }} data-testid="login-brand-name">

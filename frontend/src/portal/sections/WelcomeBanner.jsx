@@ -1,4 +1,4 @@
-import { fileUrl } from "../../lib/api";
+import { portalAssetUrl } from "../../lib/api";
 
 export default function WelcomeBanner({ config }) {
   return (
@@ -16,9 +16,9 @@ export default function WelcomeBanner({ config }) {
         <div className="md:col-span-2 hidden md:flex justify-end">
           <div className="w-56 h-56 rounded-2xl bg-white/10 flex items-center justify-center overflow-hidden ring-1 ring-white/20">
             {config.hero_image_path ? (
-              <img src={fileUrl(config.hero_image_path)} alt="" className="w-full h-full object-cover" />
+              <img src={portalAssetUrl(config.hero_image_path)} alt="" className="w-full h-full object-cover" />
             ) : config.logo_path ? (
-              <img src={fileUrl(config.logo_path)} alt="" className="w-full h-full object-cover" />
+              <img src={portalAssetUrl(config.logo_path)} alt="" className="w-full h-full object-cover" />
             ) : (
               <div className="font-heading text-7xl font-bold opacity-30">{(config.politician_name || "P").charAt(0)}</div>
             )}
