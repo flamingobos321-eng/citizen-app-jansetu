@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "../components/ui/button";
+import { ContactDialog, CONTACT, DirectContactBar } from "../components/ContactDialog";
 import {
   ArrowRight, ShieldCheck, FileText, Bell, Hammer, BarChart3, MapPin, Users,
   Home, GitMerge, UserCheck, Calendar, ClipboardList, Building2, Globe2,
@@ -65,8 +66,13 @@ function FAQ({ q, a, defaultOpen }) {
 }
 
 export default function Landing() {
+  const [leadOpen, setLeadOpen] = useState(false);
+  const [leadType, setLeadType] = useState("demo");
+  const openLead = (t) => { setLeadType(t); setLeadOpen(true); };
+
   return (
     <div className="min-h-screen bg-[#F9FAFB]">
+      <ContactDialog open={leadOpen} onOpenChange={setLeadOpen} leadType={leadType} />
       {/* ============= HEADER ============= */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
@@ -87,7 +93,7 @@ export default function Landing() {
             <Link to="/staff/login" data-testid="staff-login-link">
               <Button variant="outline" className="border-gray-300 hidden sm:inline-flex">Staff / Admin</Button>
             </Link>
-            <a href="#cta" data-testid="header-book-demo">
+            <a href="#cta" data-testid="header-book-demo" onClick={(e) => { e.preventDefault(); openLead("demo"); }}>
               <Button className="bg-[#0A1128] hover:bg-[#0A1128]/90 text-white">
                 Book Demo <ArrowRight className="ml-2" size={16} />
               </Button>
@@ -115,11 +121,11 @@ export default function Landing() {
               For MLAs, MPs, Corporators and political offices — manage citizens, complaints, development works and visits from one secure platform.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
-              <a href="#cta" data-testid="hero-book-demo">
+              <button data-testid="hero-book-demo" onClick={() => openLead("demo")} className="inline-flex">
                 <Button size="lg" className="bg-[#0A1128] hover:bg-[#0A1128]/90 text-white px-6">
                   Book Demo <ArrowRight className="ml-2" size={16} />
                 </Button>
-              </a>
+              </button>
               <Link to="/citizen/login" data-testid="hero-login-portal">
                 <Button size="lg" variant="outline" className="border-gray-300 px-6">
                   Login to Portal
@@ -479,20 +485,26 @@ export default function Landing() {
             Digitally manage citizens, services, development works and your entire constituency from one secure platform.
           </p>
           <div className="mt-8 flex flex-wrap gap-3 justify-center">
-            <a href="mailto:hello@jansetu.in?subject=Book%20a%20Demo" data-testid="cta-book-demo">
+            <button onClick={() => openLead("demo")} data-testid="cta-book-demo">
               <Button size="lg" className="bg-white text-[#0A1128] hover:bg-gray-100 px-6">
                 Book Demo <ArrowRight className="ml-2" size={16} />
               </Button>
-            </a>
-            <a href="mailto:hello@jansetu.in?subject=Free%20Trial%20Request" data-testid="cta-free-trial">
+            </button>
+            <button onClick={() => openLead("trial")} data-testid="cta-free-trial">
               <Button size="lg" variant="outline" className="border-white/40 text-white hover:bg-white/10 px-6 bg-transparent">
                 Request Free Trial
               </Button>
-            </a>
-            <a href="mailto:sales@jansetu.in?subject=Sales%20Enquiry" data-testid="cta-contact-sales">
+            </button>
+            <button onClick={() => openLead("sales")} data-testid="cta-contact-sales">
               <Button size="lg" variant="outline" className="border-white/40 text-white hover:bg-white/10 px-6 bg-transparent">
                 Contact Sales
               </Button>
+            </button>
+          </div>
+          <div className="mt-8 flex items-center justify-center gap-3 text-sm text-gray-300">
+            <span>Or call directly:</span>
+            <a href={`tel:+91${CONTACT.mobile}`} className="font-semibold text-white">
+              {CONTACT.name} — +91 {CONTACT.mobile}
             </a>
           </div>
         </div>
@@ -522,8 +534,9 @@ export default function Landing() {
             <div className="text-[10px] uppercase tracking-[0.15em] font-bold text-gray-400">For Offices</div>
             <ul className="mt-3 space-y-2 text-sm text-gray-600">
               <li><Link to="/staff/login" className="hover:text-[#0A1128]">Staff & Admin Login</Link></li>
-              <li><a href="#cta" className="hover:text-[#0A1128]">Book Demo</a></li>
-              <li><a href="mailto:sales@jansetu.in" className="hover:text-[#0A1128]">Contact Sales</a></li>
+              <li><button onClick={() => openLead("demo")} className="hover:text-[#0A1128]">Book Demo</button></li>
+              <li><button onClick={() => openLead("trial")} className="hover:text-[#0A1128]">Request Free Trial</button></li>
+              <li><button onClick={() => openLead("sales")} className="hover:text-[#0A1128]">Contact Sales</button></li>
             </ul>
           </div>
           <div>
@@ -531,6 +544,11 @@ export default function Landing() {
             <ul className="mt-3 space-y-2 text-sm text-gray-600">
               <li><Link to="/citizen/login" className="hover:text-[#0A1128]">Login to Portal</Link></li>
               <li><a href="#faq" className="hover:text-[#0A1128]">FAQ</a></li>
+              <li className="pt-2 border-t border-gray-100 mt-2">
+                <div className="text-[10px] uppercase tracking-[0.15em] font-bold text-gray-400 mb-1">Direct Contact</div>
+                <div className="font-semibold text-gray-900 text-sm">{CONTACT.name}</div>
+                <a href={`tel:+91${CONTACT.mobile}`} className="text-[#0A1128] font-semibold text-sm">+91 {CONTACT.mobile}</a>
+              </li>
             </ul>
           </div>
         </div>

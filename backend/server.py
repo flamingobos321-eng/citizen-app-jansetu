@@ -5,7 +5,9 @@ import uuid
 import logging
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
+
+from pydantic import BaseModel
 
 import bcrypt
 import jwt
@@ -510,6 +512,40 @@ async def _sync_tenant_counters():
 @api.get("/")
 async def root():
     return {"name": "JANSETU API", "status": "ok"}
+
+
+# ----------------- LEADS (public marketing form) -----------------
+class LeadCreate(BaseModel):
+    lead_type: Literal["demo", "trial", "sales"]
+    name: str
+    organisation: Optional[str] = None
+    role: Optional[str] = None
+    email: str
+    mobile: str
+    message: Optional[str] = None
+    source_url: Optional[str] = None
+
+
+@api.post("/leads")
+async def create_lead(payload: LeadCreate):
+    """Public endpoint used by the Landing hero + Final CTA (Book Demo /
+    Request Free Trial / Contact Sales) forms. Persists the lead into
+    `sales_leads` so the office can follow up. No auth required."""
+    doc = payload.model_dump()
+    doc["id"] = str(uuid.uuid4())
+    doc["status"] = "new"
+    doc["created_at"] = now_iso()
+    await db.sales_leads.insert_one(doc)
+    return {"ok": True, "lead_id": doc["id"]}
+
+
+@api.get("/admin/leads")
+async def list_leads(user: dict = Depends(get_current_user)):
+    """Super-admin view of all inbound sales leads."""
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    rows = await db.sales_leads.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return rows
 
 
 @api.get("/meta/categories")
