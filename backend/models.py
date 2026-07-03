@@ -503,8 +503,23 @@ class PortalConfig(BaseModel):
     custom_domain: Optional[str] = None         # e.g. "rajeshpatil.in" (future use)
 
     # Integrations (per-tenant, stored as dicts to stay schema-flexible)
-    whatsapp_config: dict = {}    # {provider, api_key, sender, webhook}
-    sms_config: dict = {}         # {provider, api_key, sender_id}
+    whatsapp_config: dict = {}    # {provider, api_key, sender, webhook}  — v2+
+    sms_config: dict = {}         # LEGACY — kept for backwards compat, not used in v1
+    # -------- OTP / Communication (v1) --------
+    # Per-tenant, no cross-tenant credential sharing.
+    #   communication_mode: "development" → fixed OTP "123456", no provider call
+    #   communication_mode: "production"  → random OTP, delivered via configured provider
+    # The `otp_config` dict is intentionally provider-agnostic so we can add
+    # WhatsApp / Email / other SMS gateways later without changing business logic.
+    #   {
+    #     "provider":       "fast2sms",       # only value supported in v1
+    #     "api_key":        "<tenant secret>",
+    #     "sender_id":      "ABCMLA",
+    #     "message_id":     "17071xxxxxxx",   # DLT-approved OTP template id
+    #     "route":          "dlt",
+    #   }
+    communication_mode: Literal["development", "production"] = "development"
+    otp_config: dict = {}
 
     # Setup wizard progress for tenant admin first-time setup
     setup_progress: dict = {}     # {branding, constituency, pa, workers, areas, citizens}
@@ -543,6 +558,11 @@ class PortalConfigCreate(BaseModel):
     # Optional admin override; if omitted, server generates admin@<slug>.jansetu.in
     primary_admin_email: Optional[str] = None
     primary_admin_name: Optional[str] = None
+    # OTP / communication — safe defaults (dev-mode) so a new portal is
+    # instantly usable without a live SMS gateway. Tenant admin flips to
+    # production after DLT approval.
+    communication_mode: Literal["development", "production"] = "development"
+    otp_config: dict = {}
 
 
 # ==========================================================================

@@ -5,6 +5,8 @@ import uuid
 import logging
 import asyncio
 from datetime import datetime, timezone, timedelta
+
+import otp_service
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -373,6 +375,8 @@ async def _migrate_to_multi_tenant():
             "language": "en",
             "whatsapp_config": {},
             "sms_config": {},
+            "communication_mode": "development",
+            "otp_config": {},
         }},
     )
 
@@ -583,23 +587,110 @@ async def _resolve_tenant_id(slug: Optional[str], allow_archived_for_super_admin
     return portal["id"]
 
 
+@api.get("/me/portal-config")
+async def me_portal_config(user: dict = Depends(get_current_user)):
+    """Small caller-scoped portal config for the app shell.
+
+    Returns ONLY safe display fields (never the OTP api_key / provider secrets).
+    Used by the frontend to render the Development Mode badge and any future
+    tenant-level display flags."""
+    tid = user.get("tenant_id")
+    if not tid:
+        return {"communication_mode": None, "otp_provider": None}
+    p = await db.portal_configs.find_one(
+        {"id": tid},
+        {"_id": 0, "communication_mode": 1, "otp_config": 1, "portal_status": 1, "slug": 1},
+    )
+    if not p:
+        return {"communication_mode": None, "otp_provider": None}
+    provider = (p.get("otp_config") or {}).get("provider")
+    return {
+        "communication_mode": p.get("communication_mode") or "development",
+        "otp_provider": provider,
+        "portal_status": p.get("portal_status"),
+        "slug": p.get("slug"),
+    }
+
+
 # ----------------- AUTH -----------------
 @api.post("/auth/citizen/request-otp")
 async def request_otp(payload: CitizenOTPRequest):
-    await _resolve_tenant_id(payload.tenant_slug)  # validates slug if provided
+    """Issue an OTP for citizen sign-in.
+
+    Development-mode tenants (or a request without a tenant slug) always use
+    the fixed OTP ``123456`` and no external provider is called. Production
+    tenants generate a secure random OTP and dispatch it through the tenant's
+    own SMS provider config — credentials are strictly per-tenant (see
+    ``portal_configs.otp_config``).
+    """
+    # Validate slug + resolve to tenant id (also enforces archive/suspend gates).
+    await _resolve_tenant_id(payload.tenant_slug)
+    portal = None
+    if payload.tenant_slug:
+        portal = await db.portal_configs.find_one(
+            {"slug": payload.tenant_slug.strip().lower()},
+            {"_id": 0, "communication_mode": 1, "otp_config": 1, "id": 1},
+        )
+    is_dev = not portal or (portal.get("communication_mode") or "development") != "production"
+    if is_dev:
+        otp_code = otp_service.FIXED_DEV_OTP
+        dispatch = {"delivered": True, "provider": "dev-mode",
+                    "reason": None, "raw": None, "mode": "development"}
+    else:
+        otp_code = otp_service.generate_otp()
+        dispatch = await otp_service.send_otp(
+            payload.mobile, otp_code, portal.get("otp_config") or {})
+        dispatch["mode"] = "production"
+        # Audit but never break the request contract on delivery failure —
+        # surface the reason to the caller so the frontend can show it.
+        await _audit(
+            "otp.sent" if dispatch["delivered"] else "otp.send_failed",
+            None,
+            {"tenant_id": portal.get("id"), "mobile_last4": payload.mobile[-4:],
+             "provider": dispatch.get("provider"), "reason": dispatch.get("reason")},
+        )
     await db.otps.update_one(
         {"mobile": payload.mobile, "tenant_slug": payload.tenant_slug},
-        {"$set": {"mobile": payload.mobile, "tenant_slug": payload.tenant_slug, "otp": "123456", "at": now_iso()}},
+        {"$set": {"mobile": payload.mobile, "tenant_slug": payload.tenant_slug,
+                  "otp": otp_code, "at": now_iso(), "mode": dispatch["mode"]}},
         upsert=True,
     )
-    return {"sent": True, "demo_otp": "123456"}
+    # In dev mode we intentionally surface the OTP so demos/E2E tests work
+    # without a live SMS gateway. In production we never expose the code.
+    if is_dev:
+        return {"sent": True, "mode": "development", "demo_otp": otp_code}
+    return {
+        "sent": bool(dispatch["delivered"]),
+        "mode": "production",
+        "provider": dispatch.get("provider"),
+        "reason": dispatch.get("reason"),
+    }
 
 
 @api.post("/auth/citizen/verify-otp")
 async def verify_otp(payload: CitizenOTPVerify):
-    if payload.otp != "123456" and len(payload.otp) != 6:
-        raise HTTPException(400, "Invalid OTP")
+    """Verify the OTP issued to this mobile+tenant pair.
+
+    In production mode the stored OTP is the one dispatched by the tenant's
+    provider. In development mode any 6-digit OTP is accepted (backwards
+    compatible with existing demos), because the stored code is the fixed
+    ``123456`` but demos and E2E scripts may type any 6-digit filler.
+    """
     tid = await _resolve_tenant_id(payload.tenant_slug)
+    stored = await db.otps.find_one(
+        {"mobile": payload.mobile, "tenant_slug": payload.tenant_slug},
+        {"_id": 0, "otp": 1, "mode": 1},
+    )
+    mode = (stored or {}).get("mode") or "development"
+    if mode == "production":
+        # Strict match against the code we issued.
+        if not stored or stored.get("otp") != payload.otp:
+            raise HTTPException(400, "Invalid OTP")
+    else:
+        # Dev / demo: fixed OTP is 123456, but any 6-digit input is accepted
+        # to keep old E2E scripts and manual QA smooth. Length + digits only.
+        if not (payload.otp.isdigit() and len(payload.otp) == 6):
+            raise HTTPException(400, "Invalid OTP")
     q = {"mobile": payload.mobile, "role": "citizen"}
     if tid:
         q["tenant_id"] = tid
@@ -2003,10 +2094,19 @@ def _normalize_slug(s: str) -> str:
 
 
 def _public_portal(p: dict) -> dict:
-    """Strip internal fields for public consumption."""
+    """Strip internal fields for public consumption.
+
+    IMPORTANT: `otp_config` holds the tenant's SMS provider secret (Fast2SMS
+    API key). Never expose it on public endpoints. We keep the mode flag
+    (`communication_mode`) so the UI can show a "Development mode" badge
+    without leaking credentials."""
     if not p:
         return p
     out = {k: v for k, v in p.items() if k != "_id"}
+    out.pop("otp_config", None)
+    # Legacy channel-secret buckets — never leak.
+    out.pop("sms_config", None)
+    out.pop("whatsapp_config", None)
     return out
 
 
@@ -2187,8 +2287,24 @@ async def update_portal(portal_id: str, payload: dict, _: dict = Depends(require
         "logo_path", "hero_image_path", "theme_color", "accent_color",
         "contact_phone", "contact_email", "contact_address", "office_hours", "social_links",
         "is_active", "slug",
+        # OTP / communication (per-tenant, isolated).
+        "communication_mode", "otp_config",
     }
     update = {k: v for k, v in payload.items() if k in allowed}
+    if "communication_mode" in update and update["communication_mode"] not in ("development", "production"):
+        raise HTTPException(400, "communication_mode must be 'development' or 'production'")
+    if "otp_config" in update and update["otp_config"] is not None:
+        cfg = update["otp_config"] or {}
+        if not isinstance(cfg, dict):
+            raise HTTPException(400, "otp_config must be an object")
+        # Only supported provider in v1.
+        provider = (cfg.get("provider") or "").strip().lower()
+        if provider and provider != "fast2sms":
+            raise HTTPException(400, "Only 'fast2sms' provider is supported in v1")
+        # Trim strings to avoid surprising whitespace bugs when calling upstream.
+        cleaned = {k: (v.strip() if isinstance(v, str) else v) for k, v in cfg.items()}
+        cleaned.setdefault("route", otp_service.DEFAULT_ROUTE)
+        update["otp_config"] = cleaned
     if "slug" in update:
         update["slug"] = _normalize_slug(update["slug"])
         if not update["slug"]:

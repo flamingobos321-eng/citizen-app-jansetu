@@ -29,6 +29,9 @@ const empty = {
   social_links: { facebook: "", twitter: "", instagram: "", youtube: "", whatsapp: "" },
   primary_admin_email: "",
   primary_admin_name: "",
+  // OTP / communication (per-tenant, defaults to dev-safe).
+  communication_mode: "development",
+  otp_config: { provider: "fast2sms", api_key: "", sender_id: "", message_id: "", route: "dlt" },
 };
 
 export default function AdminPortals() {
@@ -339,6 +342,7 @@ function EditDialog({ initial, onClose, onSaved }) {
   const [logoUploading, setLogoUploading] = useState(false);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const setSocial = (k, v) => setForm((f) => ({ ...f, social_links: { ...f.social_links, [k]: v } }));
+  const setOtp = (k, v) => setForm((f) => ({ ...f, otp_config: { ...(f.otp_config || {}), [k]: v } }));
 
   const uploadLogo = async (e) => {
     const file = e.target.files?.[0];
@@ -504,6 +508,92 @@ function EditDialog({ initial, onClose, onSaved }) {
               </div>
             </div>
           )}
+
+          <div className="sm:col-span-2">
+            <Label className="text-xs uppercase tracking-wider font-bold text-gray-500">Communication (OTP)</Label>
+            <div className="mt-2 border border-gray-200 rounded-md p-3 space-y-3 bg-gray-50">
+              <div className="flex items-center gap-4 flex-wrap">
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="radio"
+                    name="comm-mode"
+                    checked={(form.communication_mode || "development") === "development"}
+                    onChange={() => set("communication_mode", "development")}
+                    data-testid="comm-mode-dev"
+                  />
+                  <span>Development</span>
+                  <span className="pill pill-neutral">Fixed OTP 123456</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="radio"
+                    name="comm-mode"
+                    checked={form.communication_mode === "production"}
+                    onChange={() => set("communication_mode", "production")}
+                    data-testid="comm-mode-prod"
+                  />
+                  <span>Production</span>
+                  <span className="pill pill-info">Fast2SMS (DLT)</span>
+                </label>
+              </div>
+              {form.communication_mode === "production" && (
+                <div className="grid sm:grid-cols-2 gap-2 pt-2 border-t border-gray-200">
+                  <div>
+                    <Label className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-500">Provider</Label>
+                    <Input value="fast2sms" disabled data-testid="otp-provider" />
+                  </div>
+                  <div>
+                    <Label className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-500">Route</Label>
+                    <Input
+                      value={form.otp_config?.route || "dlt"}
+                      onChange={(e) => setOtp("route", e.target.value)}
+                      data-testid="otp-route"
+                      placeholder="dlt"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <Label className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-500">
+                      Fast2SMS API Key <span className="text-red-500">*</span>
+                    </Label>
+                    <Input
+                      type="password"
+                      value={form.otp_config?.api_key || ""}
+                      onChange={(e) => setOtp("api_key", e.target.value)}
+                      data-testid="otp-api-key"
+                      placeholder="paste tenant API key — stored per-portal, never shared"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-500">
+                      Sender ID <span className="text-red-500">*</span>
+                    </Label>
+                    <Input
+                      value={form.otp_config?.sender_id || ""}
+                      onChange={(e) => setOtp("sender_id", e.target.value)}
+                      data-testid="otp-sender-id"
+                      placeholder="ABCMLA"
+                      maxLength={6}
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-500">
+                      DLT Message / Template ID <span className="text-red-500">*</span>
+                    </Label>
+                    <Input
+                      value={form.otp_config?.message_id || ""}
+                      onChange={(e) => setOtp("message_id", e.target.value)}
+                      data-testid="otp-message-id"
+                      placeholder="17071xxxxxxx"
+                    />
+                  </div>
+                </div>
+              )}
+              <div className="text-[11px] text-gray-500">
+                Each portal has independent OTP credentials. Nothing is shared across tenants.
+                {form.communication_mode !== "production" && " Toggle to Production only after DLT approval + Sender ID whitelisting."}
+              </div>
+            </div>
+          </div>
 
           <div className="sm:col-span-2">
             <Label className="text-xs uppercase tracking-wider font-bold text-gray-500">Social Links (optional)</Label>

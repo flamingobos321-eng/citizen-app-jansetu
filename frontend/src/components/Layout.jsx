@@ -1,5 +1,7 @@
 import { Link, NavLink } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { useAuth } from "../lib/auth";
+import { api } from "../lib/api";
 import { Button } from "./ui/button";
 import {
   LayoutDashboard,
@@ -74,6 +76,17 @@ function SuperNavItem({ to, icon: Icon, label, testId }) {
 
 export default function Layout({ children }) {
   const { user, logout } = useAuth();
+  const [commMode, setCommMode] = useState(null);
+
+  useEffect(() => {
+    // Only staff with a tenant care about the badge. Super admin (no tenant)
+    // and citizens don't see it.
+    if (!user || !user.tenant_id || user.role === "citizen" || user.role === "super_admin") {
+      setCommMode(null);
+      return;
+    }
+    api.get("/me/portal-config").then((r) => setCommMode(r.data?.communication_mode || null)).catch(() => setCommMode(null));
+  }, [user?.tenant_id, user?.role]);
 
   const onLogout = () => {
     // Remember the portal the user signed in from (if any) so we can return them.
@@ -190,7 +203,15 @@ export default function Layout({ children }) {
             <LogOut size={16} />
           </Button>
         </header>
-        <main className="flex-1 p-4 sm:p-8 max-w-[1400px] w-full mx-auto">{children}</main>
+        <main className="flex-1 p-4 sm:p-8 max-w-[1400px] w-full mx-auto">
+          {commMode === "development" && (
+            <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-xs text-amber-900 flex items-center gap-2" data-testid="dev-mode-badge">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-200 font-bold uppercase tracking-wider text-[10px]">Development Mode</span>
+              <span>OTP is fixed at <span className="font-mono font-semibold">123456</span> and no SMS is sent. Switch to Production in Portal settings before going live.</span>
+            </div>
+          )}
+          {children}
+        </main>
       </div>
     </div>
   );
