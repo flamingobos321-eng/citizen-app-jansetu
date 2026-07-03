@@ -10,7 +10,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "../components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, Star } from "lucide-react";
+import { ArrowLeft, Star, AlertTriangle, ShieldCheck } from "lucide-react";
 
 // FLOW status array removed — timeline now renders all events chronologically
 
@@ -206,6 +206,10 @@ export default function IssueDetail() {
               )}
             </Card>
           )}
+
+          <Card>
+            <EscalationPanel escalation={data.escalation} status={issue.status} />
+          </Card>
 
           <Card>
             <h3 className="font-heading font-semibold text-gray-900 mb-4">Timeline</h3>
@@ -422,3 +426,73 @@ const Row = ({ label, value }) => (
     <div className="col-span-2 text-gray-900">{value || "—"}</div>
   </div>
 );
+
+const LEVEL_LABELS = ["Not escalated", "Worker reminded", "PA reminded", "MLA reminded"];
+
+function formatWhen(iso) {
+  if (!iso) return "—";
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const diffMs = d - now;
+    const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+    const abs = Math.abs(diffDays);
+    const rel = diffDays === 0 ? "today" : diffDays > 0 ? `in ${abs} day${abs === 1 ? "" : "s"}` : `${abs} day${abs === 1 ? "" : "s"} ago`;
+    return `${d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })} · ${rel}`;
+  } catch {
+    return iso;
+  }
+}
+
+function EscalationPanel({ escalation, status }) {
+  if (!escalation) return null;
+  const level = escalation.current_level || 0;
+  const halted = escalation.halted_reason;
+  const nextRole = escalation.next_recipient_role;
+  const nextAt = escalation.next_escalation_at;
+  const overdue = nextAt && new Date(nextAt) < new Date();
+  return (
+    <div data-testid="escalation-panel">
+      <div className="flex items-center gap-2 mb-4">
+        {halted ? (
+          <ShieldCheck size={16} className="text-[#10B981]" />
+        ) : (
+          <AlertTriangle size={16} className={overdue ? "text-red-600" : level > 0 ? "text-amber-600" : "text-gray-400"} />
+        )}
+        <h3 className="font-heading font-semibold text-gray-900">Escalation status</h3>
+      </div>
+      {halted ? (
+        <div className="text-sm text-gray-700" data-testid="escalation-halted">
+          <span className="pill pill-resolved">Halted</span>{" "}
+          <span className="text-gray-600">{halted}</span>
+        </div>
+      ) : (
+        <>
+          <div className="grid sm:grid-cols-3 gap-3 text-sm">
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-500">Current level</div>
+              <div className="mt-1 font-semibold text-gray-900" data-testid="esc-current-level">
+                L{level} — {LEVEL_LABELS[level] || `Level ${level}`}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-500">Next escalation</div>
+              <div className={`mt-1 font-semibold ${overdue ? "text-red-600" : "text-gray-900"}`} data-testid="esc-next-at">
+                {nextAt ? formatWhen(nextAt) : "Max level reached"}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-[0.1em] text-gray-500">Next recipient</div>
+              <div className="mt-1 font-semibold text-gray-900 capitalize" data-testid="esc-next-role">
+                {nextRole ? `→ ${nextRole}` : "—"}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 text-[11px] text-gray-500">
+            Escalation clock anchored at {formatWhen(escalation.anchor_at)}. Status is <span className="font-semibold">{status}</span> — timer keeps running until a terminal status or reassignment.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}

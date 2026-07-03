@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { portalAssetUrl } from "../lib/api";
-import { Facebook, Twitter, Instagram, Youtube, Phone, Mail, MapPin, Clock, ExternalLink } from "lucide-react";
+import { Facebook, Twitter, Instagram, Youtube, Phone, Mail, MapPin, Clock, ExternalLink, Archive } from "lucide-react";
 import "./portal.css";
 
 // Convert hex (#RRGGBB) to rgba with a given alpha. Defensive: returns fallback on bad input.
@@ -42,6 +42,19 @@ export default function PortalLayout({ config, children }) {
 
   return (
     <div className="portal-root min-h-screen bg-white text-gray-900 font-sans" style={style} data-testid="portal-root">
+      {config?.portal_status === "archived" && (
+        <div className="bg-red-600 text-white" data-testid="portal-archived-banner">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-3 text-sm">
+            <Archive size={18} className="shrink-0" />
+            <div className="min-w-0">
+              <div className="font-heading font-semibold">This portal has been archived.</div>
+              <div className="text-xs text-red-100 mt-0.5">
+                Public services, new logins, and updates are paused. If you were a citizen or staff member here, please contact the platform administrator.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {/* HEADER */}
       <header className="sticky top-0 z-30 backdrop-blur bg-white/85 border-b border-gray-200">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-4">
@@ -59,7 +72,9 @@ export default function PortalLayout({ config, children }) {
             </div>
           </Link>
           <div className="ml-auto flex items-center gap-2">
-            {belongs ? (
+            {config?.portal_status === "archived" ? (
+              <span className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md bg-gray-100 text-gray-500 cursor-not-allowed" data-testid="portal-archived-login-disabled">Logins disabled</span>
+            ) : belongs ? (
               <Link to="/app" className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md portal-bg-primary hover:opacity-90" data-testid="portal-open-app">Open Workspace</Link>
             ) : (
               <>

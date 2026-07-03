@@ -249,7 +249,7 @@ ISSUE_CATEGORIES = [
     "Electricity", "Encroachment", "Government Scheme Assistance",
     "Health", "Education", "Public Facility", "Other",
 ]
-ISSUE_STATUSES = ["New", "Under Review", "Assigned", "In Progress", "Resolved", "Verified", "Reopened", "Reassignment Requested"]
+ISSUE_STATUSES = ["New", "Under Review", "Assigned", "In Progress", "Resolved", "Verified", "Reopened", "Reassignment Requested", "Cancelled", "Closed"]
 
 
 class Issue(BaseModel):
@@ -284,12 +284,15 @@ class Issue(BaseModel):
     timeline: List[dict] = []  # [{status, at, by, note}]
     # Escalation reminders (P0). `escalation_level` values:
     #   0 = never escalated
-    #   1 = worker reminded  (3-day threshold)
-    #   2 = PA reminded      (7-day threshold)
-    #   3 = MLA/politician reminded (15-day threshold)
-    # Reset to 0 whenever the issue is updated / assigned / status-changed.
+    #   1 = worker reminded  (3-day threshold from anchor)
+    #   2 = PA reminded      (7-day threshold from anchor)
+    #   3 = MLA/politician reminded (15-day threshold from anchor)
+    # `escalation_anchor_at` is the timestamp the escalation clock counts from —
+    # it starts at creation and is reset to now() whenever the issue is
+    # reassigned (per production rule: reassignment restarts the clock).
     escalation_level: int = 0
     last_escalated_at: Optional[str] = None
+    escalation_anchor_at: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 

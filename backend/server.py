@@ -557,15 +557,29 @@ async def meta_cats():
     return {"issue_categories": ISSUE_CATEGORIES, "issue_statuses": ISSUE_STATUSES, "dev_statuses": DEV_STATUSES, "visit_statuses": VISIT_STATUSES}
 
 
-async def _resolve_tenant_id(slug: Optional[str]) -> Optional[str]:
-    """Resolve a portal slug to its tenant_id. Returns None if no slug provided."""
+async def _resolve_tenant_id(slug: Optional[str], allow_archived_for_super_admin: bool = False) -> Optional[str]:
+    """Resolve a portal slug to its tenant_id. Returns None if no slug provided.
+
+    Archived portals reject all new logins by default (per production rule).
+    Only super_admin flows may pass ``allow_archived_for_super_admin=True`` and
+    still authenticate against an archived portal — used from staff login when
+    the caller turns out to be super_admin."""
     if not slug:
         return None
-    portal = await db.portal_configs.find_one({"slug": slug.strip().lower(), "is_active": True}, {"id": 1, "portal_status": 1})
+    # Include archived rows so we can produce a specific error message.
+    portal = await db.portal_configs.find_one(
+        {"slug": slug.strip().lower()},
+        {"id": 1, "portal_status": 1, "is_active": 1},
+    )
     if not portal:
         raise HTTPException(404, "Portal not found")
-    if portal.get("portal_status") == "suspended":
+    status = portal.get("portal_status")
+    if status == "archived" and not allow_archived_for_super_admin:
+        raise HTTPException(423, "Portal is archived and is not accepting new logins. Contact platform admin.")
+    if status == "suspended":
         raise HTTPException(403, "Portal is currently suspended")
+    if not portal.get("is_active") and status != "archived":
+        raise HTTPException(404, "Portal not found")
     return portal["id"]
 
 
@@ -840,7 +854,19 @@ async def citizen_register(payload: CitizenRegister):
 
 @api.post("/auth/staff/login")
 async def staff_login(payload: StaffLogin):
-    tid = await _resolve_tenant_id(payload.tenant_slug)
+    """Staff login endpoint. Archived portals reject all new logins EXCEPT
+    for super_admin — this lets platform operators still access archived
+    portals to run diagnostics or restore them.
+    """
+    # First pass: peek at the user record (without portal validation) so we can
+    # detect super_admin and let them through.
+    q_probe = {"email": payload.email.strip().lower(), "role": {"$ne": "citizen"}}
+    probe = await db.users.find_one(q_probe, {"role": 1, "tenant_id": 1})
+    is_super = bool(probe and probe.get("role") == "super_admin")
+    tid = await _resolve_tenant_id(
+        payload.tenant_slug,
+        allow_archived_for_super_admin=is_super,
+    )
     q = {"email": payload.email.strip().lower(), "role": {"$ne": "citizen"}}
     if tid:
         q["tenant_id"] = tid
@@ -1098,6 +1124,8 @@ async def create_issue(payload: IssueCreate, user: dict = Depends(get_current_us
         ward_id=user.get("ward_id"),
         village_id=user.get("village_id"),
         timeline=[{"status": "New", "at": now_iso(), "by": user["name"], "note": "Issue raised"}],
+        # Anchor the escalation clock at creation.
+        escalation_anchor_at=now_iso(),
     )
     await db.issues.insert_one(issue.model_dump())
     # M3 dual-write — stamp person_id + origin_membership_id, emit timeline.
@@ -1160,7 +1188,26 @@ async def issue_detail(issue_id: str, user: dict = Depends(get_current_user)):
     if not allowed:
         raise HTTPException(403, "Forbidden")
     citizen = await db.users.find_one(tenant_filter(user, {"id": issue["citizen_id"]}), {"_id": 0, "password_hash": 0})
-    return {"issue": issue, "citizen": citizen}
+    # Compute escalation projection (next level + when it would fire) for UI.
+    escalation = {
+        "current_level": int(issue.get("escalation_level") or 0),
+        "anchor_at": issue.get("escalation_anchor_at") or issue.get("created_at"),
+        "last_escalated_at": issue.get("last_escalated_at"),
+        "next_level": None,
+        "next_escalation_at": None,
+        "next_recipient_role": None,
+        "halted_reason": None,
+    }
+    if issue.get("status") in _TERMINAL_ISSUE_STATUSES:
+        escalation["halted_reason"] = f"Status is {issue['status']} — escalation stopped."
+    else:
+        cur = escalation["current_level"]
+        if cur < len(_ESCALATION_THRESHOLDS_DAYS):
+            nxt_dt = _next_escalation_dt(escalation["anchor_at"], cur)
+            escalation["next_level"] = cur + 1
+            escalation["next_escalation_at"] = nxt_dt.isoformat() if nxt_dt else None
+            escalation["next_recipient_role"] = ["worker", "pa", "politician"][cur]
+    return {"issue": issue, "citizen": citizen, "escalation": escalation}
 
 
 @api.post("/issues/{issue_id}/assign")
@@ -1169,6 +1216,7 @@ async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends
     if not worker:
         raise HTTPException(404, "Worker not found")
     mobile_part = f" · Mobile: {worker.get('mobile')}" if worker.get("mobile") else ""
+    reassign_anchor = now_iso()
     update = {
         "assigned_to": payload.assigned_to,
         "assigned_to_name": worker["name"],
@@ -1176,16 +1224,17 @@ async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends
         "remarks": payload.remarks,
         "status": "Assigned",
         "updated_at": now_iso(),
-        # Reassigning stops the escalation clock — worker gets a fresh 3-day
-        # window before the next reminder fires.
+        # Reassignment resets the escalation clock from scratch. Anchor moves
+        # to now() so the 3-day worker reminder starts fresh from this moment.
         "escalation_level": 0,
         "last_escalated_at": None,
+        "escalation_anchor_at": reassign_anchor,
     }
     res = await db.issues.update_one(
         tenant_filter(user, {"id": issue_id}),
         {
             "$set": update,
-            "$push": {"timeline": {"status": "Assigned", "at": now_iso(), "by": user["name"], "note": f"Assigned to {worker['name']}{mobile_part}"}},
+            "$push": {"timeline": {"status": "Assigned", "at": reassign_anchor, "by": user["name"], "note": f"Assigned to {worker['name']}{mobile_part} — escalation timer reset"}},
         },
     )
     if res.matched_count == 0:
@@ -1971,11 +2020,15 @@ async def list_portals_public():
 
 @api.get("/portals/{slug}")
 async def get_portal_public(slug: str):
-    p = await db.portal_configs.find_one(
-        {"slug": slug, "is_active": True, "portal_status": {"$ne": "archived"}},
-        {"_id": 0},
-    )
+    """Public portal metadata. Archived portals still return a valid response
+    (so the frontend can render an 'Archived' banner) but with is_active=False
+    and portal_status='archived'. The rest of the payload is preserved so the
+    landing page can show the previous branding while informing visitors."""
+    p = await db.portal_configs.find_one({"slug": slug}, {"_id": 0})
     if not p:
+        raise HTTPException(404, "Portal not found")
+    # Suspended portals: not visible publicly (unchanged behaviour).
+    if p.get("portal_status") == "suspended" and not p.get("is_active"):
         raise HTTPException(404, "Portal not found")
     return _public_portal(p)
 
@@ -2959,7 +3012,24 @@ async def list_audit_logs(user: dict = Depends(require_roles("super_admin")),
 # ESCALATION REMINDERS — 3d Worker → 7d PA → 15d MLA (once per level)
 # ============================================================================
 _ESCALATION_THRESHOLDS_DAYS = [3, 7, 15]
+# Active = eligible for escalation. Terminal statuses (Resolved / Closed /
+# Cancelled) stop escalation immediately.
 _ACTIVE_ISSUE_STATUSES = ("New", "Assigned", "In Progress")
+_TERMINAL_ISSUE_STATUSES = ("Resolved", "Closed", "Cancelled")
+
+
+def _next_escalation_dt(anchor_iso: Optional[str], current_level: int) -> Optional[datetime]:
+    """Return the UTC datetime when the NEXT escalation level would fire.
+    Returns None if the issue is already at the highest level or has no anchor."""
+    if not anchor_iso:
+        return None
+    if current_level >= len(_ESCALATION_THRESHOLDS_DAYS):
+        return None
+    try:
+        anchor = datetime.fromisoformat(anchor_iso.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    return anchor + timedelta(days=_ESCALATION_THRESHOLDS_DAYS[current_level])
 
 
 async def _create_user_notification(*, tenant_id: str, title: str, body: str,
@@ -2978,13 +3048,16 @@ async def _create_user_notification(*, tenant_id: str, title: str, body: str,
 
 async def _escalate_one_issue(issue: dict) -> Optional[dict]:
     """Compute the next escalation level for a single issue and, if the age
-    threshold has been crossed, fanout a personal notification to the correct
-    recipient(s). Returns audit meta if an escalation occurred, else None."""
+    threshold from the anchor timestamp has been crossed, fanout a personal
+    notification to the correct recipient(s). Returns audit meta if an
+    escalation occurred, else None."""
+    # Anchor is the reassignment timestamp when set, else the creation time.
+    anchor_iso = issue.get("escalation_anchor_at") or issue.get("created_at")
     try:
-        created = datetime.fromisoformat((issue["created_at"] or "").replace("Z", "+00:00"))
+        anchor = datetime.fromisoformat((anchor_iso or "").replace("Z", "+00:00"))
     except Exception:
         return None
-    age_days = (datetime.now(timezone.utc) - created).days
+    age_days = (datetime.now(timezone.utc) - anchor).days
     current_level = int(issue.get("escalation_level") or 0)
     # Determine the highest level whose threshold this issue has crossed.
     target_level = 0
@@ -3049,10 +3122,14 @@ async def _escalate_one_issue(issue: dict) -> Optional[dict]:
 
 
 async def _run_escalations() -> dict:
-    """Scan all active (non-Resolved) issues and fire due escalations."""
+    """Scan all active (non-terminal) issues and fire due escalations."""
     cursor = db.issues.find(
-        {"status": {"$in": list(_ACTIVE_ISSUE_STATUSES)},
-         "escalation_level": {"$lt": len(_ESCALATION_THRESHOLDS_DAYS)}},
+        {
+            # Explicit terminal-status exclusion — Resolved, Closed, Cancelled
+            # halt escalation immediately (per production rule).
+            "status": {"$nin": list(_TERMINAL_ISSUE_STATUSES)},
+            "escalation_level": {"$lt": len(_ESCALATION_THRESHOLDS_DAYS)},
+        },
         {"_id": 0},
     )
     escalated: List[dict] = []
@@ -3102,24 +3179,49 @@ async def _start_escalation_loop():
 # ============================================================================
 # PORTAL ARCHIVE / RESTORE / PERMANENT DELETE  (Super Admin only)
 # ============================================================================
+def _portal_has_active_subscription(p: dict) -> bool:
+    """A portal has an ACTIVE (paying) subscription when it is not on trial
+    AND has a non-trivial subscription plan. Trials or unset plans are safe
+    to archive without a force flag."""
+    if p.get("is_trial", True):
+        return False
+    plan = (p.get("subscription_plan") or "").strip().lower()
+    return plan not in ("", "trial", "cancelled", "expired")
+
+
 @api.post("/admin/portals/{portal_id}/archive")
-async def archive_portal(portal_id: str, user: dict = Depends(require_roles("super_admin"))):
+async def archive_portal(portal_id: str, force: bool = False,
+                         user: dict = Depends(require_roles("super_admin"))):
     """Soft-delete: mark portal as archived and inactive. Hides it from
     public/admin lists (unless explicitly requested). Reversible via
-    /admin/portals/{id}/restore."""
+    /admin/portals/{id}/restore.
+    Guard: if the portal has an active paying subscription, block unless
+    `?force=true` is passed. Super Admin should deactivate the subscription
+    first, or explicitly force-archive."""
     p = await db.portal_configs.find_one({"id": portal_id})
     if not p:
         raise HTTPException(404, "Portal not found")
     if p.get("portal_status") == "archived":
         return {"ok": True, "already_archived": True}
+    if _portal_has_active_subscription(p) and not force:
+        raise HTTPException(
+            409,
+            f"Portal has an active '{p.get('subscription_plan')}' subscription "
+            f"(renewal {p.get('next_renewal_date') or 'n/a'}). "
+            f"Deactivate the subscription first, or pass ?force=true to override.",
+        )
     await db.portal_configs.update_one(
         {"id": portal_id},
         {"$set": {"portal_status": "archived", "is_active": False,
                   "archived_at": now_iso(), "archived_by": user["id"],
                   "updated_at": now_iso()}},
     )
-    await _audit("portal.archive", user, {"portal_id": portal_id, "slug": p.get("slug")})
-    return {"ok": True, "portal_id": portal_id}
+    await _audit("portal.archive", user, {
+        "portal_id": portal_id, "slug": p.get("slug"),
+        "forced": force, "had_active_subscription": _portal_has_active_subscription(p),
+        "subscription_plan": p.get("subscription_plan"),
+    })
+    return {"ok": True, "portal_id": portal_id, "forced": force}
 
 
 @api.post("/admin/portals/{portal_id}/restore")
