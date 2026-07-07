@@ -7,6 +7,9 @@ import CitizenLogin from "./pages/CitizenLogin";
 import CitizenRegister from "./pages/CitizenRegister";
 import CitizenClaim from "./pages/CitizenClaim";
 import StaffLogin from "./pages/StaffLogin";
+import WelcomeScreen from "./native/WelcomeScreen";
+import LoginChoice from "./native/LoginChoice";
+import { isNativePlatform } from "./native/platform";
 import Layout from "./components/Layout";
 
 import CitizenHome from "./pages/CitizenHome";
@@ -92,7 +95,9 @@ export default function App() {
       <AuthProvider>
         <Toaster richColors position="top-right" />
         <Routes>
-          <Route path="/" element={<Landing />} />
+          <Route path="/" element={isNativePlatform() ? <Navigate to="/native" replace /> : <Landing />} />
+          <Route path="/native" element={<WelcomeScreen />} />
+          <Route path="/native/login" element={<LoginChoice />} />
           <Route path="/portal" element={<PortalIndex />} />
           <Route path="/portal/:slug" element={<PortalHome />} />
           {/* Canonical Office-Code URL (v1.1+). Matches /o/JS1045 and friends. */}

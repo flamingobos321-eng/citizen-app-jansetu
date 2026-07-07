@@ -7,6 +7,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { toast } from "sonner";
 import { Phone, KeyRound, ArrowLeft, ShieldOff } from "lucide-react";
+import { isNativePlatform } from "../native/platform";
 
 const BG = "https://images.pexels.com/photos/19883685/pexels-photo-19883685.jpeg";
 
@@ -344,15 +345,17 @@ export default function CitizenLogin() {
               Sign in here
             </Link>
           </p>
-          <p className="text-center text-xs text-gray-500 mt-2">
-            First time here?{" "}
-            <Link
-              to={tenantIdent ? `/citizen/claim?office=${tenantIdent.toUpperCase()}` : "/citizen/claim"}
-              className="font-semibold" style={{ color: theme }} data-testid="goto-claim"
-            >
-              Claim your voter record
-            </Link>
-          </p>
+          {!isNativePlatform() && (
+            <p className="text-center text-xs text-gray-500 mt-2">
+              First time here?{" "}
+              <Link
+                to={tenantIdent ? `/citizen/claim?office=${tenantIdent.toUpperCase()}` : "/citizen/claim"}
+                className="font-semibold" style={{ color: theme }} data-testid="goto-claim"
+              >
+                Claim your voter record
+              </Link>
+            </p>
+          )}
         </div>
       </div>
     </div>

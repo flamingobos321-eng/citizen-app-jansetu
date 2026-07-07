@@ -511,3 +511,56 @@ consent enforcement, Android app scaffolding, and push notifications.
 - Real APK build — requires Android Studio on a developer workstation.
 - Broadcast module wiring — the existing `Notifications.jsx` compose flow still creates `Notification` (broadcast) rows. Wiring those broadcasts to ALSO push via `_push_to_user()` for each recipient is a small follow-up but not blocking launch.
 
+
+## ANDROID APPLICATION — v1.5 (2026-02-07)
+
+Delivered the single-APK Android app per PRD.  ONE binary supports every
+JanSetu office by asking for an Office Code at first launch and remembering
+it for subsequent sessions.
+
+**Files changed:**
+- `frontend/src/native/platform.js` (new) — `isNativePlatform()` / `nativePlatform()` runtime detection helpers.
+- `frontend/src/native/WelcomeScreen.jsx` (new) — first-launch screen. Logo → title "Welcome to JanSetu" → Office Code input → Continue. Validates against `GET /api/portals/office/{code}`. Persists to `localStorage.jansetu_native_office` so the app skips this on subsequent launches.
+- `frontend/src/native/LoginChoice.jsx` (new) — post-validation screen. Shows office logo, office code, constituency name, representative name + designation. Big brand-coloured **Citizen Login** primary button. Small text-only **Staff login** link beneath it. Small "Change office" affordance in the header.
+- `frontend/src/App.js` — new routes `/native`, `/native/login`. Root `/` redirects to `/native` when running inside Capacitor.
+- `frontend/src/portal/PortalLayout.jsx` — hides the standalone "Claim Voter Record" header CTA when running native (system routes automatically via check-mobile).
+- `frontend/src/pages/CitizenLogin.jsx` — hides the "First time here? Claim your voter record" footer link when running native (single-flow rule).
+
+**Features completed:**
+- ✅ Single application for all offices (Office Code architecture unchanged).
+- ✅ Welcome screen: JanSetu logo, "Welcome to JanSetu", Office Code input, Continue.
+- ✅ Office validation loads Office Name, Representative Name, Logo, Theme colour (branding-aware LoginChoice + downstream screens).
+- ✅ Login screen: Office Logo · Office Name · Representative Name · Primary [Citizen Login] · small text-link [Staff login].
+- ✅ Citizen Login flow: Office Code (already validated, reused) → Mobile → `POST /auth/citizen/check-mobile` → linked ⇒ OTP → Dashboard; unlinked ⇒ auto-route into Search & Claim → Select Person → DPDP Consent → OTP → Activate → Dashboard.
+- ✅ Staff Login uses the existing Staff auth (Office pre-filled from Native LoginChoice → `/staff/login?office=…`).
+- ✅ NO standalone "Claim Voter Record" button in native (verified — hidden in PortalLayout + CitizenLogin when `isNativePlatform()`).
+- ✅ Office context reused — Office Code is remembered after first validation; Citizen Login and Staff Login skip re-entry.
+- ✅ Safe-area support: `env(safe-area-inset-top/bottom)` spacers on Welcome + LoginChoice.
+- ✅ Native experience: rounded corners, dark brand-navy backdrop with backdrop-blur, active-state scale animations, uppercase tracking-widest labels, JanSetu brand typography.
+
+**Build workflow (developer workstation):**
+```
+cd frontend
+yarn build
+npx cap sync android           # done ✓ — web build synced into android/app/src/main/assets/public
+npx cap open android           # opens Android Studio for signing + APK/AAB
+```
+
+The Capacitor 7 project at `frontend/android/` is ready to sign + build.
+`frontend/android/README.md` documents the full FCM push notification setup
+(google-services.json placement, VAPID key, service account) — configured in
+v1.4 and re-usable here.
+
+**Bug fixes rolled up from this change:**
+- Native builds no longer expose the standalone "Claim Voter Record" web CTA (PortalLayout + CitizenLogin gated on `isNativePlatform()`).
+- Web build unaffected — `Claim Voter Record` remains discoverable on the desktop portal header.
+
+**Verified:**
+- `/native` renders the Welcome Screen at Pixel 6 dimensions (412×892).
+- `/native/login?office=JS1000` renders LoginChoice with Pune Cantonment branding, Rajesh Patil photo, "Hon. Rajesh Patil · MLA, Pune Cantonment", Citizen Login primary button, small Staff login link.
+- Continue → LoginChoice → Citizen Login navigates to the existing `/citizen/login?office=JS1000` which then check-mobile gates into Dashboard (linked) or Search & Claim (unlinked).
+
+**Not implemented (deferred):**
+- Bottom Navigation inside the authenticated app — the existing sidebar `Layout` doubles as top-nav on mobile; a native-only bottom-nav variant can ship later without touching the login flow.
+- Signed APK build — requires Android Studio + JDK 21 on a developer workstation.
+

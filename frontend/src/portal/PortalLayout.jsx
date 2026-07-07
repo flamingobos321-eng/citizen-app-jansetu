@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { portalAssetUrl } from "../lib/api";
+import { isNativePlatform } from "../native/platform";
 import { Facebook, Twitter, Instagram, Youtube, Phone, Mail, MapPin, Clock, ExternalLink, Archive } from "lucide-react";
 import "./portal.css";
 
@@ -81,7 +82,9 @@ export default function PortalLayout({ config, children }) {
               <Link to="/app" className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md portal-bg-primary hover:opacity-90" data-testid="portal-open-app">Open Workspace</Link>
             ) : (
               <>
-                <Link onClick={rememberSlug} to={`/citizen/claim?${loginParam}`} className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md border border-gray-300 bg-white hover:bg-gray-50" data-testid="portal-citizen-claim">Claim Voter Record</Link>
+                {!isNativePlatform() && (
+                  <Link onClick={rememberSlug} to={`/citizen/claim?${loginParam}`} className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md border border-gray-300 bg-white hover:bg-gray-50" data-testid="portal-citizen-claim">Claim Voter Record</Link>
+                )}
                 <Link onClick={rememberSlug} to={`/citizen/login?${loginParam}`} className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md border border-gray-200 hover:bg-gray-50" data-testid="portal-citizen-login">Citizen Login</Link>
                 <Link onClick={rememberSlug} to={`/staff/login?${loginParam}`} className="px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-md portal-bg-primary hover:opacity-90" data-testid="portal-staff-login">Staff Login</Link>
               </>
