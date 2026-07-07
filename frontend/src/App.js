@@ -5,6 +5,7 @@ import { Toaster } from "./components/ui/sonner";
 import Landing from "./pages/Landing";
 import CitizenLogin from "./pages/CitizenLogin";
 import CitizenRegister from "./pages/CitizenRegister";
+import CitizenClaim from "./pages/CitizenClaim";
 import StaffLogin from "./pages/StaffLogin";
 import Layout from "./components/Layout";
 
@@ -29,6 +30,7 @@ import Reports from "./pages/Reports";
 import PersonProfile from "./pages/PersonProfile";
 import AdminKaryakartas from "./pages/AdminKaryakartas";
 import AdminTaxonomy from "./pages/AdminTaxonomy";
+import AdminElectoralRoll from "./pages/AdminElectoralRoll";
 import PortalIndex from "./portal/PortalIndex";
 import PortalHome from "./portal/PortalHome";
 import ChangePassword from "./pages/ChangePassword";
@@ -96,6 +98,7 @@ export default function App() {
           <Route path="/o/:code" element={<PortalHome />} />
           <Route path="/citizen/login" element={<CitizenLogin />} />
           <Route path="/citizen/register" element={<CitizenRegister />} />
+          <Route path="/citizen/claim" element={<CitizenClaim />} />
           <Route path="/staff/login" element={<StaffLogin />} />
 
           <Route path="/app" element={<Guard><HomeRoute /></Guard>} />
@@ -121,6 +124,7 @@ export default function App() {
           <Route path="/app/staff" element={<TenantGuard><AdminStaff /></TenantGuard>} />
           <Route path="/app/karyakartas" element={<TenantGuard><AdminKaryakartas /></TenantGuard>} />
           <Route path="/app/taxonomy" element={<TenantGuard><AdminTaxonomy /></TenantGuard>} />
+          <Route path="/app/electoral-roll" element={<TenantGuard><AdminElectoralRoll /></TenantGuard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>

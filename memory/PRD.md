@@ -287,3 +287,54 @@ V1 still authoritative. Frontend untouched (no cutover yet). M4 frontend cutover
 
 **Tests:** iteration_5 test agent — 23/23 backend pytest PASS, 100% frontend automated checks PASS (see `/app/backend/tests/test_iteration5_features.py`).
 
+
+## ELECTORAL ROLL IMPORT MODULE — v1.3 (2026-02-07)
+
+Delivered the Electoral-Roll driven citizen onboarding flow. Before an Office
+goes live, the Office Admin uploads its Election Commission electoral roll(s);
+every voter becomes an independent Person; citizens later CLAIM their existing
+record rather than creating a duplicate account.
+
+**Business rules (frozen — do NOT modify without approval):**
+- Every voter card becomes ONE independent `users` document (role=citizen, `preloaded=True`, `activation_status="unclaimed"`).
+- Family relationships are NEVER inferred from the electoral roll — the `relative_name` and `relation_type` (Father / Husband / Mother / Other) are stored verbatim but never turned into `relationships` edges.
+- Duplicate detection keyed on **(tenant_id, epic_number)** — re-uploads UPDATE, they do not create duplicates.
+- Languages supported: **English + Marathi** (auto-detected from Devanagari code-points).
+- Only Super Admin and Office Admin can upload.
+
+**Backend (files):**
+- `backend/electoral_parser.py` (new) — provider-agnostic PDF parser. `parse_pdf(bytes) -> ParseResult` with `RollHeader`, `VoterRecord`, `ParseError` dataclasses. Splits voter cards on EPIC anchors; regex handles English + Marathi labels.
+- `backend/models.py` — extended `User` with electoral fields (`epic_number`, `part_number`, `booth_number`, `serial_number`, `section_name`, `polling_station_name`, `assembly_constituency`, `parliamentary_constituency`, `state`, `district`, `taluka`, `village_label`, `mother_name`, `relation_type`, `relative_name`, `electoral_import_id`). New `ElectoralRollImport` model persists per-file summary + errors.
+- `backend/server.py` — new endpoints (all `/api/`):
+  - `POST /admin/electoral-roll/upload` — multipart, N PDFs, RBAC admin/super_admin, returns per-file summary (imported / updated / failed / processing_ms).
+  - `GET  /admin/electoral-roll/imports` — history list.
+  - `GET  /admin/electoral-roll/imports/{id}` — full details incl. errors + parsed header.
+  - `GET  /admin/electoral-roll/imports/{id}/errors.csv` — downloadable error log.
+  - `POST /auth/citizen/search-voter` — public, tenant-scoped, filters on name / relative / house / EPIC; returns only `unclaimed` records.
+  - Startup: `_ensure_electoral_indexes()` creates search indexes on `(tenant_id, epic_number)`, `(tenant_id, name)`, `(tenant_id, relative_name)`, `(tenant_id, house_number)`, `(tenant_id, part_number, serial_number)`, `(tenant_id, booth_number)`.
+- `backend/requirements.txt` — `pdfplumber==0.11.10`, `pdfminer.six==20260107`, `pypdfium2==5.11.0`.
+
+**Frontend (files):**
+- `frontend/src/pages/AdminElectoralRoll.jsx` (new) — drag-drop uploader (multiple PDFs), upload progress bar, last-import summary, import history table (Date / File / Uploaded By / Language / Part / Total / Imported / Updated / Failed / Status), Details drawer, Errors CSV download.
+- `frontend/src/pages/CitizenClaim.jsx` (new, route `/citizen/claim`) — 4-step onboarding flow:
+  1. Office Code
+  2. Search preloaded record (Name / Father-Husband-Mother / House / EPIC)
+  3. Confirm selected record + mobile + **DPDP consent checkbox**
+  4. OTP verify → activate account
+- `frontend/src/pages/CitizenLogin.jsx` — added footer link "First time here? Claim your voter record".
+- `frontend/src/components/Layout.jsx` — new sidebar entry "Electoral Roll" (admin only).
+- `frontend/src/App.js` — routes wired.
+
+**Verified end-to-end (curl):**
+- Upload → 6/6 imported (English PDF, all header fields extracted, language=english).
+- Re-upload → 0 imported / 6 updated (deduped on EPIC).
+- `search-voter` → returns unclaimed matches with all metadata.
+- `claim` → sends OTP; `activate` → mints JWT and flips `activation_status="activated"`.
+- Post-activation search excludes the now-claimed record.
+- Marathi language auto-detected; header + voter cards parsed (spot-checked via unit test on synthetic Marathi text).
+
+**Deferred (out of scope for this iteration):**
+- Staff login rate limiting (P1 launch blocker).
+- Real subscription billing integrations (Razorpay/Stripe) — P2.
+- Family module UI is unchanged: relationships are still created manually after activation (per PRD).
+

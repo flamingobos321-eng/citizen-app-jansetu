@@ -313,6 +313,15 @@ export default function CitizenLogin() {
               Sign in here
             </Link>
           </p>
+          <p className="text-center text-xs text-gray-500 mt-2">
+            First time here?{" "}
+            <Link
+              to={tenantIdent ? `/citizen/claim?office=${tenantIdent.toUpperCase()}` : "/citizen/claim"}
+              className="font-semibold" style={{ color: theme }} data-testid="goto-claim"
+            >
+              Claim your voter record
+            </Link>
+          </p>
         </div>
       </div>
     </div>

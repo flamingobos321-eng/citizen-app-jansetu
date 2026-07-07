@@ -90,7 +90,27 @@ class User(BaseModel):
     last_login_at: Optional[str] = None
     father_name: Optional[str] = None
     husband_name: Optional[str] = None
+    mother_name: Optional[str] = None       # electoral roll: relation_type=Mother
+    relation_type: Optional[Literal["Father", "Husband", "Mother", "Other"]] = None
+    relative_name: Optional[str] = None     # canonical (verbatim from electoral roll)
     age: Optional[int] = None
+    # ---- Electoral Roll fields (Election Commission of India) ----
+    # A voter card imported from an electoral roll populates these. Each voter
+    # becomes ONE independent Person; family links are NEVER inferred here.
+    epic_number: Optional[str] = None       # e.g. ABC1234567 — unique per office
+    part_number: Optional[str] = None
+    booth_number: Optional[str] = None
+    serial_number: Optional[str] = None
+    section_name: Optional[str] = None
+    polling_station_name: Optional[str] = None
+    polling_station_address: Optional[str] = None
+    assembly_constituency: Optional[str] = None
+    parliamentary_constituency: Optional[str] = None
+    state: Optional[str] = None
+    district: Optional[str] = None
+    taluka: Optional[str] = None
+    village_label: Optional[str] = None     # free-text village/city from roll header
+    electoral_import_id: Optional[str] = None  # link back to ElectoralRollImport
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -1064,4 +1084,43 @@ class KaryakartaCreate(BaseModel):
     dob: Optional[str] = None
     anniversary: Optional[str] = None
     notes: Optional[str] = None
+
+
+# ============================================================================
+# ELECTORAL ROLL IMPORT — per-file processing record + summary
+# ============================================================================
+class ElectoralRollImport(BaseModel):
+    """One row per uploaded PDF (a single Part of the roll).
+
+    * Each voter card in the PDF becomes ONE independent Person in db.users.
+    * Family relationships are NEVER inferred from the roll.
+    * Duplicate detection is keyed on (tenant_id, epic_number).
+    """
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    tenant_id: str                                # office that owns this import
+    uploaded_by: str                              # user id
+    uploaded_by_name: Optional[str] = None
+    file_name: str
+    file_size: int = 0
+    language: Optional[Literal["english", "marathi"]] = None
+    part_number: Optional[str] = None
+    booth_number: Optional[str] = None
+    assembly_constituency: Optional[str] = None
+    parliamentary_constituency: Optional[str] = None
+    state: Optional[str] = None
+    district: Optional[str] = None
+    taluka: Optional[str] = None
+    village_label: Optional[str] = None
+    total_records: int = 0
+    imported: int = 0
+    updated: int = 0
+    duplicates: int = 0
+    failed: int = 0
+    processing_ms: int = 0
+    status: Literal["processing", "completed", "failed"] = "processing"
+    errors: List[dict] = []                       # [{page, record_number, error}]
+    header: dict = {}                             # snapshot of parsed header
+    created_at: str = Field(default_factory=now_iso)
+    completed_at: Optional[str] = None
 

@@ -23,6 +23,7 @@ import {
   Timer,
   UserCog,
   Tags,
+  BookOpen,
 } from "lucide-react";
 
 const ROLE_LABEL = {
@@ -162,6 +163,7 @@ export default function Layout({ children }) {
                   <NavItem to="/app/areas" icon={Map} label="Wards & Villages" testId="nav-areas" />
                   <NavItem to="/app/staff" icon={ShieldCheck} label="Staff & Roles" testId="nav-staff" />
                   <NavItem to="/app/taxonomy" icon={Tags} label="Caste & Religion" testId="nav-taxonomy" />
+                  <NavItem to="/app/electoral-roll" icon={BookOpen} label="Electoral Roll" testId="nav-electoral-roll" />
                 </>
               )}
             </>
