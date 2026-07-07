@@ -128,3 +128,7 @@ zipp==4.1.0
 pdfminer.six==20260107
 pdfplumber==0.11.10
 pypdfium2==5.11.0
+firebase_admin==7.5.0
+google-cloud-core==2.6.0
+google-cloud-firestore==2.27.0
+google-cloud-storage==3.12.0

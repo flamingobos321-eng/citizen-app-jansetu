@@ -2,25 +2,122 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { SectionTitle, EmptyState } from "../components/Common";
-import { Bell } from "lucide-react";
+import { Bell, BellRing, BellOff, CheckCheck } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { Label } from "../components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { toast } from "sonner";
+import { enablePushNotifications } from "../lib/pushBootstrap";
+import { pushConfigured } from "../lib/push";
 
 export default function Notifications() {
   const { user } = useAuth();
   const [items, setItems] = useState([]);
+  const [inbox, setInbox] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [pushState, setPushState] = useState(() => {
+    if (typeof window === "undefined" || !("Notification" in window)) return "unsupported";
+    return Notification.permission;   // "default" | "granted" | "denied"
+  });
+
+  const loadInbox = () => {
+    api.get("/push/inbox").then((r) => {
+      setInbox(r.data.notifications || []);
+      setUnreadCount(r.data.unread_count || 0);
+    }).catch(() => { /* ignore */ });
+  };
+
   useEffect(() => {
     api.get("/notifications").then((r) => setItems(r.data));
+    loadInbox();
   }, []);
+
+  const enable = async () => {
+    const r = await enablePushNotifications();
+    if (r.registered) {
+      toast.success("Push notifications enabled");
+      setPushState("granted");
+    } else {
+      const reason = ({
+        "permission-denied": "You blocked notifications for this site. Enable them in your browser settings.",
+        "permission-refused": "Notifications permission was not granted.",
+        "firebase-not-configured": "Push notifications aren't configured on this deployment.",
+        "notifications-unsupported": "Your browser doesn't support push notifications.",
+        "messaging-unsupported": "Your browser doesn't support Firebase Cloud Messaging.",
+      })[r.reason] || `Couldn't enable push (${r.reason})`;
+      toast.error(reason);
+    }
+  };
+
+  const markAllRead = async () => {
+    await api.post("/push/inbox/read-all");
+    toast.success("All caught up");
+    loadInbox();
+  };
+
   const canCompose = ["pa", "politician", "admin"].includes(user?.role);
+  const pushBannerVisible = pushConfigured() && pushState !== "granted" && pushState !== "unsupported";
 
   return (
     <div className="space-y-6 animate-fade-up">
       <SectionTitle subtitle="Targeted alerts from your representative's office">Notifications</SectionTitle>
+
+      {pushBannerVisible && (
+        <div className="bg-[#0A1128]/5 border border-[#0A1128]/20 rounded-lg p-4 flex items-start gap-3" data-testid="push-enable-banner">
+          <BellRing className="w-5 h-5 text-[#0A1128] flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <div className="font-heading font-semibold text-gray-900">Get real-time alerts</div>
+            <p className="text-xs text-gray-600 mt-0.5">
+              Receive updates on your issues, celebrations, and important announcements even when JanSetu is closed.
+            </p>
+          </div>
+          <Button size="sm" onClick={enable} data-testid="push-enable-btn" className="bg-[#0A1128] text-white hover:opacity-90">
+            Enable notifications
+          </Button>
+        </div>
+      )}
+
+      {inbox.length > 0 && (
+        <section className="bg-white border border-gray-200 rounded-lg p-4" data-testid="push-inbox">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Bell className="w-4 h-4 text-[#0A1128]" />
+              <span className="font-heading font-semibold text-gray-900">Your inbox</span>
+              {unreadCount > 0 && (
+                <span className="text-[10px] uppercase tracking-widest font-bold bg-[#0A1128] text-white px-2 py-0.5 rounded-full">
+                  {unreadCount} new
+                </span>
+              )}
+            </div>
+            {unreadCount > 0 && (
+              <Button variant="outline" size="sm" onClick={markAllRead} data-testid="push-inbox-read-all">
+                <CheckCheck className="w-3.5 h-3.5 mr-1" /> Mark all read
+              </Button>
+            )}
+          </div>
+          <div className="divide-y divide-gray-100">
+            {inbox.slice(0, 10).map((n) => (
+              <div
+                key={n.id}
+                data-testid={`inbox-item-${n.id}`}
+                className={`py-3 flex items-start gap-3 ${!n.read ? "bg-blue-50/30 -mx-4 px-4" : ""}`}
+              >
+                {!n.read && <span className="w-2 h-2 rounded-full bg-[#0A1128] flex-shrink-0 mt-2" />}
+                {n.read && <span className="w-2 h-2 flex-shrink-0 mt-2" />}
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-gray-900 truncate">{n.title}</div>
+                  <div className="text-xs text-gray-600 mt-0.5">{n.body}</div>
+                  <div className="text-[10px] text-gray-400 uppercase tracking-widest mt-1">
+                    {new Date(n.created_at).toLocaleString()}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {canCompose && (
         <Composer onCreated={(n) => setItems((x) => [n, ...x])} />

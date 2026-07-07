@@ -141,6 +141,8 @@ export default function CitizenClaim() {
         person_id: selected.id,
         mobile, otp,
         device: navigator.userAgent.slice(0, 200),
+        dpdp_consent: consent,
+        dpdp_consent_version: "1.0",
       });
       loginWithToken(r.data.token, r.data.user);
       localStorage.setItem("jansetu_origin_portal", officeCode);

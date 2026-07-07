@@ -121,6 +121,11 @@ class User(BaseModel):
     # unless explicitly approved.
     manually_corrected_fields: Optional[List[str]] = None
     ocr_retry_count: Optional[int] = None
+    # DPDP Act 2023 (India) — mandatory consent record kept alongside the user.
+    dpdp_consent: Optional[bool] = None
+    dpdp_consent_version: Optional[str] = None
+    dpdp_consent_at: Optional[str] = None
+    dpdp_consent_ip: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -1137,4 +1142,48 @@ class ElectoralRollImport(BaseModel):
     header: dict = {}                             # snapshot of parsed header
     created_at: str = Field(default_factory=now_iso)
     completed_at: Optional[str] = None
+
+
+
+# ============================================================================
+# PUSH NOTIFICATION DEVICE TOKENS
+# ============================================================================
+class DeviceToken(BaseModel):
+    """One row per (user, device) combination.
+
+    ``platform`` is the delivery channel — web (FCM Web Push), android
+    (Capacitor + FCM), ios (future).  We de-duplicate on ``token`` so the
+    same device can never register twice.
+    """
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    user_id: str
+    tenant_id: Optional[str] = None
+    person_id: Optional[str] = None
+    token: str
+    platform: Literal["web", "android", "ios"] = "web"
+    device_info: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+    last_seen_at: str = Field(default_factory=now_iso)
+
+
+class PushNotification(BaseModel):
+    """A single push notification, delivered + persisted (Person-360 timeline).
+
+    This is separate from the ``Notification`` broadcast model — that one is
+    tenant-created public/ward broadcasts, whereas ``PushNotification`` is a
+    per-user actionable message with a `read` state.
+    """
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=new_id)
+    user_id: str
+    tenant_id: Optional[str] = None
+    title: str
+    body: str
+    kind: str = "info"                         # info / issue / celebration / broadcast
+    data: dict = {}
+    read: bool = False
+    click_action: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+    read_at: Optional[str] = None
 

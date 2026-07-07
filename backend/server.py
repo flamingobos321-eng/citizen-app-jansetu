@@ -1,6 +1,7 @@
 """JANSETU - Constituency Management Platform API."""
 import os
 import io
+import time
 import uuid
 import logging
 import asyncio
@@ -11,6 +12,7 @@ import httpx
 import otp_service
 from dataclasses import asdict as _dc_asdict
 import electoral_parser
+import push_service
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -38,6 +40,7 @@ from models import (
     FamilyInvitation, FamilyLinkRequest,
     Karyakarta, PendingKaryakarta, KaryakartaCreate,
     ElectoralRollImport,
+    DeviceToken, PushNotification,
     ISSUE_CATEGORIES, ISSUE_STATUSES, DEV_STATUSES, VISIT_STATUSES,
     now_iso, new_id,
 )
@@ -60,6 +63,27 @@ logger = logging.getLogger("jansetu")
 
 app = FastAPI(title="JANSETU API")
 api = APIRouter(prefix="/api")
+
+
+# ----------------- Rate limiting (staff login) -----------------
+# In-memory sliding-window rate limiter — 5 failed attempts per (IP, email)
+# within 15 minutes triggers a 15-minute lockout.  Guards against brute-force
+# attacks on the platform Super Admin account and tenant admin accounts.
+# NOTE: in-memory only — resets when the worker restarts. For a multi-worker
+# production deployment, back this with Redis.
+_LOGIN_RL_WINDOW: int = 15 * 60         # 15 minutes
+_LOGIN_RL_THRESHOLD: int = 5             # attempts before lockout
+_LOGIN_RL_LOCKOUT: int = 15 * 60         # lockout duration
+_login_failures: dict = {}               # rl_key -> [timestamps]
+_login_lockouts: dict = {}               # rl_key -> lockout_until_ts
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort client IP (honours common proxy headers)."""
+    fwd = request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 # ----------------- Auth helpers -----------------
@@ -254,6 +278,15 @@ async def on_start():
     await _backfill_office_codes()
     # Electoral roll search + import history indexes (idempotent).
     await _ensure_electoral_indexes()
+    # Push notification indexes (device tokens + inbox).
+    try:
+        from pymongo import ASCENDING
+        await db.device_tokens.create_index("token", unique=True, name="device_token_unique", background=True)
+        await db.device_tokens.create_index([("user_id", ASCENDING)], name="device_by_user", background=True)
+        await db.push_notifications.create_index([("user_id", ASCENDING), ("created_at", -1)],
+                                                 name="push_by_user_recent", background=True)
+    except Exception as e:
+        logger.warning(f"Push indexes deferred: {e}")
 
 
 async def _backfill_office_codes():
@@ -792,6 +825,10 @@ class CitizenActivateRequest(BaseModel):
     mobile: str
     otp: str
     device: Optional[str] = None
+    # DPDP Act 2023 — India's Digital Personal Data Protection Act requires
+    # explicit consent capture before personal data processing.
+    dpdp_consent: bool = False
+    dpdp_consent_version: Optional[str] = "1.0"
 
 
 @api.post("/auth/citizen/activate")
@@ -819,13 +856,20 @@ async def activate_citizen(payload: CitizenActivateRequest, request: Request):
         raise HTTPException(404, "Record not found")
     if person.get("activation_status") == "activated":
         raise HTTPException(409, "This citizen profile has already been activated.")
+    # DPDP consent gate — refuse activation unless the user checked the box.
+    if not payload.dpdp_consent:
+        raise HTTPException(400, "Consent to Terms & Privacy Policy is required to activate your account.")
     device = payload.device or (request.headers.get("user-agent") or "")[:200]
     now = now_iso()
     await db.users.update_one(
         {"id": payload.person_id},
         {"$set": {"mobile": payload.mobile, "is_active": True,
                   "activation_status": "activated", "activated_at": now,
-                  "activation_device": device, "last_login_at": now}},
+                  "activation_device": device, "last_login_at": now,
+                  "dpdp_consent": True,
+                  "dpdp_consent_version": payload.dpdp_consent_version or "1.0",
+                  "dpdp_consent_at": now,
+                  "dpdp_consent_ip": _client_ip(request)}},
     )
     await db.otps.delete_one({"mobile": payload.mobile, "tenant_slug": payload.office_code, "context": "claim"})
     await _audit("citizen.activated", None,
@@ -1777,26 +1821,59 @@ async def citizen_register(payload: CitizenRegister):
 
 
 @api.post("/auth/staff/login")
-async def staff_login(payload: StaffLogin):
+async def staff_login(payload: StaffLogin, request: Request):
     """Staff login endpoint. Archived portals reject all new logins EXCEPT
     for super_admin — this lets platform operators still access archived
     portals to run diagnostics or restore them.
+
+    Rate limited: 5 failed attempts per (client IP + email) within 15 minutes
+    triggers a 15-minute lockout. Prevents brute-force attacks against the
+    platform Super Admin account and tenant admin accounts.
     """
+    email = payload.email.strip().lower()
+    client_ip = _client_ip(request)
+    rl_key = f"{client_ip}|{email}"
+
+    lock_until = _login_lockouts.get(rl_key)
+    now = time.time()
+    if lock_until and lock_until > now:
+        remaining = int(lock_until - now)
+        raise HTTPException(
+            429, f"Too many failed attempts. Try again in {remaining // 60}m {remaining % 60}s.",
+        )
+    elif lock_until:
+        _login_lockouts.pop(rl_key, None)
+
     # First pass: peek at the user record (without portal validation) so we can
     # detect super_admin and let them through.
-    q_probe = {"email": payload.email.strip().lower(), "role": {"$ne": "citizen"}}
+    q_probe = {"email": email, "role": {"$ne": "citizen"}}
     probe = await db.users.find_one(q_probe, {"role": 1, "tenant_id": 1})
     is_super = bool(probe and probe.get("role") == "super_admin")
     tid = await _resolve_tenant_id(
         payload.tenant_slug,
         allow_archived_for_super_admin=is_super,
     )
-    q = {"email": payload.email.strip().lower(), "role": {"$ne": "citizen"}}
+    q = {"email": email, "role": {"$ne": "citizen"}}
     if tid:
         q["tenant_id"] = tid
     user = await db.users.find_one(q)
     if not user or not verify_password(payload.password, user.get("password_hash", "")):
+        # Record failure + potentially lock out.
+        attempts = _login_failures.setdefault(rl_key, [])
+        attempts.append(now)
+        # Prune attempts older than the window.
+        _login_failures[rl_key] = [t for t in attempts if now - t < _LOGIN_RL_WINDOW]
+        if len(_login_failures[rl_key]) >= _LOGIN_RL_THRESHOLD:
+            _login_lockouts[rl_key] = now + _LOGIN_RL_LOCKOUT
+            _login_failures.pop(rl_key, None)
+            await _audit("auth.staff.locked_out", None,
+                         {"email": email, "ip": client_ip, "lockout_seconds": _LOGIN_RL_LOCKOUT})
         raise HTTPException(401, "Invalid credentials")
+
+    # Success — clear counters.
+    _login_failures.pop(rl_key, None)
+    _login_lockouts.pop(rl_key, None)
+
     user.pop("_id", None)
     user.pop("password_hash", None)
     token = create_token(user["id"], user["role"], user.get("tenant_id"))
@@ -2365,6 +2442,177 @@ async def list_notifs(user: dict = Depends(get_current_user)):
             {"scope": "user", "user_ids": user["id"]},
         ]
     return await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+
+
+# ============================================================================
+# PUSH NOTIFICATIONS — Device tokens + delivery + in-app inbox
+# ============================================================================
+# Design:
+#   1. Client (Web / Android via Capacitor) obtains an FCM registration token
+#      and POSTs it to `/push/register`.
+#   2. Server persists (user_id, token, platform) — deduped on token.
+#   3. Server-side notification events (issue update, celebration reminder,
+#      etc.) call `_push_to_user(user_id, ...)` which fans out to all of the
+#      user's device tokens AND persists a `push_notifications` row for the
+#      in-app inbox (`GET /push/inbox`).
+#   4. Invalid tokens returned by FCM are auto-pruned.
+# ============================================================================
+class DeviceTokenRegister(BaseModel):
+    token: str
+    platform: Literal["web", "android", "ios"] = "web"
+    device_info: Optional[str] = None
+
+
+@api.post("/push/register")
+async def register_device_token(payload: DeviceTokenRegister,
+                                user: dict = Depends(get_current_user)):
+    """Register / refresh a device's push token. Idempotent per token."""
+    if not payload.token or len(payload.token) < 10:
+        raise HTTPException(400, "Invalid device token")
+    row = await db.device_tokens.find_one({"token": payload.token}, {"_id": 0, "id": 1})
+    now = now_iso()
+    if row:
+        await db.device_tokens.update_one(
+            {"id": row["id"]},
+            {"$set": {"user_id": user["id"], "tenant_id": user.get("tenant_id"),
+                      "person_id": user.get("person_id"),
+                      "platform": payload.platform,
+                      "device_info": payload.device_info,
+                      "last_seen_at": now}},
+        )
+        return {"id": row["id"], "status": "refreshed"}
+    d = DeviceToken(
+        user_id=user["id"],
+        tenant_id=user.get("tenant_id"),
+        person_id=user.get("person_id"),
+        token=payload.token,
+        platform=payload.platform,
+        device_info=payload.device_info,
+    )
+    await db.device_tokens.insert_one(d.model_dump())
+    return {"id": d.id, "status": "registered"}
+
+
+@api.delete("/push/register")
+async def unregister_device_token(token: str,
+                                  user: dict = Depends(get_current_user)):
+    """De-register a specific device token (e.g. on logout)."""
+    await db.device_tokens.delete_one({"token": token, "user_id": user["id"]})
+    return {"ok": True}
+
+
+@api.get("/push/inbox")
+async def push_inbox(unread_only: bool = False,
+                     limit: int = 100,
+                     user: dict = Depends(get_current_user)):
+    """User's in-app push notification inbox."""
+    q: dict = {"user_id": user["id"]}
+    if unread_only:
+        q["read"] = False
+    rows = await db.push_notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(min(limit, 500)).to_list(min(limit, 500))
+    unread_count = await db.push_notifications.count_documents({"user_id": user["id"], "read": False})
+    return {"notifications": rows, "unread_count": unread_count}
+
+
+@api.post("/push/inbox/{notif_id}/read")
+async def push_mark_read(notif_id: str, user: dict = Depends(get_current_user)):
+    await db.push_notifications.update_one(
+        {"id": notif_id, "user_id": user["id"]},
+        {"$set": {"read": True, "read_at": now_iso()}},
+    )
+    return {"ok": True}
+
+
+@api.post("/push/inbox/read-all")
+async def push_mark_all_read(user: dict = Depends(get_current_user)):
+    now = now_iso()
+    r = await db.push_notifications.update_many(
+        {"user_id": user["id"], "read": False},
+        {"$set": {"read": True, "read_at": now}},
+    )
+    return {"updated": r.modified_count}
+
+
+async def _push_to_user(user_id: str, title: str, body: str,
+                       kind: str = "info", data: Optional[dict] = None,
+                       click_action: Optional[str] = None) -> dict:
+    """Fan out a notification to all of a user's registered device tokens AND
+    persist a row for the in-app inbox. Prunes invalid tokens returned by FCM.
+    """
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "tenant_id": 1})
+    inbox_row = PushNotification(
+        user_id=user_id,
+        tenant_id=u.get("tenant_id") if u else None,
+        title=title, body=body, kind=kind,
+        data=data or {},
+        click_action=click_action,
+    )
+    await db.push_notifications.insert_one(inbox_row.model_dump())
+
+    tokens = [t["token"] async for t in db.device_tokens.find({"user_id": user_id}, {"_id": 0, "token": 1})]
+    if not tokens:
+        return {"delivered_to": 0, "inbox_only": True, "mode": push_service.current_mode()}
+
+    result = push_service.send(tokens, title, body, data=data, click_action=click_action)
+    # Prune invalid tokens.
+    if result.get("invalid_tokens"):
+        await db.device_tokens.delete_many({"token": {"$in": result["invalid_tokens"]}})
+    return {
+        "delivered_to": result["success"],
+        "failed": result["failure"],
+        "inbox_id": inbox_row.id,
+        "mode": push_service.current_mode(),
+    }
+
+
+@api.post("/push/test")
+async def push_test(user: dict = Depends(require_roles("admin", "super_admin"))):
+    """Admin-only — send a test push to the current admin's own devices."""
+    r = await _push_to_user(
+        user["id"],
+        title="JanSetu test notification",
+        body="If you see this, push notifications are working correctly.",
+        kind="info",
+        click_action="/app",
+    )
+    return r
+
+
+class PushBroadcastRequest(BaseModel):
+    title: str
+    body: str
+    role: Optional[Literal["citizen", "karyakarta", "admin", "pa"]] = None
+    ward_id: Optional[str] = None
+    village_id: Optional[str] = None
+    click_action: Optional[str] = None
+
+
+@api.post("/push/broadcast")
+async def push_broadcast(payload: PushBroadcastRequest,
+                        user: dict = Depends(require_roles("admin", "super_admin"))):
+    """Send a push notification to all users matching the given filter within
+    the admin's tenant. Persists an inbox row per user."""
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    q: dict = {}
+    if tid:
+        q["tenant_id"] = tid
+    if payload.role:
+        q["role"] = payload.role
+    if payload.ward_id:
+        q["ward_id"] = payload.ward_id
+    if payload.village_id:
+        q["village_id"] = payload.village_id
+    users = await db.users.find(q, {"_id": 0, "id": 1}).to_list(10000)
+    delivered = 0
+    for u in users:
+        r = await _push_to_user(u["id"], payload.title, payload.body,
+                              kind="broadcast", click_action=payload.click_action)
+        delivered += r.get("delivered_to", 0)
+    await _audit("push.broadcast", user,
+                 {"tenant_id": tid, "matched_users": len(users),
+                  "delivered": delivered, "title": payload.title})
+    return {"matched_users": len(users), "delivered": delivered,
+            "mode": push_service.current_mode()}
 
 
 # ----------------- DEV WORKS -----------------
