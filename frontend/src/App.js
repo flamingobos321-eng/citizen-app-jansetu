@@ -31,6 +31,7 @@ import PersonProfile from "./pages/PersonProfile";
 import AdminKaryakartas from "./pages/AdminKaryakartas";
 import AdminTaxonomy from "./pages/AdminTaxonomy";
 import AdminElectoralRoll from "./pages/AdminElectoralRoll";
+import AdminElectoralReview from "./pages/AdminElectoralReview";
 import PortalIndex from "./portal/PortalIndex";
 import PortalHome from "./portal/PortalHome";
 import ChangePassword from "./pages/ChangePassword";
@@ -125,6 +126,7 @@ export default function App() {
           <Route path="/app/karyakartas" element={<TenantGuard><AdminKaryakartas /></TenantGuard>} />
           <Route path="/app/taxonomy" element={<TenantGuard><AdminTaxonomy /></TenantGuard>} />
           <Route path="/app/electoral-roll" element={<TenantGuard><AdminElectoralRoll /></TenantGuard>} />
+          <Route path="/app/electoral-roll/review" element={<TenantGuard><AdminElectoralReview /></TenantGuard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>

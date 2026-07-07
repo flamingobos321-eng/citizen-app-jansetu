@@ -942,21 +942,56 @@ async def _process_electoral_pdf(import_row: ElectoralRollImport, pdf_bytes: byt
     import_row.header = _dc_asdict(header)
 
     tid = import_row.tenant_id
-    imported = updated = duplicates = failed = 0
+    complete = partial = failed = imported = updated = 0
 
     for v in result.voters:
-        if not v.epic_number:
-            # Cards without an EPIC cannot be safely de-duplicated — record as failed.
-            import_row.errors.append({"page": v._page, "record_number": v.serial_number,
-                                      "error": "missing EPIC"})
-            failed += 1
-            continue
         try:
-            # Duplicate detection: (tenant_id, epic_number).
-            existing = await db.users.find_one(
-                {"tenant_id": tid, "role": "citizen", "epic_number": v.epic_number},
-                {"_id": 0, "id": 1, "activation_status": 1},
-            )
+            # ---- Classify: critical (name/age/gender) vs non-critical fields ----
+            missing_critical: List[str] = []
+            if not v.full_name:
+                missing_critical.append("name")
+            if not v.age:
+                missing_critical.append("age")
+            if not v.gender:
+                missing_critical.append("gender")
+
+            missing_optional: List[str] = []
+            if not v.epic_number:
+                missing_optional.append("epic")
+            if not v.house_number:
+                missing_optional.append("house")
+            if not v.relative_name:
+                missing_optional.append("relative_name")
+
+            if missing_critical:
+                status = "failed"
+            elif missing_optional:
+                status = "partial"
+            else:
+                status = "complete"
+
+            # ---- Dedupe strategy ----
+            # 1. If EPIC present → dedupe on (tenant, epic).
+            # 2. Else → dedupe on (tenant, lowercased name + age + relative_name).
+            #    This guards against re-runs of the same PDF creating duplicates
+            #    when EPIC is unreadable but the name+age fingerprint matches.
+            existing = None
+            if v.epic_number:
+                existing = await db.users.find_one(
+                    {"tenant_id": tid, "role": "citizen", "epic_number": v.epic_number},
+                    {"_id": 0, "id": 1, "manually_corrected_fields": 1},
+                )
+            elif v.full_name:
+                fp = (v.full_name or "").strip().lower()
+                q = {
+                    "tenant_id": tid, "role": "citizen",
+                    "name": {"$regex": f"^{re.escape(fp)}$", "$options": "i"},
+                    "age": v.age,
+                }
+                if v.relative_name:
+                    q["relative_name"] = {"$regex": f"^{re.escape(v.relative_name)}$", "$options": "i"}
+                existing = await db.users.find_one(q, {"_id": 0, "id": 1, "manually_corrected_fields": 1})
+
             payload = {
                 "role": "citizen",
                 "tenant_id": tid,
@@ -982,26 +1017,56 @@ async def _process_electoral_pdf(import_row: ElectoralRollImport, pdf_bytes: byt
                 "village_label": v.village,
                 "electoral_import_id": import_row.id,
                 "preloaded": True,
+                "import_status": status,
+                "import_missing_fields": (missing_critical + missing_optional) or None,
             }
-            # Drop None values so we don't overwrite existing good data with blanks on re-import.
+            # Drop None values so we don't overwrite existing good data with
+            # blanks on re-import. Also NEVER touch manually_corrected fields.
             payload = {k: val for k, val in payload.items() if val is not None}
 
             if existing:
-                # Never regress activation state — only patch demographic fields.
-                await db.users.update_one({"id": existing["id"]}, {"$set": payload})
-                # Whether this counts as "updated" vs "duplicate": if nothing
-                # actually changed we could count as duplicate.  For simplicity
-                # we count all upserts of an already-present EPIC as updated,
-                # and reserve "duplicates" for the case where the same EPIC
-                # appeared twice inside THIS pdf (see set below).
+                # Reimport rule: only fill missing fields; never overwrite a
+                # field the admin manually corrected.
+                protected = set(existing.get("manually_corrected_fields") or [])
+                # Also never overwrite existing non-null values with the new payload.
+                existing_full = await db.users.find_one({"id": existing["id"]}, {"_id": 0})
+                only_missing = {}
+                for k, val in payload.items():
+                    if k in protected:
+                        continue
+                    if existing_full and existing_full.get(k) not in (None, "", "Unknown"):
+                        # Keep existing value — reimport must not overwrite.
+                        continue
+                    only_missing[k] = val
+                # But always refresh import_status if it improves.
+                # (e.g. complete beats partial beats failed)
+                ranking = {"failed": 0, "partial": 1, "complete": 2}
+                if ranking.get(status, 0) > ranking.get(existing_full.get("import_status") if existing_full else None, -1):
+                    only_missing["import_status"] = status
+                    only_missing["import_missing_fields"] = payload.get("import_missing_fields")
+                if only_missing:
+                    await db.users.update_one({"id": existing["id"]}, {"$set": only_missing})
                 updated += 1
+                if status == "complete":
+                    complete += 1
+                elif status == "partial":
+                    partial += 1
+                else:
+                    failed += 1
             else:
                 new_user = User(**payload)
-                # Preloaded voter — inactive account until citizen claims.
                 new_user.is_active = False
                 new_user.activation_status = "unclaimed"
                 await db.users.insert_one(new_user.model_dump())
                 imported += 1
+                if status == "complete":
+                    complete += 1
+                elif status == "partial":
+                    partial += 1
+                else:
+                    failed += 1
+                    import_row.errors.append({"page": v._page, "record_number": v.serial_number,
+                                              "error": "missing critical: " + ",".join(missing_critical)})
         except Exception as e:
             failed += 1
             import_row.errors.append({"page": v._page, "record_number": v.serial_number,
@@ -1012,17 +1077,20 @@ async def _process_electoral_pdf(import_row: ElectoralRollImport, pdf_bytes: byt
         import_row.errors.append({"page": e.page, "record_number": e.record_number, "error": e.error})
 
     import_row.total_records = len(result.voters)
+    import_row.complete = complete
+    import_row.partial = partial
+    import_row.failed = failed
     import_row.imported = imported
     import_row.updated = updated
-    import_row.duplicates = duplicates
-    import_row.failed = failed
+    import_row.duplicates = 0
     import_row.status = "completed"
     import_row.completed_at = now_iso()
     import_row.processing_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
     await db.electoral_roll_imports.update_one({"id": import_row.id}, {"$set": import_row.model_dump()})
     await _audit("electoral.imported", user,
                  {"tenant_id": tid, "file_name": import_row.file_name,
-                  "imported": imported, "updated": updated, "failed": failed,
+                  "complete": complete, "partial": partial, "failed": failed,
+                  "imported": imported, "updated": updated,
                   "language": import_row.language})
     return import_row
 
@@ -1149,6 +1217,9 @@ async def search_voter(payload: VoterSearchRequest):
         "tenant_id": tid,
         "role": "citizen",
         "activation_status": "unclaimed",
+        # Failed records lack critical identity — never expose them for claim.
+        # Partial records ARE searchable (EPIC not mandatory for claim).
+        "import_status": {"$ne": "failed"},
     }
     if payload.epic_number:
         q["epic_number"] = payload.epic_number.strip().upper()
@@ -1164,7 +1235,7 @@ async def search_voter(payload: VoterSearchRequest):
          "mother_name": 1, "relation_type": 1, "relative_name": 1,
          "age": 1, "gender": 1, "house_number": 1, "epic_number": 1,
          "serial_number": 1, "part_number": 1, "booth_number": 1,
-         "activation_status": 1},
+         "activation_status": 1, "import_status": 1},
     ).limit(80).to_list(80)
 
     if payload.relative_name and payload.relative_name.strip():
@@ -1177,6 +1248,131 @@ async def search_voter(payload: VoterSearchRequest):
                       + " " + (r.get("mother_name") or "").lower())
         ]
     return {"matches": rows[:20], "total": len(rows)}
+
+
+# --------------------------------------------------------------------------
+# Manual Review Queue — office admin fixes partial/failed voter records.
+# --------------------------------------------------------------------------
+@api.get("/admin/electoral-roll/review")
+async def list_review_queue(
+    status: Optional[str] = None,       # "partial" | "failed" | None (both)
+    missing: Optional[str] = None,      # "epic" | "house" | "relative_name" | "name" | "age" | "gender"
+    q: Optional[str] = None,            # free-text name / relative search
+    limit: int = 100,
+    user: dict = Depends(require_roles("admin", "super_admin")),
+):
+    """List preloaded voters that need attention (partial or failed)."""
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    if not tid:
+        raise HTTPException(400, "Super admin must operate within an office")
+
+    query: dict = {
+        "tenant_id": tid,
+        "role": "citizen",
+        "preloaded": True,
+    }
+    if status in ("partial", "failed"):
+        query["import_status"] = status
+    else:
+        query["import_status"] = {"$in": ["partial", "failed"]}
+    if missing:
+        query["import_missing_fields"] = missing
+    if q and q.strip():
+        term = re.escape(q.strip())
+        query["$or"] = [
+            {"name": {"$regex": term, "$options": "i"}},
+            {"relative_name": {"$regex": term, "$options": "i"}},
+        ]
+
+    rows = await db.users.find(
+        query,
+        {"_id": 0, "id": 1, "name": 1, "age": 1, "gender": 1,
+         "relative_name": 1, "relation_type": 1, "house_number": 1,
+         "epic_number": 1, "part_number": 1, "booth_number": 1, "serial_number": 1,
+         "import_status": 1, "import_missing_fields": 1,
+         "manually_corrected_fields": 1, "activation_status": 1,
+         "electoral_import_id": 1, "created_at": 1},
+    ).sort("created_at", -1).limit(min(limit, 500)).to_list(min(limit, 500))
+
+    # Bucket counts (independent of current filter).
+    base = {"tenant_id": tid, "role": "citizen", "preloaded": True}
+    counts = {
+        "partial": await db.users.count_documents({**base, "import_status": "partial"}),
+        "failed": await db.users.count_documents({**base, "import_status": "failed"}),
+        "complete": await db.users.count_documents({**base, "import_status": "complete"}),
+    }
+    return {"records": rows, "counts": counts}
+
+
+class ReviewPatch(BaseModel):
+    name: Optional[str] = None
+    age: Optional[int] = None
+    gender: Optional[Literal["Male", "Female", "Other"]] = None
+    epic_number: Optional[str] = None
+    house_number: Optional[str] = None
+    relative_name: Optional[str] = None
+    relation_type: Optional[Literal["Father", "Husband", "Mother", "Other"]] = None
+
+
+@api.patch("/admin/electoral-roll/review/{person_id}")
+async def edit_review_record(
+    person_id: str,
+    patch: ReviewPatch,
+    user: dict = Depends(require_roles("admin", "super_admin")),
+):
+    """Edit a partial/failed voter record. All edited fields are marked as
+    ``manually_corrected_fields`` so future re-imports will never overwrite them.
+    Re-classifies the record's ``import_status`` after the edit."""
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"id": person_id, "role": "citizen", "preloaded": True}
+    if tid:
+        query["tenant_id"] = tid
+    row = await db.users.find_one(query, {"_id": 0})
+    if not row:
+        raise HTTPException(404, "Voter record not found")
+
+    updates: dict = {}
+    corrected: set = set(row.get("manually_corrected_fields") or [])
+    for k, v in patch.model_dump(exclude_none=True).items():
+        if k == "epic_number":
+            v = (v or "").strip().upper()
+        elif isinstance(v, str):
+            v = v.strip()
+        if v == "" or v is None:
+            continue
+        updates[k] = v
+        corrected.add(k)
+        # Sync father/husband/mother mirror fields.
+        if k == "relative_name" and (patch.relation_type or row.get("relation_type")):
+            rel = patch.relation_type or row.get("relation_type")
+            if rel == "Father":
+                updates["father_name"] = v
+            elif rel == "Husband":
+                updates["husband_name"] = v
+            elif rel == "Mother":
+                updates["mother_name"] = v
+
+    if not updates:
+        raise HTTPException(400, "No editable fields provided")
+
+    # Re-classify import_status after edit.
+    merged = {**row, **updates}
+    missing_critical = [f for f in ("name", "age", "gender") if not merged.get(f)]
+    missing_optional = [f for f in ("epic_number", "house_number", "relative_name") if not merged.get(f)]
+    if missing_critical:
+        updates["import_status"] = "failed"
+    elif missing_optional:
+        updates["import_status"] = "partial"
+    else:
+        updates["import_status"] = "complete"
+    updates["import_missing_fields"] = (missing_critical + missing_optional) or None
+    updates["manually_corrected_fields"] = sorted(corrected)
+
+    await db.users.update_one({"id": person_id}, {"$set": updates})
+    await _audit("electoral.review.edited", user,
+                 {"person_id": person_id, "fields": list(updates.keys()),
+                  "new_status": updates["import_status"]})
+    return {"id": person_id, "updated": updates}
 
 
 @api.get("/meta/categories")

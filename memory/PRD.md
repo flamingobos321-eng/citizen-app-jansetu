@@ -392,3 +392,58 @@ Part 1).
 - `backend/electoral_parser.py` — OCR pipeline (grid detection, crop-per-card, memory-conscious page streaming).
 - `backend/server.py` — `POST /admin/electoral-roll/upload` moved to background-async.
 - `frontend/src/pages/AdminElectoralRoll.jsx` — status polling, "Files queued" UI in place of instant summary.
+
+## ELECTORAL ROLL IMPORT MODULE — v1.3.2 (2026-02-07) — "Import Everyone" policy
+
+Overhauled the import policy per PRD: **never skip a voter**. Even if OCR
+cannot recover EPIC, house number, or relative name, the Person record is
+still created — classified as *partial* (searchable) or *failed* (identity
+missing → manual review). Goal: build the largest possible constituency
+Person database.
+
+**Import Status classification:**
+- `complete` — all critical + non-critical fields extracted.
+- `partial` — critical identity present (name / age / gender) but at least one of EPIC / house / relative name is missing. **Still searchable by citizens for claim.**
+- `failed` — critical identity missing → routed to Manual Review Queue. NOT searchable by citizens.
+
+**OCR retry (per PRD):**
+- If EPIC is missing after the first OCR pass on a card, the parser upscales the card crop 2× and re-OCRs it once with `--psm 6`. Opportunistically backfills any other missing fields from the higher-DPI pass.
+
+**Reimport policy:**
+- Existing records are only patched with *missing* fields — non-null values are never overwritten.
+- Fields the admin has manually corrected are tracked in `manually_corrected_fields` on the User document and are **skipped entirely on re-import**.
+- `import_status` is upgraded (failed → partial → complete) as new data arrives.
+- Dedupe: (tenant, EPIC) when EPIC exists; else (tenant, name+age+relative_name fingerprint).
+
+**New endpoints:**
+- `GET /admin/electoral-roll/review?status=partial|failed&missing=epic|house|relative_name|name|age|gender&q=<text>` — filtered review queue with per-bucket counts.
+- `PATCH /admin/electoral-roll/review/{person_id}` — edit any of name / age / gender / EPIC / house / relative_name / relation_type. Marks the edited fields as `manually_corrected_fields`, re-classifies `import_status` after the edit.
+- `POST /auth/citizen/search-voter` — now excludes `import_status="failed"` records (safety) but returns *partial* records normally (EPIC is not mandatory for claiming).
+
+**New frontend page:**
+- `frontend/src/pages/AdminElectoralReview.jsx` at `/app/electoral-roll/review`:
+  - 3 count cards (Complete / Partial / Failed) at the top.
+  - Partial vs Failed tabs.
+  - Filter chips: "All", "Missing EPIC", "Missing House", "Missing Relative" (in Partial) or "Missing Name / Age / Gender" (in Failed).
+  - Free-text search by name / relative.
+  - Table shows missing-field badges, edited-fields indicator, per-row Edit button.
+  - Edit modal with pre-filled values, saves via PATCH; toasts the new status.
+- `frontend/src/pages/AdminElectoralRoll.jsx` — history table now shows Complete / Partial / Failed / Updated columns (previously Imported / Updated / Failed). Header has a "Manual Review" button linking to the review page.
+
+**Model changes:**
+- `User` now carries: `import_status` (complete|partial|failed), `import_missing_fields` (list), `manually_corrected_fields` (list), `ocr_retry_count`.
+- `ElectoralRollImport` counters: added `complete` / `partial`; kept `failed` / `imported` / `updated` for backwards compatibility.
+
+**Real ECI PDF verification (English 4-page Rahuri 223 Part 1):**
+- Total voters: **59** (up from previous 43 — none skipped now).
+- Complete: 3 · Partial: 55 · Failed: 1.
+- Manual edit of the 1 failed record via `PATCH /review/{id}` → status flipped to `complete`, `manually_corrected_fields=[age, epic_number, gender, name]`. Re-uploading the same PDF preserves the admin's edits.
+
+**Files changed in v1.3.2:**
+- `backend/models.py`
+- `backend/electoral_parser.py` (OCR retry, always-return-partial policy)
+- `backend/server.py` (`_process_electoral_pdf` classification, `/review` GET + PATCH, `/search-voter` failed-exclusion)
+- `frontend/src/pages/AdminElectoralRoll.jsx`
+- `frontend/src/pages/AdminElectoralReview.jsx` (new)
+- `frontend/src/App.js`
+

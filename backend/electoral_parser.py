@@ -335,7 +335,10 @@ def _parse_card(raw: str, language: str) -> Optional[VoterRecord]:
         re.search(r"Photo\s*Available|छायाचित्र|Available", raw, re.IGNORECASE),
     )
 
-    if not v.full_name and not v.epic_number:
+    # Return the record whenever we've extracted *any* identifying signal.
+    # Downstream code classifies it as complete / partial / failed based on
+    # which critical vs non-critical fields are missing.
+    if not any([v.full_name, v.epic_number, v.age, v.relative_name, v.house_number]):
         return None
     return v
 
@@ -533,9 +536,29 @@ def _ocr_extract(pdf_bytes: bytes, result: ParseResult) -> None:
                 try:
                     sub = img.crop((left, top, right, bottom))
                     raw = pytesseract.image_to_string(sub, lang="eng+mar", config=tess_cfg)
-                    sub.close()
                     lang = _detect_language(raw)
                     v = _parse_card(raw, lang)
+                    # OCR retry — if EPIC missing but we have some identifying
+                    # data, upscale 2x and retry once (per PRD requirement).
+                    if v is not None and not v.epic_number and (v.full_name or v.age):
+                        try:
+                            w, h = sub.size
+                            sub_hi = sub.resize((w * 2, h * 2))
+                            raw_hi = pytesseract.image_to_string(sub_hi, lang="eng+mar", config="--psm 6")
+                            sub_hi.close()
+                            v2 = _parse_card(raw_hi, _detect_language(raw_hi))
+                            if v2 and v2.epic_number:
+                                v.epic_number = v2.epic_number
+                            # Also opportunistically backfill other missing fields
+                            # from the higher-DPI pass.
+                            if v2:
+                                for f_ in ("full_name", "relative_name", "relation_type",
+                                           "house_number", "age", "gender", "serial_number"):
+                                    if getattr(v, f_) is None and getattr(v2, f_) is not None:
+                                        setattr(v, f_, getattr(v2, f_))
+                        except Exception:
+                            pass
+                    sub.close()
                     if not v:
                         continue
                     v._page = pn

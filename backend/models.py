@@ -111,6 +111,16 @@ class User(BaseModel):
     taluka: Optional[str] = None
     village_label: Optional[str] = None     # free-text village/city from roll header
     electoral_import_id: Optional[str] = None  # link back to ElectoralRollImport
+    # Import quality classification (Complete / Partial / Failed).
+    #   * complete — all critical + non-critical fields present
+    #   * partial  — critical fields present; missing e.g. EPIC/House/Relative Name
+    #   * failed   — critical identity missing (name/age/gender) → manual review queue
+    import_status: Optional[Literal["complete", "partial", "failed"]] = None
+    import_missing_fields: Optional[List[str]] = None
+    # Fields the admin manually corrected — reimports must NOT overwrite these
+    # unless explicitly approved.
+    manually_corrected_fields: Optional[List[str]] = None
+    ocr_retry_count: Optional[int] = None
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -1113,10 +1123,14 @@ class ElectoralRollImport(BaseModel):
     taluka: Optional[str] = None
     village_label: Optional[str] = None
     total_records: int = 0
-    imported: int = 0
-    updated: int = 0
+    # New classification counters (per PRD v1.3.2).
+    complete: int = 0       # fully-extracted voters
+    partial: int = 0        # imported but missing non-critical fields
+    failed: int = 0         # missing critical identity → manual review queue
+    # Legacy counters kept for backwards compatibility of history rows.
+    imported: int = 0       # new Person records created (complete + partial)
+    updated: int = 0        # existing Person records updated
     duplicates: int = 0
-    failed: int = 0
     processing_ms: int = 0
     status: Literal["processing", "completed", "failed"] = "processing"
     errors: List[dict] = []                       # [{page, record_number, error}]

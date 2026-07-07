@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -125,10 +126,19 @@ export default function AdminElectoralRoll() {
             Every voter becomes an independent Person — family links are never inferred.
           </p>
         </div>
-        <Button variant="outline" onClick={load} disabled={loading} data-testid="er-refresh">
-          {loading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/app/electoral-roll/review"
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-md border border-gray-300 text-sm hover:bg-gray-50"
+            data-testid="er-goto-review"
+          >
+            <ClipboardList className="w-4 h-4" /> Manual Review
+          </Link>
+          <Button variant="outline" onClick={load} disabled={loading} data-testid="er-refresh">
+            {loading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+            Refresh
+          </Button>
+        </div>
       </header>
 
       {/* Uploader */}
@@ -221,9 +231,10 @@ export default function AdminElectoralRoll() {
                   <th className="px-4 py-3">Language</th>
                   <th className="px-4 py-3">Part</th>
                   <th className="px-4 py-3 text-right">Total</th>
-                  <th className="px-4 py-3 text-right">Imported</th>
-                  <th className="px-4 py-3 text-right">Updated</th>
+                  <th className="px-4 py-3 text-right">Complete</th>
+                  <th className="px-4 py-3 text-right">Partial</th>
                   <th className="px-4 py-3 text-right">Failed</th>
+                  <th className="px-4 py-3 text-right">Updated</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3"></th>
                 </tr>
@@ -231,7 +242,7 @@ export default function AdminElectoralRoll() {
               <tbody>
                 {imports.length === 0 && !loading && (
                   <tr>
-                    <td colSpan={11} className="px-4 py-6 text-center text-sm text-gray-500" data-testid="er-empty">
+                    <td colSpan={12} className="px-4 py-6 text-center text-sm text-gray-500" data-testid="er-empty">
                       No imports yet. Upload your first Electoral Roll PDF above.
                     </td>
                   </tr>
@@ -244,9 +255,10 @@ export default function AdminElectoralRoll() {
                     <td className="px-4 py-3 text-xs uppercase">{r.language || "—"}</td>
                     <td className="px-4 py-3 text-xs">{r.part_number || "—"}</td>
                     <td className="px-4 py-3 text-right">{r.total_records}</td>
-                    <td className="px-4 py-3 text-right text-green-700 font-semibold">{r.imported}</td>
-                    <td className="px-4 py-3 text-right text-blue-700">{r.updated}</td>
-                    <td className="px-4 py-3 text-right text-red-700">{r.failed}</td>
+                    <td className="px-4 py-3 text-right text-green-700 font-semibold">{r.complete ?? 0}</td>
+                    <td className="px-4 py-3 text-right text-amber-700">{r.partial ?? 0}</td>
+                    <td className="px-4 py-3 text-right text-red-700">{r.failed ?? 0}</td>
+                    <td className="px-4 py-3 text-right text-blue-700">{r.updated ?? 0}</td>
                     <td className="px-4 py-3">
                       <StatusBadge status={r.status} />
                     </td>
@@ -255,7 +267,7 @@ export default function AdminElectoralRoll() {
                         <Button variant="outline" size="sm" onClick={() => openDetail(r.id)} data-testid={`er-detail-${r.id}`}>
                           Details
                         </Button>
-                        {r.failed > 0 && (
+                        {(r.failed > 0 || (r.errors && r.errors.length > 0)) && (
                           <Button variant="outline" size="sm" onClick={() => downloadErrors(r.id)} data-testid={`er-errors-${r.id}`}>
                             <Download className="w-3.5 h-3.5 mr-1" /> Errors CSV
                           </Button>
@@ -293,10 +305,11 @@ export default function AdminElectoralRoll() {
               <Row label="Uploaded by">{detailOpen.uploaded_by_name || "—"}</Row>
               <Row label="Processing time">{detailOpen.processing_ms} ms</Row>
               <Row label="Total records">{detailOpen.total_records}</Row>
-              <Row label="Imported">{detailOpen.imported}</Row>
-              <Row label="Updated">{detailOpen.updated}</Row>
-              <Row label="Duplicates">{detailOpen.duplicates}</Row>
-              <Row label="Failed">{detailOpen.failed}</Row>
+              <Row label="Complete">{detailOpen.complete ?? 0}</Row>
+              <Row label="Partial">{detailOpen.partial ?? 0}</Row>
+              <Row label="Failed">{detailOpen.failed ?? 0}</Row>
+              <Row label="New Persons created">{detailOpen.imported ?? 0}</Row>
+              <Row label="Existing Persons updated">{detailOpen.updated ?? 0}</Row>
             </dl>
             {(detailOpen.errors || []).length > 0 && (
               <div className="mt-6">
