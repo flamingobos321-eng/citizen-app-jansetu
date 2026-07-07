@@ -4,6 +4,7 @@ import io
 import uuid
 import logging
 import asyncio
+import re
 from datetime import datetime, timezone, timedelta
 
 import httpx
@@ -15,7 +16,7 @@ from pydantic import BaseModel
 
 import bcrypt
 import jwt
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Header, Query, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Header, Query, Response, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -587,6 +588,286 @@ async def list_leads(user: dict = Depends(get_current_user)):
         raise HTTPException(403, "Super admin only")
     rows = await db.sales_leads.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     return rows
+
+
+# ============================================================================
+# PRELOADED CITIZENS — Import → Search → Claim & Activate (v1.2+)
+# ============================================================================
+# The office imports its Electoral Roll / existing database before launch.
+# Each imported row is a "preloaded" citizen with `activation_status="unclaimed"`
+# and no mobile. Citizens claim their record during onboarding: search →
+# select → OTP → activate. Once activated, mobile + device + activated_at
+# are stored and future logins skip search entirely.
+
+
+class CitizenImportRow(BaseModel):
+    """Fields accepted per row when the office imports its citizen database.
+    All optional except `name` — offices ship varying levels of detail."""
+    name: str
+    father_name: Optional[str] = None
+    husband_name: Optional[str] = None
+    gender: Optional[str] = None
+    dob: Optional[str] = None
+    age: Optional[int] = None
+    house_number: Optional[str] = None
+    address: Optional[str] = None
+    village: Optional[str] = None       # free-text village/area label
+    ward: Optional[str] = None          # free-text ward label
+    caste: Optional[str] = None         # free-text caste (resolved to caste_id later)
+    religion: Optional[str] = None
+    mobile: Optional[str] = None        # optional — if present, auto-activate
+
+
+@api.post("/admin/citizens/import")
+async def import_citizens(rows: List[CitizenImportRow],
+                          user: dict = Depends(require_roles("admin", "super_admin"))):
+    """Bulk-import an office's citizen roll. Duplicates are avoided based on
+    (tenant_id, name, house_number/address, dob). Returns per-row status."""
+    tid = get_tenant_id_for_write(user)
+    imported, skipped, activated = 0, 0, 0
+    errors: List[dict] = []
+    for row in rows:
+        try:
+            # De-dupe: same tenant + same name + same house_number/address.
+            dedup_q = {
+                "tenant_id": tid,
+                "role": "citizen",
+                "name": row.name.strip(),
+            }
+            if row.house_number:
+                dedup_q["house_number"] = row.house_number.strip()
+            existing = await db.users.find_one(dedup_q, {"_id": 0, "id": 1})
+            if existing:
+                skipped += 1
+                continue
+            # Base user record — preloaded unless a mobile was provided.
+            u = User(
+                role="citizen",
+                tenant_id=tid,
+                name=row.name.strip(),
+                father_name=(row.father_name or "").strip() or None,
+                husband_name=(row.husband_name or "").strip() or None,
+                gender=(row.gender or "").strip() or None,
+                dob=(row.dob or "").strip() or None,
+                age=row.age,
+                house_number=(row.house_number or "").strip() or None,
+                address=(row.address or "").strip() or None,
+                mobile=(row.mobile or "").strip() or None,
+                preloaded=True,
+                is_active=bool(row.mobile),
+                activation_status="activated" if row.mobile else "unclaimed",
+                activated_at=now_iso() if row.mobile else None,
+            )
+            await db.users.insert_one(u.model_dump())
+            imported += 1
+            if row.mobile:
+                activated += 1
+        except Exception as e:
+            errors.append({"row_name": row.name, "error": str(e)})
+    await _audit("citizens.import", user,
+                 {"imported": imported, "skipped": skipped, "auto_activated": activated,
+                  "error_count": len(errors), "total": len(rows)})
+    return {"imported": imported, "skipped": skipped, "auto_activated": activated,
+            "errors": errors, "total": len(rows)}
+
+
+class CitizenSearchRequest(BaseModel):
+    office_code: str
+    name: str
+    father_or_husband: Optional[str] = None
+    village: Optional[str] = None
+    house_number: Optional[str] = None
+
+
+@api.post("/auth/citizen/search")
+async def search_citizen(payload: CitizenSearchRequest):
+    """Public endpoint used during onboarding — citizen searches the office's
+    preloaded roll to claim their record. Returns unclaimed matches only,
+    limited to 20 rows for privacy."""
+    tid = await _resolve_tenant_id(payload.office_code)
+    if not tid:
+        raise HTTPException(400, "office_code required")
+    q: dict = {
+        "tenant_id": tid,
+        "role": "citizen",
+        "activation_status": "unclaimed",
+    }
+    if payload.name:
+        # Anchored case-insensitive contains on `name`.
+        q["name"] = {"$regex": re.escape(payload.name.strip()), "$options": "i"}
+    if payload.house_number:
+        q["house_number"] = {"$regex": re.escape(payload.house_number.strip()), "$options": "i"}
+    rows = await db.users.find(
+        q,
+        {"_id": 0, "id": 1, "name": 1, "father_name": 1, "husband_name": 1,
+         "age": 1, "dob": 1, "house_number": 1, "address": 1, "village_id": 1,
+         "activation_status": 1},
+    ).limit(50).to_list(50)
+    # Optional secondary filter by father/husband/village (Python side to keep
+    # index footprint small on Mongo).
+    if payload.father_or_husband:
+        fh = payload.father_or_husband.strip().lower()
+        rows = [r for r in rows if fh in ((r.get("father_name") or "").lower() + " " + (r.get("husband_name") or "").lower())]
+    return {"matches": rows[:20], "total": len(rows)}
+
+
+class CitizenClaimRequest(BaseModel):
+    office_code: str
+    person_id: str
+    mobile: str
+
+
+@api.post("/auth/citizen/claim")
+async def claim_citizen(payload: CitizenClaimRequest):
+    """Citizen selected an unclaimed preloaded record and provided their mobile.
+    Issues an OTP tied to (mobile, office_code, person_id). Actual activation
+    happens in a follow-up verify-otp call."""
+    tid = await _resolve_tenant_id(payload.office_code)
+    person = await db.users.find_one(
+        {"id": payload.person_id, "tenant_id": tid, "role": "citizen"},
+        {"_id": 0, "id": 1, "name": 1, "activation_status": 1, "mobile": 1},
+    )
+    if not person:
+        raise HTTPException(404, "Record not found")
+    if person.get("activation_status") == "activated":
+        raise HTTPException(409, "This citizen profile has already been activated. Please contact the office if you believe this is a mistake.")
+    # If another activated user already exists with this mobile in the tenant,
+    # block — one mobile can only own one citizen record per office.
+    dup = await db.users.find_one(
+        {"tenant_id": tid, "role": "citizen", "mobile": payload.mobile,
+         "activation_status": "activated"},
+        {"_id": 0, "id": 1},
+    )
+    if dup:
+        raise HTTPException(409, "This mobile number is already linked to another activated profile in this office.")
+    # Issue an OTP (respects dev/production mode of the tenant).
+    portal = await db.portal_configs.find_one(
+        {"id": tid}, {"_id": 0, "communication_mode": 1, "otp_config": 1},
+    )
+    is_dev = not portal or (portal.get("communication_mode") or "development") != "production"
+    if is_dev:
+        otp_code = otp_service.FIXED_DEV_OTP
+        mode = "development"
+        reason = None
+    else:
+        otp_code = otp_service.generate_otp()
+        dispatch = await otp_service.send_otp(payload.mobile, otp_code, portal.get("otp_config") or {})
+        mode = "production"
+        reason = dispatch.get("reason") if not dispatch.get("delivered") else None
+        await _audit(
+            "otp.sent" if dispatch.get("delivered") else "otp.send_failed",
+            None,
+            {"tenant_id": tid, "mobile_last4": payload.mobile[-4:],
+             "provider": dispatch.get("provider"), "reason": reason,
+             "context": "claim"},
+        )
+    # Store OTP scoped to the person_id so verify can activate the correct row.
+    await db.otps.update_one(
+        {"mobile": payload.mobile, "tenant_slug": payload.office_code,
+         "context": "claim"},
+        {"$set": {"mobile": payload.mobile,
+                  "tenant_slug": payload.office_code,
+                  "otp": otp_code, "at": now_iso(), "mode": mode,
+                  "person_id": payload.person_id,
+                  "context": "claim"}},
+        upsert=True,
+    )
+    return {
+        "sent": True if is_dev else True,
+        "mode": mode,
+        "reason": reason,
+        "demo_otp": otp_code if is_dev else None,
+        "person": {"id": person["id"], "name": person["name"]},
+    }
+
+
+class CitizenActivateRequest(BaseModel):
+    office_code: str
+    person_id: str
+    mobile: str
+    otp: str
+    device: Optional[str] = None
+
+
+@api.post("/auth/citizen/activate")
+async def activate_citizen(payload: CitizenActivateRequest, request: Request):
+    """Finalises the claim: verifies OTP, links mobile→person, issues a JWT."""
+    tid = await _resolve_tenant_id(payload.office_code)
+    stored = await db.otps.find_one(
+        {"mobile": payload.mobile, "tenant_slug": payload.office_code, "context": "claim"},
+        {"_id": 0, "otp": 1, "mode": 1, "person_id": 1},
+    )
+    if not stored or stored.get("person_id") != payload.person_id:
+        raise HTTPException(400, "OTP session expired — please search again")
+    mode = stored.get("mode") or "development"
+    if mode == "production":
+        if stored.get("otp") != payload.otp:
+            raise HTTPException(400, "Invalid OTP")
+    else:
+        if not (payload.otp.isdigit() and len(payload.otp) == 6):
+            raise HTTPException(400, "Invalid OTP")
+    person = await db.users.find_one(
+        {"id": payload.person_id, "tenant_id": tid, "role": "citizen"},
+        {"_id": 0, "password_hash": 0},
+    )
+    if not person:
+        raise HTTPException(404, "Record not found")
+    if person.get("activation_status") == "activated":
+        raise HTTPException(409, "This citizen profile has already been activated.")
+    device = payload.device or (request.headers.get("user-agent") or "")[:200]
+    now = now_iso()
+    await db.users.update_one(
+        {"id": payload.person_id},
+        {"$set": {"mobile": payload.mobile, "is_active": True,
+                  "activation_status": "activated", "activated_at": now,
+                  "activation_device": device, "last_login_at": now}},
+    )
+    await db.otps.delete_one({"mobile": payload.mobile, "tenant_slug": payload.office_code, "context": "claim"})
+    await _audit("citizen.activated", None,
+                 {"tenant_id": tid, "person_id": payload.person_id,
+                  "mobile_last4": payload.mobile[-4:]})
+    # Refetch and issue JWT.
+    fresh = await db.users.find_one({"id": payload.person_id}, {"_id": 0, "password_hash": 0})
+    token = create_token(fresh["id"], "citizen", fresh.get("tenant_id"))
+    return {"token": token, "user": fresh}
+
+
+@api.get("/admin/citizens")
+async def list_citizens_by_status(
+    status: Optional[Literal["activated", "unclaimed"]] = None,
+    limit: int = 500,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    """Admin roster split by activation status.
+    - activated : citizens with `activation_status='activated'` (usually recent)
+    - unclaimed : preloaded records not yet claimed
+    - (omit)    : combined, most recent first.
+    Response items are trimmed to what the admin table needs."""
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    q: dict = {"role": "citizen"}
+    if tid:
+        q["tenant_id"] = tid
+    if status:
+        q["activation_status"] = status
+    rows = await db.users.find(
+        q,
+        {"_id": 0, "id": 1, "name": 1, "mobile": 1, "father_name": 1, "husband_name": 1,
+         "house_number": 1, "activation_status": 1, "activated_at": 1,
+         "last_login_at": 1, "preloaded": 1, "created_at": 1},
+    ).sort("activated_at", -1).limit(max(1, min(limit, 2000))).to_list(2000)
+    return rows
+
+
+@api.get("/admin/citizens/stats")
+async def citizen_activation_stats(user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician"))):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    base = {"role": "citizen"}
+    if tid:
+        base["tenant_id"] = tid
+    activated = await db.users.count_documents({**base, "activation_status": "activated"})
+    unclaimed = await db.users.count_documents({**base, "activation_status": "unclaimed"})
+    return {"activated": activated, "unclaimed": unclaimed,
+            "total": activated + unclaimed}
 
 
 @api.get("/meta/categories")
@@ -2131,7 +2412,6 @@ async def celebrations(days: int = 7, user: dict = Depends(require_roles("pa", "
 
 
 # ----------------- WHITE-LABEL PORTAL -----------------
-import re
 
 
 def _normalize_slug(s: str) -> str:
@@ -2250,7 +2530,8 @@ async def list_portals_admin(user: dict = Depends(get_current_user),
 
 
 def _generate_password(n: int = 12) -> str:
-    import secrets, string
+    import secrets
+    import string
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(n))
 
@@ -3154,8 +3435,10 @@ async def bulk_import_karyakartas(rows: List[KaryakartaCreate], user: dict = Dep
                 ward_id=row.ward_id, village_id=row.village_id,
                 dob=row.dob, anniversary=row.anniversary, notes=row.notes,
             )
-            if r.get("linked"): linked += 1
-            else: pending += 1
+            if r.get("linked"):
+                linked += 1
+            else:
+                pending += 1
         except HTTPException as e:
             errors.append({"row": row.model_dump(), "error": e.detail})
         except Exception as e:
@@ -3189,7 +3472,8 @@ async def karyakarta_celebrations(days: int = 7,
     from datetime import date
     today = date.today()
     def _bucket(d_str: str) -> Optional[int]:
-        if not d_str: return None
+        if not d_str:
+            return None
         try:
             dt = datetime.fromisoformat(d_str.split("T")[0]).date()
         except Exception:
@@ -3225,12 +3509,16 @@ async def karyakarta_celebrations(days: int = 7,
                 "user_id": k.get("user_id"), "photo": u.get("profile_photo")}
         if dob:
             d = _bucket(dob)
-            if d == 0: bday_today.append({**info, "dob": dob})
-            elif d is not None and d <= days: bday_soon.append({**info, "dob": dob, "in_days": d})
+            if d == 0:
+                bday_today.append({**info, "dob": dob})
+            elif d is not None and d <= days:
+                bday_soon.append({**info, "dob": dob, "in_days": d})
         if ann:
             d = _bucket(ann)
-            if d == 0: ann_today.append({**info, "anniversary": ann})
-            elif d is not None and d <= days: ann_soon.append({**info, "anniversary": ann, "in_days": d})
+            if d == 0:
+                ann_today.append({**info, "anniversary": ann})
+            elif d is not None and d <= days:
+                ann_soon.append({**info, "anniversary": ann, "in_days": d})
 
     bday_soon.sort(key=lambda x: x["in_days"])
     ann_soon.sort(key=lambda x: x["in_days"])

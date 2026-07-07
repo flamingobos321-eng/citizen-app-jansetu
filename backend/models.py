@@ -79,6 +79,18 @@ class User(BaseModel):
     extra_roles: List[Literal["karyakarta"]] = []
     karyakarta_designation: Optional[str] = None
     is_active: bool = True
+    # ---- Preloaded citizen / Claim-and-Activate (v1.2+) ----
+    # `preloaded=True` means the row was created by an Electoral-Roll / CSV /
+    # Excel import and is waiting for its citizen to claim + activate. When
+    # activated: mobile is set, activation_status="activated", account is live.
+    preloaded: bool = False
+    activation_status: Literal["unclaimed", "activated"] = "activated"
+    activated_at: Optional[str] = None
+    activation_device: Optional[str] = None
+    last_login_at: Optional[str] = None
+    father_name: Optional[str] = None
+    husband_name: Optional[str] = None
+    age: Optional[int] = None
     created_at: str = Field(default_factory=now_iso)
 
 
