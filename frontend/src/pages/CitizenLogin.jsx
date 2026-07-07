@@ -77,6 +77,32 @@ export default function CitizenLogin() {
     }
     setLoading(true);
     try {
+      // Gate check — is this mobile already linked to an activated citizen
+      // in this office?  If not, route to the Search & Claim flow instead of
+      // sending an OTP for a non-existent account.
+      const check = await api.post("/auth/citizen/check-mobile", {
+        mobile, tenant_slug: tenantIdent || undefined,
+      });
+      // detect_transfer_need returns:
+      //   { exists: false }                       → not linked anywhere
+      //   { exists: true, same_tenant: true }     → linked here (proceed)
+      //   { exists: true, same_tenant: false }    → linked elsewhere (transfer)
+      if (check.data.exists && check.data.same_tenant === false) {
+        toast.info("This mobile is registered in another constituency. Redirecting to transfer…");
+        setTimeout(() => navigate(`/citizen/register?mobile=${mobile}&office=${(tenantIdent || "").toUpperCase()}&transfer=1`), 1200);
+        return;
+      }
+      if (!check.data.exists) {
+        // No account for this mobile → Search & Claim flow.
+        toast.info("New mobile — let's find your voter record.");
+        navigate(
+          `/citizen/claim${tenantIdent ? `?office=${tenantIdent.toUpperCase()}` : ""}`,
+          { state: { mobile, tenant_slug: tenantIdent || null, portal } },
+        );
+        return;
+      }
+
+      // Linked in this tenant → send OTP.
       const r = await api.post("/auth/citizen/request-otp", { mobile, tenant_slug: tenantIdent || undefined });
       if (r.data.mode === "development") {
         toast.success(`OTP sent (demo: ${r.data.demo_otp})`);

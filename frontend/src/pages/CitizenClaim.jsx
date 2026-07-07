@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams, Link } from "react-router-dom";
+import { useNavigate, useSearchParams, useLocation, Link } from "react-router-dom";
 import { api, API, portalAssetUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { Button } from "../components/ui/button";
@@ -20,10 +20,11 @@ const OFFICE_CODE_RE = /^JS\d{4,}$/i;
 // Steps:
 //   1. Office Code  (auto-filled from ?office=)
 //   2. Search preloaded record (name / relative / house)
-//   3. Confirm selected record + enter mobile
+//   3. Confirm selected record + enter mobile (or pre-filled from CitizenLogin)
 //   4. OTP verify → activate account
 export default function CitizenClaim() {
   const [params] = useSearchParams();
+  const { state: navState } = useLocation();
   const navigate = useNavigate();
   const { loginWithToken } = useAuth();
 
@@ -39,7 +40,8 @@ export default function CitizenClaim() {
   const [matches, setMatches] = useState([]);
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState(null);
-  const [mobile, setMobile] = useState("");
+  // Mobile may arrive pre-filled from CitizenLogin (unified flow).
+  const [mobile, setMobile] = useState(navState?.mobile || "");
   const [otp, setOtp] = useState("");
   const [otpMode, setOtpMode] = useState(null);
   const [consent, setConsent] = useState(false);
