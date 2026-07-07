@@ -63,13 +63,21 @@ export default function AdminElectoralRoll() {
           });
         },
       });
+      toast.success(`Uploaded ${files.length} file(s) — processing in background. This can take a few minutes for scanned PDFs.`);
       setLastSummary(r.data);
-      const s = r.data.summaries || [];
-      const totalImported = s.reduce((a, x) => a + (x.imported || 0), 0);
-      const totalUpdated = s.reduce((a, x) => a + (x.updated || 0), 0);
-      const totalFailed = s.reduce((a, x) => a + (x.failed || 0), 0);
-      toast.success(`Processed ${s.length} file(s) · ${totalImported} imported · ${totalUpdated} updated · ${totalFailed} failed`);
       await load();
+      // Poll every 4s for up to 15 minutes to refresh the history table.
+      const start = Date.now();
+      const poll = async () => {
+        if (Date.now() - start > 15 * 60 * 1000) return;
+        try {
+          const r2 = await api.get("/admin/electoral-roll/imports");
+          setImports(r2.data || []);
+          const stillProcessing = (r2.data || []).some((row) => row.status === "processing");
+          if (stillProcessing) setTimeout(poll, 4000);
+        } catch (_) { /* ignore */ }
+      };
+      setTimeout(poll, 3000);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Upload failed");
     } finally {
@@ -168,25 +176,27 @@ export default function AdminElectoralRoll() {
         )}
       </div>
 
-      {/* Last summary */}
+      {/* Last upload — queued files (async background processing) */}
       {lastSummary && (
         <div className="bg-white border border-gray-200 rounded-lg p-4" data-testid="er-last-summary">
-          <div className="font-heading font-semibold text-gray-900 mb-2">Last import summary</div>
+          <div className="font-heading font-semibold text-gray-900 mb-2">Files queued for processing</div>
+          <p className="text-xs text-gray-500 mb-2">
+            Processing runs in the background — scanned PDFs are OCR&apos;d page-by-page and can take several minutes.
+            The Import history table below refreshes automatically.
+          </p>
           <div className="grid sm:grid-cols-2 gap-2">
-            {(lastSummary.summaries || []).map((s) => (
+            {(lastSummary.queued || []).map((s) => (
               <div key={s.id || s.file_name} className="border border-gray-200 rounded-md p-3">
                 <div className="flex items-center gap-2 text-sm font-medium truncate">
-                  {s.status === "completed" ? <CheckCircle2 className="w-4 h-4 text-green-600" /> : <XCircle className="w-4 h-4 text-red-600" />}
+                  {s.status === "processing"
+                    ? <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+                    : s.status === "completed"
+                    ? <CheckCircle2 className="w-4 h-4 text-green-600" />
+                    : <XCircle className="w-4 h-4 text-red-600" />}
                   <span className="truncate">{s.file_name}</span>
                 </div>
                 <div className="text-[11px] text-gray-500 mt-1 uppercase tracking-widest">
-                  {s.language} · Part {s.part_number || "—"} · {s.processing_ms}ms
-                </div>
-                <div className="grid grid-cols-4 gap-2 mt-2 text-xs">
-                  <Stat label="Total" value={s.total_records} />
-                  <Stat label="Imported" value={s.imported} tone="green" />
-                  <Stat label="Updated" value={s.updated} tone="blue" />
-                  <Stat label="Failed" value={s.failed} tone={s.failed > 0 ? "red" : "gray"} />
+                  {s.status}{s.error ? ` · ${s.error}` : ""}
                 </div>
               </div>
             ))}

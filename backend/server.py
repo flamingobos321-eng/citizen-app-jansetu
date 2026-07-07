@@ -1034,12 +1034,15 @@ async def upload_electoral_rolls(
 ):
     """Upload one or more Electoral Roll PDFs.
 
+    Processing is **asynchronous** — the endpoint creates one import row per
+    file with `status="processing"`, kicks off OCR in a background task, and
+    returns immediately with the import ids. Poll ``GET /imports/{id}`` for
+    completion status (updated to `completed` or `failed`).
+
     * Language is auto-detected (English or Marathi).
     * Each voter card becomes ONE independent Person; family relationships are
       NEVER inferred from the roll.
-    * Duplicates are keyed on (tenant_id, EPIC) — repeat uploads UPDATE, never
-      create duplicate people.
-    * Returns per-file import summary rows.
+    * Duplicates are keyed on (tenant_id, EPIC) — repeat uploads UPDATE.
     """
     if not files:
         raise HTTPException(400, "At least one PDF file is required")
@@ -1048,14 +1051,14 @@ async def upload_electoral_rolls(
         raise HTTPException(400, "Super admin must operate within an office (open the office admin panel)")
     await _ensure_electoral_indexes()
 
-    summaries: List[dict] = []
+    started: List[dict] = []
     for f in files:
         raw = await f.read()
         if not raw:
-            summaries.append({"file_name": f.filename, "status": "failed", "error": "empty file"})
+            started.append({"file_name": f.filename, "status": "failed", "error": "empty file"})
             continue
         if not (f.filename or "").lower().endswith(".pdf"):
-            summaries.append({"file_name": f.filename, "status": "failed", "error": "not a PDF"})
+            started.append({"file_name": f.filename, "status": "failed", "error": "not a PDF"})
             continue
         import_row = ElectoralRollImport(
             tenant_id=tid,
@@ -1066,21 +1069,14 @@ async def upload_electoral_rolls(
             status="processing",
         )
         await db.electoral_roll_imports.insert_one(import_row.model_dump())
-        import_row = await _process_electoral_pdf(import_row, raw, user)
-        summaries.append({
+        started.append({
             "id": import_row.id,
             "file_name": import_row.file_name,
-            "language": import_row.language,
-            "part_number": import_row.part_number,
-            "total_records": import_row.total_records,
-            "imported": import_row.imported,
-            "updated": import_row.updated,
-            "duplicates": import_row.duplicates,
-            "failed": import_row.failed,
-            "processing_ms": import_row.processing_ms,
-            "status": import_row.status,
+            "status": "processing",
         })
-    return {"summaries": summaries, "total_files": len(files)}
+        # Fire-and-forget — OCR on a scanned 34-page ECI PDF can take minutes.
+        asyncio.create_task(_process_electoral_pdf(import_row, raw, user))
+    return {"queued": started, "total_files": len(files)}
 
 
 @api.get("/admin/electoral-roll/imports")

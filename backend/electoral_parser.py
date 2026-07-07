@@ -114,7 +114,22 @@ _DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 
 
 def _detect_language(text: str) -> str:
-    return "marathi" if _DEVANAGARI_RE.search(text or "") else "english"
+    """Return "marathi" only if Devanagari is a *meaningful* share of the text.
+
+    OCR of English cards sometimes emits stray Devanagari glyphs; requiring at
+    least 3 characters AND ≥15% of the alphabetic content avoids misrouting
+    English cards to the Marathi regex table.
+    """
+    if not text:
+        return "english"
+    dev = _DEVANAGARI_RE.findall(text)
+    if len(dev) < 3:
+        return "english"
+    latin = re.findall(r"[A-Za-z]", text)
+    total = len(dev) + len(latin)
+    if total and len(dev) / total >= 0.15:
+        return "marathi"
+    return "english"
 
 
 # ---------------------------------------------------------------------------
@@ -196,10 +211,18 @@ def _extract_header(header_text: str, language: str) -> RollHeader:
     h = RollHeader(language=language)
     for field_name, pat in _HEADER_PATTERNS:
         if getattr(h, field_name) is not None:
-            continue  # first non-empty match wins
+            continue
         m = pat.search(header_text or "")
         if m:
             val = m.group(1).strip().rstrip(",;")
+            # Trim at first newline / obvious label bleed-through.
+            val = re.split(r"\n|(?:\s{2,}(?:No|Part|Section|Booth|Male|Female|Total)\.?\s*:)", val)[0].strip()
+            # Strip trailing Devanagari OCR noise on English fields.
+            if language == "english":
+                val = re.sub(r"\s+[\u0900-\u097F].*$", "", val).strip()
+            val = val.strip(" -:.,;+|")
+            if not val:
+                continue
             if field_name in ("total_male", "total_female", "total_voters"):
                 try:
                     setattr(h, field_name, int(val))
@@ -229,7 +252,13 @@ def _split_cards(page_text: str) -> List[str]:
 
 
 def _parse_card(raw: str, language: str) -> Optional[VoterRecord]:
-    """Extract fields from a single card's raw text (text-layer or OCR)."""
+    """Extract fields from a single card's raw text (text-layer or OCR).
+
+    ECI PDFs are scanned images and OCR often garbles the "Name" / "नाव" label
+    into things like "== |=]" or "मोड" (because it's rendered next to a boxed
+    serial number). We fall back to: **first non-empty line after the first
+    ``:`` or ``>``** as the person's name.
+    """
     if not raw or not raw.strip():
         return None
     v = VoterRecord(_language=language)
@@ -248,22 +277,47 @@ def _parse_card(raw: str, language: str) -> Optional[VoterRecord]:
         if sn:
             v.serial_number = sn.group(1)
 
-    name_pat = _NAME_MR if language == "marathi" else _NAME_EN
-    m = name_pat.search(raw)
-    if m:
-        v.full_name = _clean(m.group(1))
+    # ---- Full name ----
+    # Try both language regex tables and take the first successful match.
+    for pat in (_NAME_EN, _NAME_MR):
+        m = pat.search(raw)
+        if m:
+            v.full_name = _clean_name(m.group(1))
+            if v.full_name:
+                break
+    # Fallback for scanned OCR — first non-empty line, take text after first
+    # colon / gt-arrow (which is where the "Name" label used to be).
+    if not v.full_name:
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            m2 = re.search(r"[:>]\s*(.+)$", line)
+            if m2:
+                candidate = _clean_name(m2.group(1))
+                if candidate and _looks_like_name(candidate):
+                    v.full_name = candidate
+                    break
 
-    rel_pat = _MARATHI_REL if language == "marathi" else _ENGLISH_REL
-    m = rel_pat.search(raw)
-    if m:
-        rel_label = m.group(1).strip().lower()
-        v.relative_name = _clean(m.group(2))
-        v.relation_type = _normalize_relation(rel_label)
+    # ---- Relation + relative name ----
+    for pat in (_ENGLISH_REL, _MARATHI_REL):
+        m = pat.search(raw)
+        if m:
+            rel_label = m.group(1).strip().lower()
+            v.relative_name = _clean_name(m.group(2))
+            v.relation_type = _normalize_relation(rel_label)
+            if v.relative_name:
+                break
 
+    # ---- House number ----
     m = HOUSE_RE.search(raw)
     if m:
-        v.house_number = _clean(m.group(1))
+        cand = _clean(m.group(1))
+        # Reject OCR bleed-through like "Photo H", "छायाचित्र" etc.
+        if cand and not re.match(r"^(?:Photo|छायाचित्र|Available|उपलब्ध|H|A)\s*[A-Z]?$", cand, re.IGNORECASE):
+            v.house_number = cand
 
+    # ---- Age ----
     m = AGE_RE.search(raw)
     if m:
         try:
@@ -271,19 +325,56 @@ def _parse_card(raw: str, language: str) -> Optional[VoterRecord]:
         except ValueError:
             pass
 
+    # ---- Gender ----
     if GENDER_FEMALE.search(raw):
         v.gender = "Female"
     elif GENDER_MALE.search(raw):
         v.gender = "Male"
 
-    # Photo Available heuristic — "Photo Available" (English) or "छायाचित्र उपलब्ध" (Marathi).
     v.photo_available = bool(
-        re.search(r"Photo\s*Available|छायाचित्र", raw, re.IGNORECASE),
+        re.search(r"Photo\s*Available|छायाचित्र|Available", raw, re.IGNORECASE),
     )
 
     if not v.full_name and not v.epic_number:
         return None
     return v
+
+
+def _clean_name(s: Optional[str]) -> Optional[str]:
+    """Normalize a name string extracted via label match OR OCR fallback."""
+    if s is None:
+        return None
+    # OCR often trails 'Photo', 'House Number', 'Age', 'K', 'H', 'A' — strip
+    # single-letter and known-label suffixes.
+    s = re.sub(r"\s+", " ", s).strip(" -:;,ः|")
+    s = re.sub(
+        r"\s*(?:Photo|House|Age|Gender|छायाचित्र|घर|वय|लिंग|Available|उपलब्ध)"
+        r"(?:\s*[:.\-].*)?$", "", s, flags=re.IGNORECASE).strip()
+    # Drop trailing lone punctuation & tiny OCR ghost chars.
+    s = re.sub(r"[|]+$", "", s).strip()
+    s = re.sub(r"\s+[A-Za-z]$", "", s)  # e.g. "Name X K" → "Name X"
+    # Strip leading/trailing parenthesized OCR noise like "(280)".
+    s = re.sub(r"^\(.*?\)\s*", "", s).strip()
+    s = re.sub(r"\s*\(.*?\)$", "", s).strip()
+    # Also strip unclosed OCR noise like "(280" mid-string.
+    s = re.sub(r"\s*\(\d+\s*", " ", s).strip()
+    # Trim trailing "+", "|", stray single chars.
+    s = re.sub(r"[+|]+$", "", s).strip()
+    s = re.sub(r"\s+", " ", s)
+    return s or None
+
+
+def _looks_like_name(s: str) -> bool:
+    """Cheap heuristic to reject junk lines when matching by fallback."""
+    if not s or len(s) < 3:
+        return False
+    # Must contain letters, not just digits/symbols.
+    if not re.search(r"[A-Za-z\u0900-\u097F]", s):
+        return False
+    # Reject if it's mostly digits.
+    letters = len(re.findall(r"[A-Za-z\u0900-\u097F]", s))
+    digits = len(re.findall(r"\d", s))
+    return letters >= digits
 
 
 def _clean(s: Optional[str]) -> Optional[str]:
@@ -390,72 +481,78 @@ def _find_card_grid(data: Dict[str, list], img_size: Tuple[int, int]) -> List[Tu
 def _ocr_extract(pdf_bytes: bytes, result: ParseResult) -> None:
     """Populate result.header and result.voters via OCR crop-per-card.
 
-    Uses Tesseract with `eng+mar` — language is picked automatically per card
-    from the detected script.
+    **Memory-conscious**: pages are converted one-at-a-time (`first_page` /
+    `last_page` slicing) and released immediately after each page's cards are
+    extracted. Otherwise a 34-page ECI roll materialises ~500 MB of PIL images
+    simultaneously and OOMs the container.
     """
     if not _OCR_AVAILABLE:
         result.errors.append(ParseError(error="OCR mode unavailable (pytesseract/pdf2image missing)"))
         return
 
-    try:
-        pages = convert_from_bytes(pdf_bytes, dpi=250)
-    except Exception as e:
-        result.errors.append(ParseError(error=f"pdf2image failed: {e}"))
-        return
+    dpi = 200
+    tess_cfg = "--psm 6"
 
-    result.pages = len(pages)
+    # Discover total pages using pdfplumber (cheap; no rendering).
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            total_pages = len(pdf.pages)
+    except Exception as e:
+        result.errors.append(ParseError(error=f"page-count failed: {e}"))
+        return
+    result.pages = total_pages
     result.mode = "ocr"
 
-    # Header — full-page OCR of first 2 pages.
-    header_text_parts = []
-    for pn in range(min(2, len(pages))):
-        try:
-            header_text_parts.append(pytesseract.image_to_string(pages[pn], lang="eng+mar"))
-        except Exception as e:
-            result.errors.append(ParseError(page=pn + 1, error=f"header OCR failed: {e}"))
-    header_text = "\n".join(header_text_parts)
+    # -------- Header: convert & OCR first 2 pages only --------
+    try:
+        header_pages = convert_from_bytes(pdf_bytes, dpi=dpi, first_page=1, last_page=min(2, total_pages))
+        header_text = "\n".join(pytesseract.image_to_string(p, lang="eng+mar", config=tess_cfg) for p in header_pages)
+        for p in header_pages:
+            p.close()
+        del header_pages
+    except Exception as e:
+        result.errors.append(ParseError(error=f"header OCR failed: {e}"))
+        header_text = ""
     result.language = _detect_language(header_text)
     result.header = _extract_header(header_text, result.language)
 
-    # Voter cards — page 3 onwards typically holds cards. But some PDFs have
-    # cards from page 2. We iterate every page and simply skip pages with no
-    # Name anchors.
-    for pn, img in enumerate(pages, start=1):
+    # -------- Voter cards: page-by-page --------
+    for pn in range(1, total_pages + 1):
+        try:
+            page_imgs = convert_from_bytes(pdf_bytes, dpi=dpi, first_page=pn, last_page=pn)
+        except Exception as e:
+            result.errors.append(ParseError(page=pn, error=f"page render failed: {e}"))
+            continue
+        if not page_imgs:
+            continue
+        img = page_imgs[0]
         try:
             data = _ocr_page_words(img, "eng+mar")
+            boxes = _find_card_grid(data, img.size)
+            for (left, top, right, bottom) in boxes:
+                try:
+                    sub = img.crop((left, top, right, bottom))
+                    raw = pytesseract.image_to_string(sub, lang="eng+mar", config=tess_cfg)
+                    sub.close()
+                    lang = _detect_language(raw)
+                    v = _parse_card(raw, lang)
+                    if not v:
+                        continue
+                    v._page = pn
+                    v._language = lang
+                    for f_ in ("state", "district", "taluka", "village",
+                               "assembly_constituency", "parliamentary_constituency",
+                               "booth_number", "part_number", "section_name"):
+                        if getattr(v, f_) is None and getattr(result.header, f_) is not None:
+                            setattr(v, f_, getattr(result.header, f_))
+                    result.voters.append(v)
+                except Exception as e:
+                    result.errors.append(ParseError(page=pn, error=f"card OCR failed: {e}"))
         except Exception as e:
             result.errors.append(ParseError(page=pn, error=f"page OCR failed: {e}"))
-            continue
-        boxes = _find_card_grid(data, img.size)
-        if not boxes:
-            # Try page-level header re-extraction (later pages sometimes carry
-            # section names). No voter cards here.
-            page_text = " ".join(w for w in data["text"] if w).strip()
-            if result.header.state is None:
-                result.header = _extract_header(page_text, result.language)
-            continue
-
-        for (left, top, right, bottom) in boxes:
-            try:
-                sub = img.crop((left, top, right, bottom))
-                # Two-pass OCR: try eng first for Latin-heavy card text, then
-                # eng+mar for cards that clearly hold Devanagari.
-                raw = pytesseract.image_to_string(sub, lang="eng+mar")
-                lang = _detect_language(raw)
-                v = _parse_card(raw, lang)
-                if not v:
-                    continue
-                v._page = pn
-                v._language = lang
-                # Fill location context from header.
-                for f_ in ("state", "district", "taluka", "village",
-                           "assembly_constituency", "parliamentary_constituency",
-                           "booth_number", "part_number", "section_name"):
-                    if getattr(v, f_) is None and getattr(result.header, f_) is not None:
-                        setattr(v, f_, getattr(result.header, f_))
-                result.voters.append(v)
-            except Exception as e:
-                result.errors.append(ParseError(page=pn, error=f"card OCR failed: {e}"))
+        finally:
+            img.close()
+            del page_imgs, img
 
 
 # ---------------------------------------------------------------------------

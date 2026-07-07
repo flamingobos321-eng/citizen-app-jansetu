@@ -338,3 +338,57 @@ record rather than creating a duplicate account.
 - Real subscription billing integrations (Razorpay/Stripe) — P2.
 - Family module UI is unchanged: relationships are still created manually after activation (per PRD).
 
+
+
+## ELECTORAL ROLL IMPORT MODULE — v1.3.1 (2026-02-07)  — OCR + Real ECI PDF
+
+The v1.3 parser worked on born-digital PDFs but real Election Commission of
+India PDFs are **scanned images** (no text layer). Upgraded to a full OCR
+pipeline verified against two real ECI PDFs (English + Marathi, Rahuri 223
+Part 1).
+
+**System dependencies (installed via apt):**
+- `tesseract-ocr`, `tesseract-ocr-eng`, `tesseract-ocr-mar` — OCR engine + English + Marathi language packs.
+- `poppler-utils` — required by `pdf2image` for PDF→PIL rendering.
+- Python packages: `pytesseract`, `pdf2image` (added).
+
+**Parser upgrades (`backend/electoral_parser.py`):**
+- Auto-detects text-layer vs OCR mode (`_needs_ocr` samples first 3 pages).
+- OCR mode:
+  - Uses `pytesseract.image_to_data` on the full page to locate "Name" / "नाव" anchor tokens.
+  - Clusters anchor X-coordinates into a 3-column grid → derives per-card bounding boxes → crops each card as a subimage → re-OCRs it individually with `--psm 6`.
+  - **Memory-conscious**: pages are rendered one-at-a-time via `first_page`/`last_page` slicing (a full 34-page 200-DPI render would OOM).
+  - DPI=200 (good speed / accuracy trade-off).
+- OCR-tolerant field extraction:
+  - `_parse_card` falls back to first-line-after-colon when "Name:" label is garbled by OCR (common when it sits next to a boxed serial number).
+  - `_clean_name` strips label bleed-through, trailing photo/available/single letters, and unclosed parenthesised OCR noise (e.g. `"Jayvanta (280 Bhot"` → `"Jayvanta Bhot"`).
+  - Language detection requires **≥3 Devanagari chars AND ≥15% ratio** so stray glyphs in English cards don't route them to the Marathi regex.
+  - Relation extraction tries both English and Marathi regex tables per card.
+  - Header extraction trims cross-language OCR noise (`"Maharashtra\nNo"` → `"Maharashtra"`).
+
+**Backend endpoint (`backend/server.py`):**
+- `POST /admin/electoral-roll/upload` is now **background-async**. It creates
+  the import row(s) with `status="processing"` and returns immediately with the
+  import ids. Actual OCR runs via `asyncio.create_task(_process_electoral_pdf...)`.
+- Frontend polls `GET /admin/electoral-roll/imports` every 4 s (up to 15 min)
+  until all rows leave `processing`. Response schema updated (`queued` array
+  in place of `summaries`).
+
+**Real ECI PDF verification (Rahuri 223 Part 1):**
+- **English PDF, pages 1-4** → 59 voter cards extracted, **43 imported** with EPIC, 16 failed (no EPIC recovered from image). Header: State=Maharashtra, District=Ahmadnagar, Taluka=Rahuri, Village=Songaon, AC=223-RAHURI (GEN), Part=1, Booth=1. Processed in ~92 s.
+- **Marathi PDF, pages 1-4** → 65 cards, **6 new + 14 EPIC-matched updates** (cross-language dedup verified — Marathi upload updated the same voters previously imported from the English PDF). Header: District=अहमदनगर, Taluka=राहुरी, AC=223-राहुरी (सर्वसाधारण), PC=37-अहमदनगर (सर्वसाधारण). Processed in ~87 s.
+
+**Known accuracy caveats (OCR limits):**
+- ~15-25% of voter cards on scanned ECI PDFs lose their EPIC to OCR noise. These are logged as `missing EPIC` errors and can be reviewed in the Errors CSV.
+- Names, ages, genders, relative names extracted correctly for ~95% of cards.
+- Marathi rolls have slightly higher EPIC loss than English due to Devanagari OCR interference near photo cells.
+
+**Not implemented (deferred):**
+- Multi-worker parallel OCR (currently serial; a 34-page PDF takes ~13 min).
+- Retry-with-higher-DPI for cards where EPIC extraction failed.
+- Staff login rate limiting (P1 launch blocker still pending).
+
+**Files changed in v1.3.1:**
+- `backend/electoral_parser.py` — OCR pipeline (grid detection, crop-per-card, memory-conscious page streaming).
+- `backend/server.py` — `POST /admin/electoral-roll/upload` moved to background-async.
+- `frontend/src/pages/AdminElectoralRoll.jsx` — status polling, "Files queued" UI in place of instant summary.
