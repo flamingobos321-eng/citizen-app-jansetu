@@ -13,13 +13,14 @@ try {
   importScripts("https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js");
   importScripts("https://www.gstatic.com/firebasejs/10.14.0/firebase-messaging-compat.js");
 
-  // ---- REPLACE-ME: paste your Firebase web app config below ----
+  // ---- Firebase web app config (jansetu-c8b85) ----
   const firebaseConfig = {
-    apiKey: "REPLACE_ME",
-    authDomain: "REPLACE_ME.firebaseapp.com",
-    projectId: "REPLACE_ME",
-    messagingSenderId: "REPLACE_ME",
-    appId: "REPLACE_ME",
+    apiKey: "AIzaSyDVMKM2iQKAW9AGPomTh_pEFRmJbvq8hlo",
+    authDomain: "jansetu-c8b85.firebaseapp.com",
+    projectId: "jansetu-c8b85",
+    storageBucket: "jansetu-c8b85.firebasestorage.app",
+    messagingSenderId: "1001872155963",
+    appId: "1:1001872155963:web:2f29e7e13ff1021eb2031e",
   };
   if (firebaseConfig.apiKey !== "REPLACE_ME") {
     firebase.initializeApp(firebaseConfig);
