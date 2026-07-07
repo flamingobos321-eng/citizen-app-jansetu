@@ -872,6 +872,16 @@ async def activate_citizen(payload: CitizenActivateRequest, request: Request):
                   "dpdp_consent_ip": _client_ip(request)}},
     )
     await db.otps.delete_one({"mobile": payload.mobile, "tenant_slug": payload.office_code, "context": "claim"})
+    # Ensure V2 Person record exists + link back to this User (person_id).
+    # Preloaded voter rows don't have a persons/ row until first activation.
+    try:
+        pid = await v2dw.ensure_person_for_user(db, {**person, "mobile": payload.mobile,
+                                                    "is_active": True,
+                                                    "activation_status": "activated"})
+        if pid:
+            await db.users.update_one({"id": payload.person_id}, {"$set": {"person_id": pid}})
+    except Exception:
+        logger.exception(f"v2 person link failed for user={payload.person_id}")
     await _audit("citizen.activated", None,
                  {"tenant_id": tid, "person_id": payload.person_id,
                   "mobile_last4": payload.mobile[-4:]})
