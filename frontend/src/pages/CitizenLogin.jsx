@@ -115,7 +115,12 @@ export default function CitizenLogin() {
         return;
       }
       if (r.data.new_user) {
-        navigate("/citizen/register", { state: { mobile, tenant_slug: tenantIdent || null, portal } });
+        // No user account for this mobile → route to the new "Search & Claim"
+        // preloaded-voter onboarding flow (not the legacy open-register page).
+        toast.info("Let's find your voter record to activate your account.");
+        navigate(`/citizen/claim${tenantIdent ? `?office=${tenantIdent.toUpperCase()}` : ""}`, {
+          state: { mobile, tenant_slug: tenantIdent || null, portal },
+        });
       } else {
         loginWithToken(r.data.token, r.data.user);
         if (tenantIdent) localStorage.setItem("jansetu_origin_portal", tenantIdent);
