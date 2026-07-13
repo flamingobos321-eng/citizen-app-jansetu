@@ -72,6 +72,17 @@ class _FCMAdapter:
         # Deduplicate to protect against duplicate registrations.
         tokens = list(dict.fromkeys(tokens))
 
+        # WebpushFCMOptions.link REQUIRES an absolute https:// URL — turn
+        # relative click_actions like "/app/notifications" into full URLs
+        # anchored on the deployment's public origin.
+        webpush_link = None
+        if msg.click_action:
+            if msg.click_action.startswith("http://") or msg.click_action.startswith("https://"):
+                webpush_link = msg.click_action
+            else:
+                origin = os.environ.get("PUBLIC_APP_URL") or os.environ.get("REACT_APP_BACKEND_URL") or "https://jansetu.in"
+                webpush_link = origin.rstrip("/") + ("/" + msg.click_action.lstrip("/"))
+
         msg_obj = fcm.MulticastMessage(
             tokens=tokens,
             notification=fcm.Notification(title=msg.title, body=msg.body),
@@ -84,7 +95,7 @@ class _FCMAdapter:
                 ),
             ),
             webpush=fcm.WebpushConfig(
-                fcm_options=fcm.WebpushFCMOptions(link=msg.click_action or "/"),
+                fcm_options=fcm.WebpushFCMOptions(link=webpush_link) if webpush_link else None,
             ),
         )
         resp = fcm.send_each_for_multicast(msg_obj)
