@@ -1,0 +1,681 @@
+"""
+Auth flow tests: staff login + citizen OTP (request & verify) + citizen register.
+
+Run with:
+    cd /path/to/workspace && pytest tests/test_auth_flow.py -v
+
+The tests use FastAPI's TestClient backed by an in-memory mock MongoDB so
+they work without MONGO_URL / a live database.  All network calls to the
+real DB are intercepted via unittest.mock patching.
+"""
+import os
+import sys
+import types
+import pytest
+import bcrypt
+import jwt
+from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, timezone, timedelta
+
+# ---------------------------------------------------------------------------
+# Bootstrap: inject dummy env vars BEFORE importing server so the module
+# load doesn't fail on missing MONGO_URL / DB_NAME / JWT_SECRET.
+# ---------------------------------------------------------------------------
+_TEST_JWT_SECRET = "test-secret-do-not-use-in-prod"
+
+os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
+os.environ.setdefault("DB_NAME", "jansetu_test")
+os.environ.setdefault("JWT_SECRET", _TEST_JWT_SECRET)
+
+# ---------------------------------------------------------------------------
+# Stub out heavy optional imports that may not be installed in this env
+# ---------------------------------------------------------------------------
+def _stub_module(name: str):
+    """Register an empty stub module so `import name` succeeds."""
+    mod = types.ModuleType(name)
+    sys.modules[name] = mod
+    return mod
+
+
+# motor.motor_asyncio — patch before anything imports it
+_motor_pkg = _stub_module("motor")
+_motor_async = _stub_module("motor.motor_asyncio")
+
+
+class _FakeCollection:
+    """Minimal async collection stub used for the happy-path tests."""
+
+    def __init__(self, store: dict):
+        self._store = store  # {"collection_name": [docs]}
+
+    def find_one(self, query, projection=None):
+        coro = AsyncMock()
+        return coro
+
+    def find(self, query=None, projection=None):
+        m = MagicMock()
+        m.to_list = AsyncMock(return_value=[])
+        m.sort = MagicMock(return_value=m)
+        m.limit = MagicMock(return_value=m)
+        return m
+
+    def insert_one(self, doc):
+        return AsyncMock(return_value=None)()
+
+    def insert_many(self, docs):
+        return AsyncMock(return_value=None)()
+
+    def update_one(self, q, upd, **kw):
+        return AsyncMock(return_value=MagicMock(modified_count=1, upserted_id=None))()
+
+    def update_many(self, q, upd, **kw):
+        return AsyncMock(return_value=MagicMock(modified_count=0))()
+
+    def count_documents(self, q):
+        return AsyncMock(return_value=0)()
+
+    def create_index(self, *a, **kw):
+        return AsyncMock(return_value="idx")()
+
+    def find_one_and_update(self, q, upd, **kw):
+        return AsyncMock(return_value={"seq": 1})()
+
+    def delete_one(self, q):
+        return AsyncMock(return_value=None)()
+
+
+class _FakeDB:
+    def __getattr__(self, name):
+        return _FakeCollection({})
+
+    def __getitem__(self, name):
+        return _FakeCollection({})
+
+
+class _FakeClient:
+    def __getitem__(self, name):
+        return _FakeDB()
+
+
+_motor_async.AsyncIOMotorClient = MagicMock(return_value=_FakeClient())
+
+# Also stub push_service, storage_util, v2_dualwrite, v2_transfer which have
+# optional heavy deps (firebase-admin, boto3, etc.)
+for _mod in ("push_service", "storage_util", "v2_dualwrite", "v2_transfer",
+             "v2_visibility", "electoral_parser"):
+    _m = _stub_module(_mod)
+    # attach the symbols server.py references from these modules
+    _m.init_storage = MagicMock()
+    _m.put_object = AsyncMock()
+    _m.get_object = AsyncMock()
+    _m.APP_NAME = "jansetu"
+    _m.ensure_person_for_user = AsyncMock(return_value=None)
+    _m.resolve_active_membership = AsyncMock(return_value=None)
+    _m.detect_transfer_need = AsyncMock(return_value={"exists": False})
+    _m.initiate_transfer = AsyncMock(return_value={})
+    _m.verify_and_execute_transfer = AsyncMock(return_value={})
+    _m.get_person_membership_history = AsyncMock(return_value=[])
+
+# ---------------------------------------------------------------------------
+# Now we can safely import the FastAPI app
+# ---------------------------------------------------------------------------
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+# Import must happen AFTER env vars + stubs are set up
+from fastapi.testclient import TestClient  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Helper: build a real bcrypt hash (cheap in tests — small cost rounds)
+# ---------------------------------------------------------------------------
+def _hash(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode(), bcrypt.gensalt(rounds=4)).decode()
+
+
+# ---------------------------------------------------------------------------
+# Fixtures — per-test patches so each test is independent
+# ---------------------------------------------------------------------------
+
+ADMIN_HASH = _hash("admin123")
+PA_HASH = _hash("pa123")
+WORKER_HASH = _hash("worker123")
+
+_DEMO_USERS = {
+    "admin@jansetu.in": {
+        "id": "uid-admin",
+        "role": "super_admin",
+        "name": "Super Admin",
+        "email": "admin@jansetu.in",
+        "password_hash": ADMIN_HASH,
+        "tenant_id": None,
+    },
+    "pa@jansetu.in": {
+        "id": "uid-pa",
+        "role": "pa",
+        "name": "Priya Deshmukh",
+        "email": "pa@jansetu.in",
+        "password_hash": PA_HASH,
+        "tenant_id": "tenant-001",
+    },
+    "worker1@jansetu.in": {
+        "id": "uid-worker1",
+        "role": "worker",
+        "name": "Suresh Kale",
+        "email": "worker1@jansetu.in",
+        "password_hash": WORKER_HASH,
+        "tenant_id": "tenant-001",
+    },
+}
+
+_DEMO_CITIZEN = {
+    "id": "uid-citizen-001",
+    "role": "citizen",
+    "name": "Ramesh Sharma",
+    "mobile": "9999900001",
+    "tenant_id": "tenant-001",
+    "household_id": "hh-001",
+    "is_active": True,
+}
+
+_DEMO_PORTAL = {
+    "id": "tenant-001",
+    "slug": "pune-cantonment",
+    "is_active": True,
+    "is_default": True,
+    "communication_mode": "development",
+    "portal_status": "active",
+    "otp_config": {},
+}
+
+_DEMO_AREA = {
+    "id": "area-ward-1",
+    "kind": "ward",
+    "name": "Ward 1 - Camp",
+    "region_type": "urban",
+    "constituency_id": "cons-001",
+}
+
+
+def _make_db_mock():
+    """Return a db-like object whose collection.find_one is wired to
+    return sensible demo data for the auth paths.
+
+    Inserts are tracked in _store so subsequent find_one calls by id can
+    return the just-inserted document (needed for citizen registration).
+    """
+    _store: dict = {}  # {"collection_name": {doc_id: doc}}
+
+    class _Col:
+        def __init__(self, name):
+            self._name = name
+
+        def _stored(self, doc_id):
+            return _store.get(self._name, {}).get(doc_id)
+
+        async def find_one(self, query, projection=None):
+            if self._name == "users":
+                # --- id-based lookup (used by get_current_user after JWT decode) ---
+                user_id = query.get("id")
+                if user_id:
+                    # Check tracked inserts first (newly registered citizens)
+                    stored = self._stored(user_id)
+                    if stored:
+                        result = dict(stored)
+                        if projection and projection.get("password_hash") == 0:
+                            result.pop("password_hash", None)
+                        return result
+                    # match against demo users by id
+                    for u in _DEMO_USERS.values():
+                        if u["id"] == user_id:
+                            result = dict(u)
+                            if projection and projection.get("password_hash") == 0:
+                                result.pop("password_hash", None)
+                            return result
+                    if user_id == _DEMO_CITIZEN["id"]:
+                        return dict(_DEMO_CITIZEN)
+                    return None
+
+                email = query.get("email")
+                if email and email in _DEMO_USERS:
+                    u = dict(_DEMO_USERS[email])
+                    # Honour projection: strip password_hash if excluded
+                    if projection and projection.get("password_hash") == 0:
+                        u.pop("password_hash", None)
+                    return u
+                mobile = query.get("mobile")
+                if mobile == "9999900001" and query.get("role") == "citizen":
+                    return dict(_DEMO_CITIZEN)
+                # Duplicate mobile check during registration (is_active=True existing citizen)
+                if mobile == "9999900001" and query.get("is_active") is True:
+                    return dict(_DEMO_CITIZEN)
+                # Any other mobile → new (no duplicate) → return None
+                if mobile and query.get("is_active") is True:
+                    return None
+                # Probe query used in staff login (checks role != citizen)
+                if email and query.get("role", {}).get("$ne") == "citizen":
+                    if email in _DEMO_USERS:
+                        return {k: v for k, v in _DEMO_USERS[email].items()
+                                if k in ("id", "role", "tenant_id")}
+                return None
+
+            if self._name == "households":
+                hh_id = query.get("id")
+                if hh_id:
+                    # Return tracked insert first (newly created household)
+                    stored = self._stored(hh_id)
+                    if stored:
+                        return dict(stored)
+                    # Fallback synthetic record so the endpoint can always return a household
+                    return {
+                        "id": hh_id,
+                        "tenant_id": "tenant-001",
+                        "household_code": "H-10001",
+                        "family_head_name": "Test Citizen",
+                        "address": "1 Test Street",
+                        "house_number": "1",
+                        "region_type": "urban",
+                        "ward_id": "area-ward-1",
+                        "members_count": 1,
+                    }
+                return None
+
+            if self._name == "portal_configs":
+                if query.get("is_default") is True:
+                    return dict(_DEMO_PORTAL)
+                if query.get("slug") == "pune-cantonment":
+                    return dict(_DEMO_PORTAL)
+                if query.get("id") == "tenant-001":
+                    return dict(_DEMO_PORTAL)
+                return None
+
+            if self._name == "system_meta":
+                # multi_tenant already migrated (version=1) → skip migration
+                if query.get("_id") == "multi_tenant":
+                    return {"version": 1}
+                if query.get("_id") == "v2_schema":
+                    return {"version": 2}
+                return None
+
+            if self._name == "otps":
+                # Return a stored dev-mode OTP for mobile 9999900001
+                if query.get("mobile") == "9999900001":
+                    return {"otp": "123456", "mode": "development"}
+                return None
+
+            if self._name == "areas":
+                return dict(_DEMO_AREA)
+
+            return None
+
+        def find(self, query=None, projection=None):
+            m = MagicMock()
+            if self._name == "areas":
+                m.to_list = AsyncMock(return_value=[dict(_DEMO_AREA)])
+            elif self._name == "portal_configs":
+                m.to_list = AsyncMock(return_value=[])
+            else:
+                m.to_list = AsyncMock(return_value=[])
+            m.sort = MagicMock(return_value=m)
+            m.limit = MagicMock(return_value=m)
+            return m
+
+        async def count_documents(self, q):
+            if self._name == "users" and q.get("role") == "admin":
+                # Return 1 so startup skips seeding
+                return 1
+            if self._name == "portal_configs":
+                return 1
+            return 0
+
+        async def insert_one(self, doc):
+            # Track the inserted doc so find_one can retrieve it by id
+            doc_id = doc.get("id") or doc.get("_id")
+            if doc_id:
+                _store.setdefault(self._name, {})[doc_id] = dict(doc)
+            return MagicMock(inserted_id=doc_id or "fake-id")
+
+        async def insert_many(self, docs):
+            for doc in docs:
+                doc_id = doc.get("id") or doc.get("_id")
+                if doc_id:
+                    _store.setdefault(self._name, {})[doc_id] = dict(doc)
+            return MagicMock()
+
+        async def update_one(self, q, upd, **kw):
+            return MagicMock(modified_count=1, upserted_id=None)
+
+        async def update_many(self, q, upd, **kw):
+            return MagicMock(modified_count=0)
+
+        async def find_one_and_update(self, q, upd, **kw):
+            return {"seq": 1}
+
+        async def delete_one(self, q):
+            return MagicMock()
+
+        async def create_index(self, *a, **kw):
+            return "idx_name"
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _DB:
+        def __getattr__(self, name):
+            return _Col(name)
+
+        def __getitem__(self, name):
+            return _Col(name)
+
+    return _DB()
+
+
+# ---------------------------------------------------------------------------
+# Build the TestClient once with the db patched
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def client():
+    """Create a TestClient with the database patched to our in-memory mock."""
+    import server  # noqa — imported here after env/stubs set up
+
+    fake_db = _make_db_mock()
+    with patch.object(server, "db", fake_db):
+        # Also patch push_service so startup doesn't error
+        with patch.object(server, "init_storage", MagicMock()):
+            yield TestClient(server.app, raise_server_exceptions=False)
+
+
+# ===========================================================================
+# ── STAFF LOGIN TESTS ────────────────────────────────────────────────────────
+# ===========================================================================
+
+class TestStaffLogin:
+    """POST /api/auth/staff/login"""
+
+    def test_admin_login_returns_token(self, client):
+        r = client.post(
+            "/api/auth/staff/login",
+            json={"email": "admin@jansetu.in", "password": "admin123"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "token" in body, "Response must contain token"
+        assert "user" in body, "Response must contain user"
+        # JWT must be decodable
+        payload = jwt.decode(body["token"], _TEST_JWT_SECRET, algorithms=["HS256"])
+        assert payload["sub"] == "uid-admin"
+        assert payload["role"] == "super_admin"
+
+    def test_pa_login_returns_token(self, client):
+        r = client.post(
+            "/api/auth/staff/login",
+            json={"email": "pa@jansetu.in", "password": "pa123"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "token" in body
+        payload = jwt.decode(body["token"], _TEST_JWT_SECRET, algorithms=["HS256"])
+        assert payload["role"] == "pa"
+
+    def test_worker_login_returns_token(self, client):
+        r = client.post(
+            "/api/auth/staff/login",
+            json={"email": "worker1@jansetu.in", "password": "worker123"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "token" in body
+        payload = jwt.decode(body["token"], _TEST_JWT_SECRET, algorithms=["HS256"])
+        assert payload["role"] == "worker"
+
+    def test_wrong_password_returns_401(self, client):
+        r = client.post(
+            "/api/auth/staff/login",
+            json={"email": "admin@jansetu.in", "password": "wrong_pass"},
+        )
+        assert r.status_code == 401, r.text
+
+    def test_unknown_email_returns_401(self, client):
+        r = client.post(
+            "/api/auth/staff/login",
+            json={"email": "nobody@example.com", "password": "whatever"},
+        )
+        assert r.status_code == 401, r.text
+
+    def test_missing_fields_returns_422(self, client):
+        r = client.post("/api/auth/staff/login", json={"email": "admin@jansetu.in"})
+        assert r.status_code == 422
+
+    def test_password_not_in_response(self, client):
+        r = client.post(
+            "/api/auth/staff/login",
+            json={"email": "pa@jansetu.in", "password": "pa123"},
+        )
+        assert r.status_code == 200
+        user = r.json().get("user", {})
+        assert "password_hash" not in user, "password_hash must be stripped from response"
+        assert "password" not in user
+
+
+# ===========================================================================
+# ── CITIZEN OTP TESTS ────────────────────────────────────────────────────────
+# ===========================================================================
+
+class TestCitizenOTP:
+    """POST /api/auth/citizen/request-otp  and  /api/auth/citizen/verify-otp"""
+
+    def test_request_otp_existing_mobile_dev_mode(self, client):
+        """Dev-mode tenant returns demo_otp = '123456' immediately."""
+        r = client.post(
+            "/api/auth/citizen/request-otp",
+            json={"mobile": "9999900001"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body.get("sent") is True
+        assert body.get("mode") == "development"
+        assert body.get("demo_otp") == "123456"
+
+    def test_request_otp_new_mobile_dev_mode(self, client):
+        """A mobile not yet in the system still gets the dev OTP."""
+        r = client.post(
+            "/api/auth/citizen/request-otp",
+            json={"mobile": "8888800001"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body.get("sent") is True
+        assert body.get("demo_otp") == "123456"
+
+    def test_verify_otp_existing_citizen_returns_token(self, client):
+        """Verifying OTP for a known mobile returns JWT + user record."""
+        r = client.post(
+            "/api/auth/citizen/verify-otp",
+            json={"mobile": "9999900001", "otp": "123456"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "token" in body, "Must return JWT token"
+        assert body.get("new_user") is False
+        user = body.get("user", {})
+        assert user.get("role") == "citizen"
+        assert user.get("name") == "Ramesh Sharma"
+        # Verify the JWT
+        payload = jwt.decode(body["token"], _TEST_JWT_SECRET, algorithms=["HS256"])
+        assert payload["sub"] == "uid-citizen-001"
+        assert payload["role"] == "citizen"
+
+    def test_verify_otp_new_mobile_returns_new_user_flag(self, client):
+        """A mobile with no existing citizen record returns new_user=True."""
+        r = client.post(
+            "/api/auth/citizen/verify-otp",
+            json={"mobile": "7777700001", "otp": "123456"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body.get("new_user") is True, "Unknown mobile should trigger registration flow"
+
+    def test_verify_otp_invalid_format_returns_400(self, client):
+        """OTP that isn't 6 digits must be rejected."""
+        r = client.post(
+            "/api/auth/citizen/verify-otp",
+            json={"mobile": "9999900001", "otp": "abc"},
+        )
+        assert r.status_code == 400, r.text
+
+    def test_verify_otp_five_digit_returns_400(self, client):
+        """5-digit OTP must be rejected."""
+        r = client.post(
+            "/api/auth/citizen/verify-otp",
+            json={"mobile": "9999900001", "otp": "12345"},
+        )
+        assert r.status_code == 400, r.text
+
+
+# ===========================================================================
+# ── AUTH /me  (token validation) ─────────────────────────────────────────────
+# ===========================================================================
+
+class TestAuthMe:
+    """GET /api/auth/me — validates JWT round-trip."""
+
+    def _get_citizen_token(self, client) -> str:
+        r = client.post(
+            "/api/auth/citizen/verify-otp",
+            json={"mobile": "9999900001", "otp": "123456"},
+        )
+        return r.json()["token"]
+
+    def test_me_with_valid_citizen_token(self, client):
+        token = self._get_citizen_token(client)
+        r = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200, r.text
+        assert r.json().get("role") == "citizen"
+
+    def test_me_without_token_returns_401(self, client):
+        r = client.get("/api/auth/me")
+        assert r.status_code == 401
+
+    def test_me_with_malformed_token_returns_401(self, client):
+        r = client.get("/api/auth/me", headers={"Authorization": "Bearer not-a-jwt"})
+        assert r.status_code == 401
+
+    def test_me_with_staff_token(self, client):
+        login_r = client.post(
+            "/api/auth/staff/login",
+            json={"email": "pa@jansetu.in", "password": "pa123"},
+        )
+        token = login_r.json()["token"]
+        me_r = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert me_r.status_code == 200
+        assert me_r.json().get("role") == "pa"
+
+
+# ===========================================================================
+# ── CITIZEN REGISTRATION TESTS ───────────────────────────────────────────────
+# ===========================================================================
+
+# Shared valid registration payload for a brand-new mobile
+_REG_PAYLOAD = {
+    "name": "Test Citizen",
+    "mobile": "7777711111",      # unique — not in _DEMO_USERS
+    "gender": "Male",
+    "region_type": "urban",
+    "ward_id": "area-ward-1",
+    "house_number": "1",
+    "address": "1 Test Street",
+    "tenant_slug": "pune-cantonment",
+}
+
+
+class TestCitizenRegister:
+    """POST /api/auth/citizen/register
+
+    Covers the full OTP → new_user=true → register sequence that a new
+    citizen goes through after OTP verification signals an unrecognised mobile.
+    """
+
+    def test_register_new_citizen_returns_token_user_household(self, client):
+        """Happy path: new mobile → registration succeeds with JWT, user, household."""
+        r = client.post("/api/auth/citizen/register", json=_REG_PAYLOAD)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "token" in body, "Must return a JWT token"
+        assert "user" in body, "Must return the created user record"
+        assert "household" in body, "Must return the created household record"
+        # Household must have a generated code
+        hh = body["household"]
+        code = hh.get("household_code") or hh.get("code")
+        assert code and code.startswith("H-"), f"household_code must start with 'H-', got: {code}"
+
+    def test_register_new_citizen_jwt_is_valid(self, client):
+        """JWT returned by registration must be decodable with correct claims."""
+        r = client.post("/api/auth/citizen/register", json={**_REG_PAYLOAD, "mobile": "7777722222"})
+        assert r.status_code == 200, r.text
+        token = r.json()["token"]
+        payload = jwt.decode(token, _TEST_JWT_SECRET, algorithms=["HS256"])
+        assert payload["role"] == "citizen"
+        assert payload["tid"] == "tenant-001"   # tenant_id propagated into JWT
+
+    def test_register_new_citizen_user_has_correct_fields(self, client):
+        """Registered user record must carry name, mobile, role, household_id."""
+        r = client.post("/api/auth/citizen/register", json={**_REG_PAYLOAD, "mobile": "7777733333"})
+        assert r.status_code == 200, r.text
+        user = r.json()["user"]
+        assert user.get("role") == "citizen"
+        assert user.get("name") == _REG_PAYLOAD["name"]
+        assert "password_hash" not in user, "password_hash must never appear in the response"
+
+    def test_register_duplicate_mobile_returns_400(self, client):
+        """A mobile already registered (is_active=True) must be rejected with 400."""
+        r = client.post(
+            "/api/auth/citizen/register",
+            json={**_REG_PAYLOAD, "mobile": "9999900001"},  # existing demo citizen
+        )
+        assert r.status_code == 400, r.text
+        assert "already registered" in r.json().get("detail", "").lower()
+
+    def test_register_missing_required_name_returns_422(self, client):
+        """Omitting the required `name` field must return 422 Unprocessable Entity."""
+        payload = {k: v for k, v in _REG_PAYLOAD.items() if k != "name"}
+        r = client.post("/api/auth/citizen/register", json=payload)
+        assert r.status_code == 422
+
+    def test_register_missing_required_mobile_returns_422(self, client):
+        """Omitting the required `mobile` field must return 422."""
+        payload = {k: v for k, v in _REG_PAYLOAD.items() if k != "mobile"}
+        r = client.post("/api/auth/citizen/register", json=payload)
+        assert r.status_code == 422
+
+    def test_register_missing_region_type_returns_422(self, client):
+        """Omitting the required `region_type` field must return 422."""
+        payload = {k: v for k, v in _REG_PAYLOAD.items() if k != "region_type"}
+        r = client.post("/api/auth/citizen/register", json=payload)
+        assert r.status_code == 422
+
+    def test_otp_verify_to_register_sequence(self, client):
+        """Full new-citizen flow: OTP verify returns new_user=True,
+        then register with same mobile succeeds and returns a valid JWT."""
+        new_mobile = "6666600001"
+        # Step 1: OTP verify for unknown mobile → new_user=True
+        otp_r = client.post(
+            "/api/auth/citizen/verify-otp",
+            json={"mobile": new_mobile, "otp": "123456"},
+        )
+        assert otp_r.status_code == 200, otp_r.text
+        assert otp_r.json().get("new_user") is True, \
+            "Unknown mobile must return new_user=True to trigger registration"
+
+        # Step 2: Register with that mobile
+        reg_r = client.post(
+            "/api/auth/citizen/register",
+            json={**_REG_PAYLOAD, "mobile": new_mobile},
+        )
+        assert reg_r.status_code == 200, reg_r.text
+        body = reg_r.json()
+        assert "token" in body
+        token = body["token"]
+        # JWT must decode cleanly
+        claims = jwt.decode(token, _TEST_JWT_SECRET, algorithms=["HS256"])
+        assert claims["role"] == "citizen"
