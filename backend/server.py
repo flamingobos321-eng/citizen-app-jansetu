@@ -3361,7 +3361,7 @@ async def check_office_code_available(code: str, _: dict = Depends(require_roles
 
 
 @api.get("/admin/office-code/{code}/qr")
-async def office_code_qr(code: str, _: dict = Depends(get_current_user), size: int = 240):
+async def office_code_qr(code: str, _: dict = Depends(get_current_user_flexible), size: int = 240):
     """PNG QR code encoding the Office Code. The scanned string is exactly the
     Office Code (e.g. "JS1045"); the citizen app resolves it via
     /api/portals/office/{code}. Returns image/png."""

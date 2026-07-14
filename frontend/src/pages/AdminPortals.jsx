@@ -286,7 +286,10 @@ export default function AdminPortals() {
 
 function QrDialog({ portal, onClose }) {
   const code = portal.office_code;
-  const qrSrc = code ? `${api.defaults.baseURL}/admin/office-code/${code}/qr?_t=${Date.now()}` : "";
+  const token = localStorage.getItem("jansetu_token");
+  const qrSrc = code
+    ? `${api.defaults.baseURL}/admin/office-code/${code}/qr?t=${encodeURIComponent(token || "")}&_t=${Date.now()}`
+    : "";
   const url = code ? `${window.location.origin}/o/${code}` : "";
   const copy = () => {
     navigator.clipboard?.writeText(url);
