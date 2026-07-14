@@ -1,0 +1,64 @@
+version: "3.9"
+
+services:
+
+  # ── MongoDB ────────────────────────────────────────────────────────────────
+  # Remove this service if you are using a MongoDB instance already running on
+  # the host — update MONGO_URL in .env to point to it instead.
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${DB_NAME}
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - jansetu
+    # Bind to localhost only — not exposed to the internet
+    ports:
+      - "127.0.0.1:27017:27017"
+
+  # ── FastAPI backend ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - mongodb
+    networks:
+      - jansetu
+    expose:
+      - "8000"
+    volumes:
+      # Mount Firebase service account if push notifications are needed
+      - ./backend/secrets/firebase-admin.json:/app/secrets/firebase-admin.json:ro
+
+  # ── React frontend (Nginx) ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - jansetu
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Let's Encrypt SSL certificates (managed by certbot on the host)
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # ACME challenge directory for certificate renewal
+      - /var/www/certbot:/var/www/certbot:ro
+
+volumes:
+  mongo_data:
+
+networks:
+  jansetu:
+    driver: bridge

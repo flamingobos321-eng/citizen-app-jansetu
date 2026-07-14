@@ -1,50 +1,61 @@
-"""Emergent Object Storage helper."""
+"""S3-compatible object storage helper (boto3)."""
 import os
-import requests
 import logging
+import boto3
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
-STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
-EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 APP_NAME = os.environ.get("APP_NAME", "jansetu")
 
-_storage_key = None
+S3_BUCKET = os.environ.get("S3_BUCKET_NAME", "")
+S3_REGION = os.environ.get("AWS_REGION", "us-east-1")
+
+_s3_client = None
+
+
+def _get_client():
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client(
+            "s3",
+            region_name=S3_REGION,
+            aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+            # Set S3_ENDPOINT_URL for MinIO or other S3-compatible stores
+            endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None,
+        )
+    return _s3_client
 
 
 def init_storage():
-    global _storage_key
-    if _storage_key:
-        return _storage_key
-    resp = requests.post(
-        f"{STORAGE_URL}/init",
-        json={"emergent_key": EMERGENT_KEY},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    _storage_key = resp.json()["storage_key"]
-    logger.info("Object storage initialized")
-    return _storage_key
+    """Verify bucket is reachable; returns bucket name or None if not configured."""
+    if not S3_BUCKET:
+        logger.warning("S3_BUCKET_NAME not set — file storage disabled")
+        return None
+    try:
+        _get_client().head_bucket(Bucket=S3_BUCKET)
+        logger.info("Object storage (S3) ready: bucket=%s", S3_BUCKET)
+        return S3_BUCKET
+    except ClientError as exc:
+        logger.warning("Storage init deferred: %s", exc)
+        return None
 
 
 def put_object(path: str, data: bytes, content_type: str) -> dict:
-    key = init_storage()
-    resp = requests.put(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key, "Content-Type": content_type},
-        data=data,
-        timeout=120,
+    if not S3_BUCKET:
+        raise RuntimeError("S3_BUCKET_NAME is not configured — cannot store files")
+    _get_client().put_object(
+        Bucket=S3_BUCKET,
+        Key=path,
+        Body=data,
+        ContentType=content_type,
     )
-    resp.raise_for_status()
-    return resp.json()
+    return {"path": path}
 
 
 def get_object(path: str):
-    key = init_storage()
-    resp = requests.get(
-        f"{STORAGE_URL}/objects/{path}",
-        headers={"X-Storage-Key": key},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+    if not S3_BUCKET:
+        raise RuntimeError("S3_BUCKET_NAME is not configured — cannot retrieve files")
+    resp = _get_client().get_object(Bucket=S3_BUCKET, Key=path)
+    return resp["Body"].read(), resp["ContentType"]

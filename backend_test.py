@@ -2,11 +2,12 @@
 JANSETU Backend Security Fixes Testing
 Tests three specific areas: C1 (access control), M1 (inverse gender), M5 (file access)
 """
+import os
 import requests
 import json
 from typing import Dict, Optional
 
-BASE_URL = "https://family-bonds-23.preview.emergentagent.com/api"
+BASE_URL = os.environ.get("BACKEND_URL", "http://localhost:8000") + "/api"
 
 # Test credentials
 ADMIN_CREDS = {"email": "admin@jansetu.in", "password": "admin123"}

@@ -16,8 +16,8 @@ const config: CapacitorConfig = {
   bundledWebRuntime: false,
   server: {
     // Production: leave `url` unset so the app serves the bundled build/.
-    // For live-reload during dev, uncomment and point to your preview URL.
-    // url: 'https://family-bonds-23.preview.emergentagent.com',
+    // For live-reload during dev, uncomment and point to your backend URL:
+    // url: 'https://yourdomain.com',
     androidScheme: 'https',
   },
   android: {

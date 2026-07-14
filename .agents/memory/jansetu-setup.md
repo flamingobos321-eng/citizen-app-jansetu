@@ -1,24 +1,39 @@
 ---
 name: Jansetu Replit setup
-description: Quirks and decisions made when configuring JANSETU to run on Replit
+description: Quirks and decisions made when configuring JANSETU to run on Replit, and Emergent de-coupling work
 ---
 
 ## `emergentintegrations` package unavailable on Replit
 
-The package `emergentintegrations==0.2.0` was in `backend/requirements.txt` but is not on PyPI and is blocked by Replit's package firewall. It was not imported anywhere in the backend code, so it was removed from requirements.txt.
+Removed from `backend/requirements.txt` — not imported anywhere in the backend code.
 
-**Why:** Any future requirements update should NOT re-add this package unless a custom index URL is configured.
-
-**How to apply:** If the package is genuinely needed, find its source URL (likely `customer-assets.emergentagent.com`) and install via `pip install <url>` rather than adding it to requirements.txt.
+**Why:** Not on PyPI and blocked by Replit's package firewall.
 
 ## Frontend `ajv` version conflict
 
-`ajv-keywords@5.x` requires `ajv@^8`, but CRA's transitive deps pull in `ajv@6`. Fixed by running `npm install ajv@^8 --legacy-peer-deps` in `frontend/`. The post-merge script uses `--legacy-peer-deps` for this reason.
+`ajv-keywords@5.x` requires `ajv@^8`, but CRA transitive deps pull in `ajv@6`. Fixed by running `npm install ajv@^8 --legacy-peer-deps` in `frontend/`. Post-merge script uses `--legacy-peer-deps`.
 
 ## Frontend ↔ backend proxying in dev
 
-`REACT_APP_BACKEND_URL=""` (empty string) makes all API calls use relative URLs (`/api/...`). The CRA dev server's `"proxy": "http://localhost:8000"` in `frontend/package.json` forwards those to the FastAPI backend. Do not hardcode a port or domain in `REACT_APP_BACKEND_URL`.
+`REACT_APP_BACKEND_URL=""` (empty string) makes API calls relative (`/api/...`). CRA dev server `"proxy": "http://localhost:8000"` in `frontend/package.json` forwards those to FastAPI. Do not hardcode a domain in `REACT_APP_BACKEND_URL`.
 
-## Storage init warning is expected
+## Emergent de-coupling (completed)
 
-On startup, the backend logs: `Storage init deferred: 400 Client Error`. This is non-fatal — S3/object-store credentials haven't been configured yet (see proposed task for S3). The app runs normally without it.
+All Emergent platform dependencies removed:
+- `storage_util.py` rewritten to use boto3 / S3-compatible storage (env vars: `S3_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, optionally `S3_ENDPOINT_URL` for MinIO).
+- `litellm` custom wheel URL replaced with standard PyPI `litellm==1.80.0`.
+- `@emergentbase/visual-edits` removed from `frontend/package.json` and `craco.config.js`.
+- `frontend/public/index.html` cleaned: title, meta description, Emergent badge, emergent-main.js, and PostHog (Emergent's account) all removed.
+- Test file `BASE_URL` defaults changed from `emergentagent.com` preview to `http://localhost:8000`; env var key changed from `REACT_APP_BACKEND_URL` to `BACKEND_URL` for test scripts.
+
+## Docker Compose VPS deployment
+
+Production stack for Hostinger VPS (Ubuntu 24.04):
+- `backend/Dockerfile` — Python 3.12-slim, uvicorn
+- `frontend/Dockerfile` — Node 20 build → Nginx 1.27 serve
+- `frontend/nginx.conf` — serves React SPA, proxies `/api` → `http://backend:8000`, SSL via Let's Encrypt mount
+- `docker-compose.yml` — services: mongodb, backend, frontend; MongoDB bound to 127.0.0.1 only
+- `.env.example` — template; real `.env` must never be committed
+- `DEPLOY.md` — step-by-step VPS deployment guide including Certbot SSL setup
+
+**Why REACT_APP_BACKEND_URL="" in production:** The frontend Dockerfile builds with empty REACT_APP_BACKEND_URL so all API calls are relative (/api/...). Nginx in the same container proxies those to the backend container. No hardcoded domain needed in the build.

@@ -1286,11 +1286,6 @@
   resolved "http://package-firewall.replit.local/npm/@csstools/selector-specificity/-/selector-specificity-2.2.0.tgz"
   integrity sha512-+OJ9konv95ClSTOJCmMZqpd5+YGsB2S+x6w3E1oaM8UuR5j8nTNHYSz8c9BEPGDOCMQYIEEGlVPj/VY64iTbGw==
 
-"@emergentbase/visual-edits@https://assets.emergent.sh/npm/emergentbase-visual-edits-1.0.12.tgz":
-  version "1.0.12"
-  resolved "https://assets.emergent.sh/npm/emergentbase-visual-edits-1.0.12.tgz"
-  integrity sha512-l1WHFp8QxZMQDtG8Ad+vIIETzEP0qp+CG/S8WwnAOLJMOoI7DYlNBA6V5aHjEO1q+NBptDXC4FOfCKfiEdMOlg==
-
 "@eslint-community/eslint-utils@^4.2.0":
   version "4.9.1"
   resolved "http://package-firewall.replit.local/npm/@eslint-community/eslint-utils/-/eslint-utils-4.9.1.tgz"

@@ -2,11 +2,12 @@
 JANSETU Multi-Tenant Data Isolation Testing (Phase 2)
 Tests comprehensive tenant isolation across all endpoints and operations.
 """
+import os
 import requests
 import json
 from typing import Dict, Optional, List
 
-BASE_URL = "https://family-bonds-23.preview.emergentagent.com/api"
+BASE_URL = os.environ.get("BACKEND_URL", "http://localhost:8000") + "/api"
 
 # Test credentials from /app/memory/test_credentials.md
 SUPER_ADMIN_CREDS = {"email": "admin@jansetu.in", "password": "admin123"}
