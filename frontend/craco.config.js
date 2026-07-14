@@ -145,7 +145,20 @@ if (isDevServer) {
 }
 
 const configureDevServer = webpackConfig.devServer;
-webpackConfig.devServer = (devServerConfig) =>
-  makeDevServerV5Compatible(configureDevServer(devServerConfig));
+webpackConfig.devServer = (devServerConfig) => {
+  const compatible = makeDevServerV5Compatible(configureDevServer(devServerConfig));
+  // Proxy /api calls to the FastAPI backend so the browser never hits a
+  // cross-origin port — works transparently in Replit's proxied iframe.
+  compatible.proxy = [
+    {
+      context: ["/api"],
+      target: "http://localhost:8000",
+      changeOrigin: true,
+    },
+  ];
+  // Allow all hosts (required for Replit's proxied preview iframe).
+  compatible.allowedHosts = "all";
+  return compatible;
+};
 
 module.exports = webpackConfig;
