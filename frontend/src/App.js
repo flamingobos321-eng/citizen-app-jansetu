@@ -38,6 +38,9 @@ import AdminElectoralReview from "./pages/AdminElectoralReview";
 import PortalIndex from "./portal/PortalIndex";
 import PortalHome from "./portal/PortalHome";
 import ChangePassword from "./pages/ChangePassword";
+import Campaigns from "./pages/Campaigns";
+import CampaignDetail from "./pages/CampaignDetail";
+import CampaignRespond from "./pages/CampaignRespond";
 
 function Guard({ children }) {
   const { user, loading } = useAuth();
@@ -132,6 +135,9 @@ export default function App() {
           <Route path="/app/taxonomy" element={<TenantGuard><AdminTaxonomy /></TenantGuard>} />
           <Route path="/app/electoral-roll" element={<TenantGuard><AdminElectoralRoll /></TenantGuard>} />
           <Route path="/app/electoral-roll/review" element={<TenantGuard><AdminElectoralReview /></TenantGuard>} />
+          <Route path="/app/campaigns" element={<TenantGuard><Campaigns /></TenantGuard>} />
+          <Route path="/app/campaigns/:id" element={<TenantGuard><CampaignDetail /></TenantGuard>} />
+          <Route path="/app/campaigns/:id/respond" element={<TenantGuard><CampaignRespond /></TenantGuard>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>

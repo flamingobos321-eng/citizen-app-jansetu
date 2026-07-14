@@ -24,6 +24,7 @@ import {
   UserCog,
   Tags,
   BookOpen,
+  Megaphone,
 } from "lucide-react";
 
 const ROLE_LABEL = {
@@ -150,6 +151,7 @@ export default function Layout({ children }) {
           {isStaffAll && (
             <>
               <NavItem to="/app" icon={LayoutDashboard} label="Dashboard" testId="nav-dashboard" />
+              <NavItem to="/app/campaigns" icon={Megaphone} label="Campaigns" testId="nav-campaigns" />
               <NavItem to="/app/issues" icon={FileText} label="All Issues" testId="nav-issues" />
               <NavItem to="/app/citizens" icon={Users} label="Citizens & Households" testId="nav-citizens" />
               <NavItem to="/app/visits" icon={Calendar} label="Visits" testId="nav-visits" />
@@ -171,6 +173,7 @@ export default function Layout({ children }) {
           {isWorker && (
             <>
               <NavItem to="/app" icon={LayoutDashboard} label="My Assignments" testId="nav-dashboard" />
+              <NavItem to="/app/campaigns" icon={Megaphone} label="My Campaigns" testId="nav-campaigns" />
             </>
           )}
         </nav>

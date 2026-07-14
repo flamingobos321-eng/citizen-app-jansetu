@@ -1187,3 +1187,155 @@ class PushNotification(BaseModel):
     created_at: str = Field(default_factory=now_iso)
     read_at: Optional[str] = None
 
+
+# ============================================================================
+# CAMPAIGNS & FIELD OPERATIONS
+# ============================================================================
+
+CAMPAIGN_TYPES = [
+    "membership_drive", "opinion_survey", "citizen_data", "scheme_registration",
+    "voter_registration", "development_inspection", "complaint_followup",
+    "health_camp", "blood_donation", "tree_plantation", "scholarship_drive",
+    "booth_strengthening", "election_campaign", "voter_awareness",
+    "event_registration", "volunteer_registration", "custom",
+]
+
+FORM_FIELD_TYPES = [
+    "short_text", "long_text", "number", "mobile", "email", "date", "time",
+    "address", "yes_no", "single_choice", "multiple_choice", "dropdown",
+    "rating", "photo", "file", "gps",
+]
+
+CAMPAIGN_TASK_STATUSES = ["assigned", "accepted", "in_progress", "on_hold", "completed", "cancelled"]
+
+
+class FormFieldOption(BaseModel):
+    label: str
+    value: str
+
+
+class FormField(BaseModel):
+    id: str = Field(default_factory=new_id)
+    type: str
+    label: str
+    placeholder: Optional[str] = None
+    help_text: Optional[str] = None
+    required: bool = False
+    options: List[FormFieldOption] = []
+    default_value: Optional[str] = None
+    min_val: Optional[float] = None
+    max_val: Optional[float] = None
+    order: int = 0
+
+
+class Campaign(BaseModel):
+    id: str = Field(default_factory=new_id)
+    tenant_id: Optional[str] = None
+    name: str
+    campaign_type: str = "custom"
+    description: Optional[str] = None
+    objectives: Optional[str] = None
+    status: str = "draft"
+    priority: str = "medium"
+    response_mode: str = "linked_citizen"
+    banner_url: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    target_area_type: Optional[str] = None
+    target_area_ids: List[str] = []
+    form_fields: List[FormField] = []
+    assigned_worker_ids: List[str] = []
+    created_by: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+    total_responses: int = 0
+    completed_responses: int = 0
+
+
+class CampaignCreate(BaseModel):
+    name: str
+    campaign_type: str = "custom"
+    description: Optional[str] = None
+    objectives: Optional[str] = None
+    priority: str = "medium"
+    response_mode: str = "linked_citizen"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    target_area_type: Optional[str] = None
+    target_area_ids: List[str] = []
+
+
+class CampaignUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    objectives: Optional[str] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
+    response_mode: Optional[str] = None
+    banner_url: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    target_area_type: Optional[str] = None
+    target_area_ids: Optional[List[str]] = None
+    form_fields: Optional[List[FormField]] = None
+    assigned_worker_ids: Optional[List[str]] = None
+
+
+class AssignWorkersPayload(BaseModel):
+    worker_ids: List[str]
+
+
+class CampaignResponse(BaseModel):
+    id: str = Field(default_factory=new_id)
+    campaign_id: str
+    tenant_id: Optional[str] = None
+    worker_id: str
+    worker_name: Optional[str] = None
+    citizen_id: Optional[str] = None
+    citizen_name: Optional[str] = None
+    responses: dict = {}
+    attachments: List[str] = []
+    status: str = "completed"
+    submitted_at: str = Field(default_factory=now_iso)
+    location: Optional[dict] = None
+
+
+class CampaignResponseCreate(BaseModel):
+    citizen_id: Optional[str] = None
+    citizen_name: Optional[str] = None
+    responses: dict = {}
+    attachments: List[str] = []
+    status: str = "completed"
+    location: Optional[dict] = None
+
+
+class CampaignTask(BaseModel):
+    id: str = Field(default_factory=new_id)
+    campaign_id: str
+    tenant_id: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    priority: str = "medium"
+    assigned_to: Optional[str] = None
+    assigned_to_name: Optional[str] = None
+    due_date: Optional[str] = None
+    location: Optional[str] = None
+    citizen_id: Optional[str] = None
+    issue_id: Optional[str] = None
+    attachments: List[str] = []
+    status: str = "assigned"
+    created_by: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+
+class CampaignTaskCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    priority: str = "medium"
+    assigned_to: Optional[str] = None
+    due_date: Optional[str] = None
+    location: Optional[str] = None
+    citizen_id: Optional[str] = None
+    issue_id: Optional[str] = None
+

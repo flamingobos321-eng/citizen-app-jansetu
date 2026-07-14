@@ -4661,6 +4661,354 @@ async def purge_portal(portal_id: str, payload: PortalPurgeRequest,
     return {"ok": True, "portal_id": portal_id, "counts": counts}
 
 
+# ===========================================================================
+# CAMPAIGNS & FIELD OPERATIONS
+# ===========================================================================
+
+from models import (
+    Campaign, CampaignCreate, CampaignUpdate,
+    CampaignResponse, CampaignResponseCreate,
+    CampaignTask, CampaignTaskCreate, AssignWorkersPayload,
+)
+
+
+@api.get("/campaigns/stats")
+async def campaign_stats(user: dict = Depends(get_current_user)):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {}
+    if tid:
+        query["tenant_id"] = tid
+    if user.get("role") == "worker":
+        query["assigned_worker_ids"] = user["id"]
+
+    total = await db.campaigns.count_documents(query)
+    active = await db.campaigns.count_documents({**query, "status": "active"})
+    draft = await db.campaigns.count_documents({**query, "status": "draft"})
+    completed = await db.campaigns.count_documents({**query, "status": "completed"})
+    archived = await db.campaigns.count_documents({**query, "status": "archived"})
+
+    resp_q: dict = {}
+    if tid:
+        resp_q["tenant_id"] = tid
+    if user.get("role") == "worker":
+        resp_q["worker_id"] = user["id"]
+    total_responses = await db.campaign_responses.count_documents(resp_q)
+
+    active_campaigns = await db.campaigns.find(
+        {**query, "status": "active"}, {"assigned_worker_ids": 1}
+    ).to_list(None)
+    worker_ids: set = set()
+    for c in active_campaigns:
+        worker_ids.update(c.get("assigned_worker_ids", []))
+
+    return {
+        "total": total, "active": active, "draft": draft,
+        "completed": completed, "archived": archived,
+        "total_responses": total_responses, "active_workers": len(worker_ids),
+    }
+
+
+@api.get("/campaigns")
+async def list_campaigns(
+    user: dict = Depends(get_current_user),
+    status: Optional[str] = None,
+    campaign_type: Optional[str] = None,
+    search: Optional[str] = None,
+    priority: Optional[str] = None,
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {}
+    if tid:
+        query["tenant_id"] = tid
+    if user.get("role") == "worker":
+        query["assigned_worker_ids"] = user["id"]
+        if not status:
+            query["status"] = "active"
+    if status:
+        query["status"] = status
+    if campaign_type:
+        query["campaign_type"] = campaign_type
+    if priority:
+        query["priority"] = priority
+    if search:
+        query["name"] = {"$regex": search, "$options": "i"}
+    return await db.campaigns.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+
+@api.post("/campaigns")
+async def create_campaign(
+    payload: CampaignCreate,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    campaign = Campaign(**payload.model_dump(), tenant_id=tid, created_by=user["id"])
+    await db.campaigns.insert_one({**campaign.model_dump(), "_id": campaign.id})
+    return campaign.model_dump()
+
+
+@api.get("/campaigns/{campaign_id}")
+async def get_campaign(campaign_id: str, user: dict = Depends(get_current_user)):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"id": campaign_id}
+    if tid:
+        query["tenant_id"] = tid
+    campaign = await db.campaigns.find_one(query, {"_id": 0})
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    if user.get("role") == "worker" and user["id"] not in campaign.get("assigned_worker_ids", []):
+        raise HTTPException(403, "Not assigned to this campaign")
+    return campaign
+
+
+@api.put("/campaigns/{campaign_id}")
+async def update_campaign(
+    campaign_id: str,
+    payload: CampaignUpdate,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"id": campaign_id}
+    if tid:
+        query["tenant_id"] = tid
+    if not await db.campaigns.find_one(query):
+        raise HTTPException(404, "Campaign not found")
+    updates = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+    if "form_fields" in updates and payload.form_fields is not None:
+        updates["form_fields"] = [
+            f.model_dump() if hasattr(f, "model_dump") else f for f in payload.form_fields
+        ]
+    updates["updated_at"] = now_iso()
+    await db.campaigns.update_one({"id": campaign_id}, {"$set": updates})
+    return await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
+
+
+@api.delete("/campaigns/{campaign_id}")
+async def archive_campaign(
+    campaign_id: str,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"id": campaign_id}
+    if tid:
+        query["tenant_id"] = tid
+    r = await db.campaigns.update_one(query, {"$set": {"status": "archived", "updated_at": now_iso()}})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Campaign not found")
+    return {"ok": True}
+
+
+@api.put("/campaigns/{campaign_id}/workers")
+async def assign_workers(
+    campaign_id: str,
+    payload: AssignWorkersPayload,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"id": campaign_id}
+    if tid:
+        query["tenant_id"] = tid
+    campaign = await db.campaigns.find_one(query)
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    prev_ids = set(campaign.get("assigned_worker_ids", []))
+    await db.campaigns.update_one(
+        {"id": campaign_id},
+        {"$set": {"assigned_worker_ids": payload.worker_ids, "updated_at": now_iso()}},
+    )
+    for wid in payload.worker_ids:
+        if wid not in prev_ids:
+            notif = {
+                "id": new_id(), "user_id": wid, "tenant_id": tid,
+                "title": "Campaign Assigned",
+                "body": f"You have been assigned to: {campaign['name']}",
+                "kind": "info", "data": {"campaign_id": campaign_id},
+                "read": False, "created_at": now_iso(),
+            }
+            await db.push_notifications.insert_one(notif)
+            tokens = await db.device_tokens.find({"user_id": wid}).to_list(None)
+            if tokens:
+                push_service.send(
+                    [t["token"] for t in tokens],
+                    title="Campaign Assigned",
+                    body=f"You've been assigned to: {campaign['name']}",
+                    data={"campaign_id": campaign_id},
+                )
+    return {"ok": True, "worker_ids": payload.worker_ids}
+
+
+@api.get("/campaigns/{campaign_id}/responses")
+async def list_campaign_responses(
+    campaign_id: str,
+    user: dict = Depends(get_current_user),
+    skip: int = 0,
+    limit: int = 50,
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"campaign_id": campaign_id}
+    if tid:
+        query["tenant_id"] = tid
+    if user.get("role") == "worker":
+        query["worker_id"] = user["id"]
+    total = await db.campaign_responses.count_documents(query)
+    items = await db.campaign_responses.find(query, {"_id": 0}).sort("submitted_at", -1).skip(skip).limit(limit).to_list(None)
+    return {"total": total, "items": items}
+
+
+@api.post("/campaigns/{campaign_id}/responses")
+async def submit_campaign_response(
+    campaign_id: str,
+    payload: CampaignResponseCreate,
+    user: dict = Depends(get_current_user),
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"id": campaign_id}
+    if tid:
+        query["tenant_id"] = tid
+    campaign = await db.campaigns.find_one(query)
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    if campaign.get("status") != "active":
+        raise HTTPException(400, "Campaign is not active")
+    resp = CampaignResponse(
+        campaign_id=campaign_id, tenant_id=tid,
+        worker_id=user["id"], worker_name=user.get("name"),
+        **payload.model_dump(),
+    )
+    await db.campaign_responses.insert_one({**resp.model_dump(), "_id": resp.id})
+    inc = {"total_responses": 1}
+    if payload.status == "completed":
+        inc["completed_responses"] = 1
+    await db.campaigns.update_one({"id": campaign_id}, {"$inc": inc})
+    return resp.model_dump()
+
+
+@api.get("/campaigns/{campaign_id}/responses/{response_id}")
+async def get_campaign_response(
+    campaign_id: str, response_id: str, user: dict = Depends(get_current_user)
+):
+    resp = await db.campaign_responses.find_one({"id": response_id, "campaign_id": campaign_id}, {"_id": 0})
+    if not resp:
+        raise HTTPException(404, "Response not found")
+    return resp
+
+
+@api.get("/campaigns/{campaign_id}/tasks")
+async def list_campaign_tasks(campaign_id: str, user: dict = Depends(get_current_user)):
+    query: dict = {"campaign_id": campaign_id}
+    if user.get("role") == "worker":
+        query["assigned_to"] = user["id"]
+    return await db.campaign_tasks.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+
+@api.post("/campaigns/{campaign_id}/tasks")
+async def create_campaign_task(
+    campaign_id: str,
+    payload: CampaignTaskCreate,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    assigned_name = None
+    if payload.assigned_to:
+        w = await db.users.find_one({"id": payload.assigned_to})
+        assigned_name = w["name"] if w else None
+    task = CampaignTask(
+        campaign_id=campaign_id, tenant_id=tid,
+        assigned_to_name=assigned_name, created_by=user["id"],
+        **payload.model_dump(),
+    )
+    await db.campaign_tasks.insert_one({**task.model_dump(), "_id": task.id})
+    if payload.assigned_to:
+        notif = {
+            "id": new_id(), "user_id": payload.assigned_to, "tenant_id": tid,
+            "title": "Task Assigned", "body": f"New task: {payload.title}",
+            "kind": "info", "data": {"campaign_id": campaign_id, "task_id": task.id},
+            "read": False, "created_at": now_iso(),
+        }
+        await db.push_notifications.insert_one(notif)
+    return task.model_dump()
+
+
+@api.put("/campaigns/{campaign_id}/tasks/{task_id}")
+async def update_campaign_task(
+    campaign_id: str, task_id: str,
+    payload: dict,
+    user: dict = Depends(get_current_user),
+):
+    task = await db.campaign_tasks.find_one({"id": task_id, "campaign_id": campaign_id})
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if user.get("role") == "worker":
+        if task.get("assigned_to") != user["id"]:
+            raise HTTPException(403, "Not your task")
+        payload = {"status": payload.get("status")}
+    payload["updated_at"] = now_iso()
+    await db.campaign_tasks.update_one({"id": task_id}, {"$set": payload})
+    return await db.campaign_tasks.find_one({"id": task_id}, {"_id": 0})
+
+
+@api.delete("/campaigns/{campaign_id}/tasks/{task_id}")
+async def delete_campaign_task(
+    campaign_id: str, task_id: str,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    r = await db.campaign_tasks.delete_one({"id": task_id, "campaign_id": campaign_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Task not found")
+    return {"ok": True}
+
+
+@api.get("/campaigns/{campaign_id}/analytics")
+async def campaign_analytics(campaign_id: str, user: dict = Depends(get_current_user)):
+    responses = await db.campaign_responses.find(
+        {"campaign_id": campaign_id},
+        {"submitted_at": 1, "worker_id": 1, "worker_name": 1, "_id": 0},
+    ).to_list(None)
+    daily: dict = {}
+    worker_counts: dict = {}
+    for r in responses:
+        day = (r.get("submitted_at") or "")[:10]
+        if day:
+            daily[day] = daily.get(day, 0) + 1
+        wname = r.get("worker_name") or r.get("worker_id", "Unknown")
+        worker_counts[wname] = worker_counts.get(wname, 0) + 1
+    campaign = await db.campaigns.find_one({"id": campaign_id}, {"total_responses": 1, "completed_responses": 1, "assigned_worker_ids": 1, "_id": 0})
+    tasks = await db.campaign_tasks.find({"campaign_id": campaign_id}, {"status": 1, "_id": 0}).to_list(None)
+    task_counts: dict = {}
+    for t in tasks:
+        task_counts[t["status"]] = task_counts.get(t["status"], 0) + 1
+    return {
+        "daily_responses": [{"date": d, "responses": c} for d, c in sorted(daily.items())],
+        "worker_performance": [{"worker": w, "responses": c} for w, c in sorted(worker_counts.items(), key=lambda x: -x[1])[:10]],
+        "task_status_counts": task_counts,
+        "total_responses": (campaign or {}).get("total_responses", 0),
+        "completed_responses": (campaign or {}).get("completed_responses", 0),
+        "active_workers": len((campaign or {}).get("assigned_worker_ids", [])),
+    }
+
+
+@api.get("/campaigns/{campaign_id}/export")
+async def export_campaign_csv(campaign_id: str, user: dict = Depends(get_current_user)):
+    import csv as _csv, io as _io
+    campaign = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    responses = await db.campaign_responses.find({"campaign_id": campaign_id}, {"_id": 0}).to_list(None)
+    fields = campaign.get("form_fields", [])
+    out = _io.StringIO()
+    writer = _csv.writer(out)
+    writer.writerow(["Response ID", "Worker", "Citizen", "Submitted At", "Status"] + [f["label"] for f in fields])
+    for r in responses:
+        row = [r["id"], r.get("worker_name", ""), r.get("citizen_name", ""), r.get("submitted_at", ""), r.get("status", "")]
+        for f in fields:
+            val = r.get("responses", {}).get(f["id"], "")
+            row.append(", ".join(str(v) for v in val) if isinstance(val, list) else val)
+        writer.writerow(row)
+    return Response(
+        content=out.getvalue().encode("utf-8"), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="campaign-{campaign_id}.csv"'},
+    )
+
+
 @app.on_event("shutdown")
 async def shutdown():
     client.close()

@@ -1,0 +1,403 @@
+Build Campaigns & Field Operations Module
+
+The next major module in JanSetu should be Campaigns & Field Operations.
+
+This should become one of the core modules of JanSetu and replace the need to build separate modules for Membership Drives, Surveys, Government Scheme Registration, Health Camps, Booth Strengthening, etc.
+
+The module must be generic, scalable, mobile-first, and integrate deeply with the existing JanSetu ecosystem.
+
+Objective
+
+Allow representatives and office staff to:
+
+Create campaigns
+Assign workers
+Build custom forms
+Collect data
+Manage field activities
+Track progress
+Generate reports
+Analyze results
+
+Everything from one unified module.
+
+Campaign Dashboard
+
+Display:
+
+Total Campaigns
+Active Campaigns
+Draft Campaigns
+Completed Campaigns
+Archived Campaigns
+Total Responses
+Active Workers
+Recent Activities
+
+Include search, filters and sorting.
+
+Campaign Types
+
+Provide ready-made templates:
+
+Membership Drive
+Public Opinion Survey
+Citizen Data Collection
+Government Scheme Registration
+First-Time Voter Registration
+Development Inspection
+Complaint Follow-up Drive
+Health Camp
+Blood Donation Camp
+Tree Plantation
+Scholarship Drive
+Booth Strengthening
+Election Campaign
+Voter Awareness
+Event Registration
+Volunteer Registration
+Custom Campaign
+
+The admin should also be able to create completely custom campaign types.
+
+Campaign Information
+
+Each campaign should include:
+
+Campaign Name
+Campaign Type
+Campaign Banner
+Description
+Objectives
+Priority
+Status
+Draft
+Active
+Completed
+Archived
+Start Date
+End Date
+Target Area
+
+Allow assigning campaigns to:
+
+Entire Office
+Constituency
+Ward
+Village
+Booth
+
+Future-ready hierarchy.
+
+Assign Workers
+
+Assign campaigns to:
+
+Individual Worker
+Multiple Workers
+Entire Team
+
+Workers should only see campaigns assigned to them.
+
+Campaign Permissions
+
+Representative
+
+Office Admin
+
+Supervisor
+
+Worker
+
+Each role should have proper permissions.
+
+Form Builder
+
+Build a drag-and-drop form builder.
+
+Supported field types:
+
+Short Text
+Long Text
+Number
+Mobile
+Email
+Date
+Time
+Address
+Yes / No
+Single Choice
+Multiple Choice
+Dropdown
+Rating
+Photo Upload
+File Upload
+GPS Location (optional)
+Signature (future)
+QR Code (future)
+Barcode (future)
+
+Each field should support:
+
+Required
+Optional
+Placeholder
+Default Value
+Validation
+Help Text
+
+Allow reordering fields using drag-and-drop.
+
+Response Modes
+
+Every campaign must support one of three response modes.
+
+1. Linked to Citizen
+
+Worker searches an existing citizen.
+
+If found:
+
+Attach the response to Citizen 360° Profile.
+
+If not found:
+
+Allow creating a new citizen.
+
+Used for:
+
+Membership Drive
+Government Scheme Registration
+First-Time Voter Registration
+Complaint Follow-up
+Health Camp
+2. Anonymous
+
+No citizen information is stored.
+
+Used for:
+
+Opinion Poll
+Exit Poll
+Satisfaction Survey
+Feedback Survey
+
+Only aggregate reports should be generated.
+
+3. Optional
+
+Worker decides whether to link the response to a citizen or keep it anonymous.
+
+Survey Features
+
+Support:
+
+Multi-page forms
+Required questions
+Conditional logic
+Skip logic
+Save draft
+Resume later
+Offline Mode
+
+Workers should be able to:
+
+Download campaigns
+Fill forms without internet
+Store responses locally
+Automatically sync when internet becomes available
+
+Offline support is mandatory.
+
+Task Management
+
+Each campaign can contain tasks.
+
+Task fields:
+
+Title
+Description
+Priority
+Assigned Worker
+Due Date
+Location
+Related Citizen (optional)
+Related Complaint (optional)
+Attachments
+
+Task Status:
+
+Assigned
+Accepted
+In Progress
+On Hold
+Completed
+Cancelled
+
+Workers should receive notifications when tasks are assigned or updated.
+
+Worker Mobile Experience
+
+Workers should have a dedicated Campaigns section.
+
+Display:
+
+My Campaigns
+
+↓
+
+My Tasks
+
+↓
+
+Pending Forms
+
+↓
+
+Today's Work
+
+↓
+
+Completed Work
+
+The UI should be optimized for mobile.
+
+Attachments
+
+Support:
+
+Photos
+Documents
+PDFs
+
+Allow multiple uploads per response.
+
+Dashboard
+
+Campaign Dashboard should show:
+
+Total Responses
+Pending Responses
+Completed Responses
+Active Workers
+Campaign Progress
+Daily Progress
+Village-wise Progress
+Ward-wise Progress
+Booth-wise Progress
+Reports
+
+Generate:
+
+Excel
+CSV
+PDF
+
+Reports by:
+
+Campaign
+Worker
+Village
+Ward
+Booth
+Date
+Campaign Type
+Response Status
+Analytics
+
+Provide interactive charts.
+
+Examples:
+
+Daily Responses
+Worker Performance
+Area-wise Progress
+Campaign Completion
+Survey Analytics
+Membership Growth
+Public Opinion Charts
+Notifications
+
+Use the existing JanSetu notification system.
+
+Notify workers when:
+
+Campaign Assigned
+Task Assigned
+Task Updated
+Deadline Near
+Campaign Completed
+Timeline
+
+Maintain a complete activity log.
+
+Campaign Created
+
+↓
+
+Workers Assigned
+
+↓
+
+Responses Submitted
+
+↓
+
+Photos Uploaded
+
+↓
+
+Tasks Completed
+
+↓
+
+Campaign Archived
+
+Every action should be timestamped.
+
+Integration
+
+This module must integrate with:
+
+Citizen Database
+Citizen 360° Profile
+Family Tree
+Complaints
+Development Portfolio
+Notifications
+Worker Dashboard
+Staff Dashboard
+
+Avoid duplicate data.
+
+UI & UX
+
+The design should match the existing JanSetu interface.
+
+Clean
+Professional
+Mobile-first
+Fast
+Modern
+Minimal clicks
+Easy for non-technical users
+Future Ready
+
+This module should support future use cases without additional development.
+
+Any new campaign should be created by configuring:
+
+Campaign
+Form
+Workers
+Area
+
+No code changes should be required.
+
+Important
+
+Do not build this as a simple survey module.
+
+Build it as a complete Campaigns & Field Operations platform that combines campaign management, surveys, data collection, worker assignments, task management, offline field work, analytics, and reporting into one integrated system.
+
+It should become one of the flagship capabilities of JanSetu and be usable year-round for governance, citizen outreach, and organizational activities—not just during elections.
