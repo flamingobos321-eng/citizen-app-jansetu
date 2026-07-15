@@ -16,6 +16,7 @@ DANGEROUSLY_DISABLE_HOST_CHECK = "true"
 DB_NAME = "jansetu"
 PORT = "5000"
 REACT_APP_BACKEND_URL = ""
+LOCAL_STORAGE_PATH = "./uploads"
 
 [workflows]
 runButton = "Project"
