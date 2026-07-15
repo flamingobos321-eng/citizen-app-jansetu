@@ -145,6 +145,20 @@ async def get_current_user_flexible(
     return user
 
 
+async def get_current_user_optional(authorization: Optional[str] = Header(None)) -> Optional[dict]:
+    """Like get_current_user but returns None instead of raising when no token is supplied.
+    Used for endpoints that are public but can be scoped when a token is present."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    except jwt.PyJWTError:
+        return None
+    user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+    return user or None
+
+
 def require_roles(*roles):
     async def _dep(user: dict = Depends(get_current_user)):
         # super_admin is treated as a superset of admin for backward compatibility.
@@ -417,10 +431,14 @@ async def _migrate_to_multi_tenant():
     ]
     backfill_counts = {}
     for coll in domain_collections:
-        res = await db[coll].update_many(
-            {"tenant_id": {"$exists": False}},
-            {"$set": {"tenant_id": default_tid}},
-        )
+        # Match docs where tenant_id is missing OR explicitly null.
+        # The seed inserts users with tenant_id=None (null), so $exists: False
+        # alone misses them — we must also catch the null case.
+        q = {"$or": [{"tenant_id": {"$exists": False}}, {"tenant_id": None}]}
+        # Never overwrite the platform super-admin whose tenant_id should stay null.
+        if coll == "users":
+            q["email"] = {"$ne": "admin@jansetu.in"}
+        res = await db[coll].update_many(q, {"$set": {"tenant_id": default_tid}})
         backfill_counts[coll] = res.modified_count
 
     # Step 2b: Backfill new lifecycle fields on portal_configs for existing portals.
@@ -1705,7 +1723,17 @@ async def me_transfer_info(user: dict = Depends(get_current_user)):
 async def citizen_register(payload: CitizenRegister):
     tid = await _resolve_tenant_id(getattr(payload, "tenant_slug", None))
     if not tid:
-        raise HTTPException(400, "Portal context required for registration")
+        # No slug provided — fall back to the default active portal only when this is a
+        # strict single-portal install (exactly one active portal). In multi-portal
+        # deployments an explicit tenant_slug/office_code is required to avoid silently
+        # registering citizens under the wrong constituency.
+        active_portal_count = await db.portal_configs.count_documents({"is_active": True})
+        if active_portal_count == 1:
+            default_portal = await db.portal_configs.find_one({"is_active": True}, {"id": 1})
+            if default_portal:
+                tid = default_portal["id"]
+    if not tid:
+        raise HTTPException(400, "Portal context required for registration. Provide tenant_slug or office_code.")
     # Per-tenant mobile uniqueness (rule 6)
     if await db.users.find_one({"mobile": payload.mobile, "role": "citizen",
                                 "tenant_id": tid, "is_active": True}):
@@ -2032,8 +2060,18 @@ async def list_constituencies(user: dict = Depends(get_current_user)):
 
 
 @api.get("/areas")
-async def list_areas(kind: Optional[str] = None, region_type: Optional[str] = None, user: dict = Depends(get_current_user)):
-    q = tenant_filter(user)
+async def list_areas(kind: Optional[str] = None, region_type: Optional[str] = None, user: Optional[dict] = Depends(get_current_user_optional)):
+    """List areas. Public when called without a token (uses default tenant);
+    tenant-scoped when an authenticated token is provided."""
+    if user:
+        q = tenant_filter(user)
+    else:
+        # Unauthenticated callers (e.g. citizen registration form) get areas from
+        # the default active portal so they can pick their ward/village.
+        default_portal = await db.portal_configs.find_one({"is_default": True, "is_active": True}, {"id": 1})
+        if not default_portal:
+            raise HTTPException(404, "No active portal found; cannot list areas without authentication")
+        q = {"tenant_id": default_portal["id"]}
     if kind:
         q["kind"] = kind
     if region_type:
@@ -2043,7 +2081,15 @@ async def list_areas(kind: Optional[str] = None, region_type: Optional[str] = No
 
 @api.post("/areas")
 async def create_area(payload: AreaCreate, user: dict = Depends(require_roles("admin"))):
-    a = Area(**payload.model_dump(), tenant_id=get_tenant_id_for_write(user))
+    if user.get("role") == "super_admin":
+        # Super_admin acts on the default active portal when no tenant is specified.
+        default_portal = await db.portal_configs.find_one({"is_default": True, "is_active": True}, {"id": 1})
+        if not default_portal:
+            raise HTTPException(400, "No default portal found; cannot determine target tenant")
+        tid = default_portal["id"]
+    else:
+        tid = get_tenant_id_for_write(user)
+    a = Area(**payload.model_dump(), tenant_id=tid)
     await db.areas.insert_one(a.model_dump())
     return a.model_dump()
 
