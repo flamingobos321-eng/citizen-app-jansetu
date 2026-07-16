@@ -1,4 +1,4 @@
-name: jansetu   # ← namespaces ALL containers, volumes and networks
+name: jansetu   # namespaces ALL containers, volumes and networks
                 # containers: jansetu-mongodb-1, jansetu-backend-1, jansetu-frontend-1
                 # volumes:    jansetu_mongo_data, jansetu_uploads_data …
                 # never conflicts with VianBills or any other Compose project
@@ -6,20 +6,21 @@ name: jansetu   # ← namespaces ALL containers, volumes and networks
 # ── JANSETU — Production Docker Compose ────────────────────────────────────
 #
 # GitHub is the single source of truth.
-# NEVER edit files on the VPS — commit to GitHub, then run scripts/deploy.sh.
-#
-# First run:
-#   cp .env.example .env && nano .env
+# NEVER edit application files on the VPS — commit to GitHub, then run:
 #   ./scripts/deploy.sh
 #
-# Subsequent deploys:
-#   ./scripts/deploy.sh          ← pulls from GitHub, rebuilds, rolling restart
+# Reverse proxy + SSL: managed entirely by Nginx Proxy Manager (NPM).
+# In NPM, create a Proxy Host:
+#   Domain:   jansetu.yourdomain.com
+#   Forward:  http  →  127.0.0.1  →  3000
+#   SSL:      Request a Let's Encrypt certificate in NPM
+# No Nginx config files, no Certbot, no port 80/443 binding in this file.
 
 services:
 
   # ── MongoDB (JanSetu-exclusive) ───────────────────────────────────────────
-  # Host port 27018 avoids conflict with VianBills MongoDB on 27017.
-  # The container is only reachable from localhost — not from the internet.
+  # Host port 27018 avoids conflict with any existing MongoDB on :27017.
+  # Only reachable from localhost — not from the internet.
   mongodb:
     image: mongo:7
     restart: unless-stopped
@@ -33,7 +34,7 @@ services:
     networks:
       - internal
     ports:
-      - "127.0.0.1:27018:27017"   # host:27018 → container:27017
+      - "127.0.0.1:27018:27017"
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 15s
@@ -47,8 +48,8 @@ services:
         max-file: "5"
 
   # ── FastAPI backend ────────────────────────────────────────────────────────
-  # Not exposed to the host — only reachable inside the internal Docker network
-  # (the frontend container proxies /api → backend:8000).
+  # Exposed on 127.0.0.1:8000 so NPM can optionally proxy /api directly.
+  # The frontend container also reaches it via the internal Docker network.
   backend:
     image: jansetu-backend:${DEPLOY_TAG:-latest}
     build:
@@ -61,8 +62,8 @@ services:
         condition: service_healthy
     networks:
       - internal
-    expose:
-      - "8000"
+    ports:
+      - "127.0.0.1:8000:8000"
     volumes:
       - uploads_data:/var/data/jansetu/uploads
       - ./backend/secrets/firebase-admin.json:/app/secrets/firebase-admin.json:ro
@@ -79,16 +80,18 @@ services:
         max-size: "100m"
         max-file: "7"
 
-  # ── React frontend — HTTP only on host port 3000 ──────────────────────────
-  # SSL termination is handled by the HOST Nginx (shared with VianBills).
-  # Host Nginx config: config/nginx-jansetu.conf
+  # ── React frontend ─────────────────────────────────────────────────────────
+  # Exposed on 127.0.0.1:3000 — Nginx Proxy Manager proxies to this port.
+  # The container's Nginx serves the SPA and proxies /api → backend:8000
+  # over the internal Docker network.
+  # No ports 80 or 443 are bound; SSL is managed entirely by NPM.
   frontend:
     image: jansetu-frontend:${DEPLOY_TAG:-latest}
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        REACT_APP_BACKEND_URL: ""   # relative URLs — proxied by Nginx inside container
+        REACT_APP_BACKEND_URL: ""   # relative URLs — /api goes through Nginx → backend
     restart: unless-stopped
     depends_on:
       backend:
@@ -96,7 +99,7 @@ services:
     networks:
       - internal
     ports:
-      - "127.0.0.1:3000:80"     # host Nginx → 127.0.0.1:3000 → this container
+      - "127.0.0.1:3000:80"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost/"]
       interval: 30s
