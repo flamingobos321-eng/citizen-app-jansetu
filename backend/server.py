@@ -41,6 +41,8 @@ from models import (
     Karyakarta, PendingKaryakarta, KaryakartaCreate,
     ElectoralRollImport,
     DeviceToken, PushNotification,
+    NotificationPrefsUpdate, PUSH_NOTIFICATION_CATEGORIES,
+    DEFAULT_NOTIFICATION_PREFS, KIND_TO_CATEGORY,
     ISSUE_CATEGORIES, ISSUE_STATUSES, DEV_STATUSES, VISIT_STATUSES,
     now_iso, new_id,
 )
@@ -2594,8 +2596,12 @@ async def _push_to_user(user_id: str, title: str, body: str,
                        click_action: Optional[str] = None) -> dict:
     """Fan out a notification to all of a user's registered device tokens AND
     persist a row for the in-app inbox. Prunes invalid tokens returned by FCM.
+
+    Respects per-user notification_prefs: if the user has opted out of the
+    category that this ``kind`` maps to, the inbox row is still persisted but
+    FCM delivery is skipped (token is NOT removed).
     """
-    u = await db.users.find_one({"id": user_id}, {"_id": 0, "tenant_id": 1})
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "tenant_id": 1, "notification_prefs": 1})
     inbox_row = PushNotification(
         user_id=user_id,
         tenant_id=u.get("tenant_id") if u else None,
@@ -2604,6 +2610,20 @@ async def _push_to_user(user_id: str, title: str, body: str,
         click_action=click_action,
     )
     await db.push_notifications.insert_one(inbox_row.model_dump())
+
+    # Check per-category preference before delivering to device.
+    if u:
+        prefs = u.get("notification_prefs") or {}
+        category = KIND_TO_CATEGORY.get(kind, "announcements")
+        # Default is True (opted-in) when the key is absent.
+        opted_in = prefs.get(category, True)
+        if not opted_in:
+            return {
+                "delivered_to": 0,
+                "inbox_only": True,
+                "skipped_reason": "user_preference",
+                "mode": push_service.current_mode(),
+            }
 
     tokens = [t["token"] async for t in db.device_tokens.find({"user_id": user_id}, {"_id": 0, "token": 1})]
     if not tokens:
@@ -2619,6 +2639,44 @@ async def _push_to_user(user_id: str, title: str, body: str,
         "inbox_id": inbox_row.id,
         "mode": push_service.current_mode(),
     }
+
+
+@api.get("/me/notification-prefs")
+async def get_notification_prefs(user: dict = Depends(get_current_user)):
+    """Return the current user's per-category push notification preferences.
+
+    Missing categories default to True (opted-in).
+    """
+    prefs = user.get("notification_prefs") or {}
+    return {
+        cat: prefs.get(cat, True)
+        for cat in PUSH_NOTIFICATION_CATEGORIES
+    }
+
+
+@api.put("/me/notification-prefs")
+async def update_notification_prefs(
+    payload: NotificationPrefsUpdate,
+    user: dict = Depends(get_current_user),
+):
+    """Update the current user's per-category push notification preferences.
+
+    Only fields explicitly set in the payload are updated; omitted fields are
+    unchanged.  Device tokens are never removed — unsubscribing only silences
+    FCM delivery for that category.
+    """
+    current_prefs: dict = dict(user.get("notification_prefs") or DEFAULT_NOTIFICATION_PREFS)
+    updates = payload.model_dump(exclude_none=True)
+    # Validate keys against the canonical category list.
+    for key in updates:
+        if key not in PUSH_NOTIFICATION_CATEGORIES:
+            raise HTTPException(400, f"Unknown notification category: {key}")
+        current_prefs[key] = updates[key]
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"notification_prefs": current_prefs}},
+    )
+    return current_prefs
 
 
 @api.post("/push/test")

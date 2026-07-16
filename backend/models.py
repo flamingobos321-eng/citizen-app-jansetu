@@ -126,6 +126,10 @@ class User(BaseModel):
     dpdp_consent_version: Optional[str] = None
     dpdp_consent_at: Optional[str] = None
     dpdp_consent_ip: Optional[str] = None
+    # Per-category push notification preferences.
+    # Keys: issue_updates, broadcasts, announcements (all True by default).
+    # Absent key → treat as True (opted-in) for forward-compatibility.
+    notification_prefs: Optional[dict] = None
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -1186,6 +1190,37 @@ class PushNotification(BaseModel):
     click_action: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
     read_at: Optional[str] = None
+
+
+# ============================================================================
+# PUSH NOTIFICATION PREFERENCES
+# ============================================================================
+
+# Canonical list of per-user toggleable alert categories.
+# Each category maps to one or more PushNotification.kind values:
+#   issue_updates  → kind="issue"        (own-issue status changes)
+#   broadcasts     → kind="broadcast"    (admin bulk messages to citizens)
+#   announcements  → kind="info"         (general info, reminders, events)
+PUSH_NOTIFICATION_CATEGORIES = ["issue_updates", "broadcasts", "announcements"]
+
+# Default prefs — all categories opted-in.
+DEFAULT_NOTIFICATION_PREFS: dict = {cat: True for cat in PUSH_NOTIFICATION_CATEGORIES}
+
+# Which PushNotification.kind values belong to each category.
+KIND_TO_CATEGORY: dict = {
+    "issue": "issue_updates",
+    "broadcast": "broadcasts",
+    "info": "announcements",
+    "celebration": "announcements",
+    "reminder": "announcements",
+}
+
+
+class NotificationPrefsUpdate(BaseModel):
+    """Payload for PUT /api/me/notification-prefs."""
+    issue_updates: Optional[bool] = None
+    broadcasts: Optional[bool] = None
+    announcements: Optional[bool] = None
 
 
 # ============================================================================
