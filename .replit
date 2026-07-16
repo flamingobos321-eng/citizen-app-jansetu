@@ -17,6 +17,12 @@ DB_NAME = "jansetu"
 PORT = "5000"
 REACT_APP_BACKEND_URL = ""
 LOCAL_STORAGE_PATH = "./uploads"
+FCM_SERVICE_ACCOUNT_JSON = "/home/runner/workspace/backend/secrets/firebase-admin.json"
+REACT_APP_FIREBASE_API_KEY = "AIzaSyDVMKM2iQKAW9AGPomTh_pEFRmJbvq8hlo"
+REACT_APP_FIREBASE_APP_ID = "1:1001872155963:web:2f29e7e13ff1021eb2031e"
+REACT_APP_FIREBASE_AUTH_DOMAIN = "jansetu-c8b85.firebaseapp.com"
+REACT_APP_FIREBASE_MESSAGING_SENDER_ID = "1001872155963"
+REACT_APP_FIREBASE_PROJECT_ID = "jansetu-c8b85"
 
 [workflows]
 runButton = "Project"
