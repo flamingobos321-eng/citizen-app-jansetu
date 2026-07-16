@@ -1,10 +1,15 @@
 version: "3.9"
 
+# ── JANSETU — Production Docker Compose ────────────────────────────────────
+# Start everything:   docker compose up -d
+# View logs:          docker compose logs -f
+# Stop everything:    docker compose down
+#
+# Copy .env.example → .env and fill in all values before first run.
+
 services:
 
-  # ── MongoDB ────────────────────────────────────────────────────────────────
-  # Remove this service if you are using a MongoDB instance already running on
-  # the host — update MONGO_URL in .env to point to it instead.
+  # ── MongoDB ───────────────────────────────────────────────────────────────
   mongodb:
     image: mongo:7
     restart: unless-stopped
@@ -14,11 +19,25 @@ services:
       MONGO_INITDB_DATABASE: ${DB_NAME}
     volumes:
       - mongo_data:/data/db
+      - mongo_config:/data/configdb
+      # Optional: custom mongod.conf  (see docs/mongod.conf.example)
+      # - ./config/mongod.conf:/etc/mongod.conf:ro
     networks:
       - jansetu
-    # Bind to localhost only — not exposed to the internet
+    # Bind to localhost — not exposed to the internet
     ports:
       - "127.0.0.1:27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   # ── FastAPI backend ────────────────────────────────────────────────────────
   backend:
@@ -28,36 +47,70 @@ services:
     restart: unless-stopped
     env_file: .env
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
     networks:
       - jansetu
     expose:
       - "8000"
     volumes:
-      # Mount Firebase service account if push notifications are needed
+      # Persistent local file storage — mounted at the path set in LOCAL_STORAGE_PATH
+      - uploads_data:/var/data/jansetu/uploads
+      # Firebase service-account key (push notifications)
       - ./backend/secrets/firebase-admin.json:/app/secrets/firebase-admin.json:ro
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "7"
 
-  # ── React frontend (Nginx) ─────────────────────────────────────────────────
+  # ── React frontend served by Nginx ────────────────────────────────────────
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # Leave empty so the built app uses relative /api URLs (proxied by Nginx)
+        REACT_APP_BACKEND_URL: ""
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     networks:
       - jansetu
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      # Let's Encrypt SSL certificates (managed by certbot on the host)
+      # Let's Encrypt certs (managed by certbot on the host)
       - /etc/letsencrypt:/etc/letsencrypt:ro
-      # ACME challenge directory for certificate renewal
+      # ACME challenge renewal dir
       - /var/www/certbot:/var/www/certbot:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   mongo_data:
+    driver: local
+  mongo_config:
+    driver: local
+  uploads_data:
+    driver: local
 
 networks:
   jansetu:

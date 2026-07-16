@@ -29,7 +29,7 @@ from models import (
     CitizenOTPRequest, CitizenOTPVerify, StaffLogin, ChangePassword,
     CitizenRegister, StaffCreate, User,
     Constituency, Area, AreaCreate, Household,
-    Issue, IssueCreate, IssueAssign, IssueUpdateStatus, IssueFeedback,
+    Issue, IssueCreate, IssueAssign, IssueUpdateStatus, IssueFeedback, BulkIssueStatusUpdate,
     Visit, VisitCreate, Notification, NotificationCreate,
     DevWork, DevWorkCreate,
     Relationship, RelationshipCreate, RELATION_TYPES, inverse_relation,
@@ -2403,6 +2403,119 @@ async def update_status(issue_id: str, payload: IssueUpdateStatus, user: dict = 
     except Exception:
         logger.exception("Push notification skipped for issue status update")
     return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
+
+
+@api.post("/issues/bulk-status")
+async def bulk_update_issue_status(
+    payload: BulkIssueStatusUpdate,
+    user: dict = Depends(require_roles("pa", "admin")),
+):
+    """Update status for up to 500 issues in one call.
+
+    Push notifications are consolidated per citizen — if a citizen has
+    multiple issues in the batch, they receive a single summary message
+    instead of N individual alerts.  A Semaphore caps concurrent FCM calls
+    so the operation never fans out to more than 10 simultaneous sends.
+    """
+    if payload.status not in ISSUE_STATUSES:
+        raise HTTPException(400, f"Invalid status: {payload.status!r}")
+    if not payload.issue_ids:
+        raise HTTPException(400, "issue_ids must not be empty")
+    if len(payload.issue_ids) > 500:
+        raise HTTPException(400, "Cannot update more than 500 issues per request")
+
+    tid = get_tenant_id_for_write(user)
+    ts  = now_iso()
+
+    # ── Fetch matching issues (citizens + titles) ──────────────────────────
+    issues = await db.issues.find(
+        {"id": {"$in": payload.issue_ids}, "tenant_id": tid},
+        {"_id": 0, "id": 1, "citizen_id": 1, "title": 1, "status": 1},
+    ).to_list(None)
+
+    if not issues:
+        raise HTTPException(404, "No matching issues found in this tenant")
+
+    found_ids = [i["id"] for i in issues]
+
+    # ── Bulk write (single round-trip to MongoDB) ──────────────────────────
+    from pymongo import UpdateOne
+    operations = [
+        UpdateOne(
+            {"id": iid},
+            {
+                "$set": {
+                    "status": payload.status,
+                    "updated_at": ts,
+                    "escalation_level": 0,
+                    "last_escalated_at": None,
+                },
+                "$push": {
+                    "timeline": {
+                        "status": payload.status,
+                        "at": ts,
+                        "by": user["name"],
+                        "note": payload.remarks or "",
+                    }
+                },
+            },
+        )
+        for iid in found_ids
+    ]
+    result = await db.issues.bulk_write(operations, ordered=False)
+
+    # ── Consolidated push notifications — 1 per citizen, not 1 per issue ──
+    _push_titles = {
+        "In Progress": ("Work started on your issue",  "Work started on {n} of your issues"),
+        "Resolved":    ("Your issue has been resolved", "{n} of your issues have been resolved"),
+        "Closed":      ("Issue closed",                 "{n} of your issues have been closed"),
+        "Reopened":    ("Issue reopened",               "{n} of your issues have been reopened"),
+    }
+
+    notified = 0
+    if payload.status in _push_titles:
+        singular_tpl, plural_tpl = _push_titles[payload.status]
+
+        # Group issues by citizen_id
+        citizen_map: dict[str, list[dict]] = {}
+        for issue in issues:
+            cid = issue.get("citizen_id")
+            if cid:
+                citizen_map.setdefault(cid, []).append(issue)
+
+        # Cap concurrent FCM sends — prevents thundering-herd against Firebase
+        sem = asyncio.Semaphore(10)
+
+        async def _notify(citizen_id: str, citizen_issues: list[dict]) -> None:
+            async with sem:
+                n = len(citizen_issues)
+                if n == 1:
+                    title = singular_tpl
+                    body  = f"{title}: {citizen_issues[0].get('title') or 'your issue'}"
+                else:
+                    title = plural_tpl.format(n=n)
+                    body  = title
+                try:
+                    await _push_to_user(
+                        citizen_id,
+                        title=title,
+                        body=body,
+                        kind="issue",
+                    )
+                except Exception:
+                    logger.exception("Bulk push failed for citizen %s", citizen_id)
+
+        # Limit to 200 unique citizens per call to bound worst-case latency
+        citizen_items = list(citizen_map.items())[:200]
+        await asyncio.gather(*[_notify(cid, iss) for cid, iss in citizen_items])
+        notified = len(citizen_items)
+
+    return {
+        "matched":          len(issues),
+        "modified":         result.modified_count,
+        "notified_citizens": notified,
+        "status":           payload.status,
+    }
 
 
 @api.post("/issues/{issue_id}/feedback")

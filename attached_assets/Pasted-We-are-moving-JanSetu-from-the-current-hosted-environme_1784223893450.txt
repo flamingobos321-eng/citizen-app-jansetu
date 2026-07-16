@@ -1,0 +1,412 @@
+We are moving JanSetu from the current hosted environment to our own Ubuntu VPS. Our goal is to own the complete infrastructure and run JanSetu as a production-ready multi-tenant SaaS platform.
+
+We will NOT use MongoDB Atlas. We will use MongoDB Community Edition installed on our VPS.
+
+Before making any changes, please review the entire codebase and provide a complete deployment strategy. If code changes are required for production deployment, implement them following best practices.
+
+Production Stack
+
+Operating System
+
+Ubuntu 24.04 LTS
+
+Database
+
+MongoDB Community Edition
+
+Web Server
+
+Nginx
+
+SSL
+
+Let's Encrypt
+
+Application
+
+Docker Compose
+
+Source Control
+
+GitHub
+Requirements
+1. Review Current Project
+
+Review the complete project and identify anything that would prevent production deployment.
+
+Check:
+
+Frontend
+Backend
+Database
+Authentication
+Multi-tenancy
+File uploads
+Environment variables
+Background jobs
+Notifications
+APIs
+
+Report any production issues before deployment.
+
+2. MongoDB Community Compatibility
+
+Verify the application works perfectly with MongoDB Community Edition.
+
+Confirm:
+
+No Atlas-only features are used
+No cloud dependencies
+All indexes are created automatically
+Existing migrations continue to work
+Existing data remains compatible
+
+Recommend the best MongoDB version.
+
+3. Docker Deployment
+
+Containerize the entire application.
+
+Provide:
+
+docker-compose.yml
+Dockerfiles
+Production environment configuration
+Restart policies
+Persistent volumes
+Health checks
+
+Everything should start with one command.
+
+Example:
+
+docker compose up -d
+
+4. Nginx Configuration
+
+Configure Nginx for production.
+
+Requirements:
+
+HTTPS
+Let's Encrypt
+Reverse Proxy
+Static React hosting
+API proxy
+Gzip/Brotli
+Security Headers
+HTTP → HTTPS redirect
+
+Provide complete Nginx configuration.
+
+5. Environment Variables
+
+Create a complete .env.example file.
+
+Include every required variable.
+
+Examples:
+
+Database
+
+JWT
+
+SMTP
+
+SMS
+
+Firebase
+
+File Upload
+
+URLs
+
+Any secrets
+
+Nothing should remain hardcoded.
+
+6. Production Security
+
+Secure the application.
+
+Include:
+
+MongoDB Authentication
+Strong JWT Secrets
+Secure Cookies
+Rate Limiting
+CORS
+Security Headers
+File Upload Validation
+Password Policies
+API Protection
+
+Recommend any additional production security improvements.
+
+7. VPS Preparation
+
+Provide every server command required.
+
+Install:
+
+Docker
+
+Docker Compose
+
+Nginx
+
+MongoDB Community (if not containerized)
+
+Git
+
+Certbot
+
+Firewall
+
+Any required packages
+
+Provide commands in order.
+
+8. Database
+
+Configure MongoDB Community Edition.
+
+Include:
+
+Authentication
+
+Indexes
+
+Performance Optimization
+
+Connection Pool
+
+Backups
+
+Restore Procedure
+
+Health Checks
+
+Provide scripts for:
+
+mongodump
+
+mongorestore
+
+9. File Storage
+
+Explain where uploaded files will be stored.
+
+Configure:
+
+Persistent storage
+
+Permissions
+
+Backup
+
+Maximum upload size
+
+Future cloud migration readiness
+
+10. Automatic Backups
+
+Configure automatic backups.
+
+Back up:
+
+MongoDB
+
+Uploaded Files
+
+Environment Files
+
+Provide restore instructions.
+
+11. Monitoring
+
+Recommend monitoring for:
+
+CPU
+
+RAM
+
+Disk
+
+MongoDB
+
+Docker Containers
+
+Logs
+
+Application Health
+
+Provide recommendations for free monitoring tools.
+
+12. Logging
+
+Configure proper production logging.
+
+Separate:
+
+Application Logs
+
+API Logs
+
+Database Logs
+
+Nginx Logs
+
+Error Logs
+
+Rotate logs automatically.
+
+13. Deployment Workflow
+
+Recommend a professional deployment workflow.
+
+Developer
+
+↓
+
+GitHub
+
+↓
+
+Development
+
+↓
+
+Staging
+
+↓
+
+Production
+
+We want safe deployments with rollback support.
+
+14. Zero Downtime Deployment
+
+Recommend the safest deployment strategy.
+
+Existing users should not lose data during deployments.
+
+If downtime is unavoidable, minimize it.
+
+15. Performance Optimization
+
+Optimize:
+
+Backend
+
+Frontend
+
+Database
+
+Caching
+
+Compression
+
+Image Serving
+
+Static Assets
+
+Connection Pooling
+
+Lazy Loading
+
+API Performance
+
+16. Production Readiness Checklist
+
+Provide a complete checklist.
+
+Example:
+
+SSL
+
+DNS
+
+Backups
+
+Monitoring
+
+Firewall
+
+Indexes
+
+Environment Variables
+
+Health Checks
+
+Rate Limiting
+
+Security
+
+Performance
+
+Everything required before production.
+
+17. Deliverables
+
+Please provide:
+
+Docker Compose
+Dockerfiles
+Nginx Configuration
+.env.example
+VPS Installation Commands
+Deployment Guide
+Backup Script
+Restore Guide
+Update Procedure
+Rollback Procedure
+Production Checklist
+18. Existing Data
+
+Very Important.
+
+We already have existing office data.
+
+Deployment must NOT:
+
+Lose data
+Reset the database
+Break multi-tenancy
+Change office IDs
+Change document numbering
+
+All existing data must remain intact.
+
+19. Future Scaling
+
+Recommend architecture suitable for:
+
+10 offices
+100 offices
+500 offices
+1,000 offices
+
+Include recommendations for:
+
+Database scaling
+
+File storage
+
+Background jobs
+
+Load balancing
+
+Redis (if beneficial)
+
+Caching
+
+Queue workers
+
+Do not implement unnecessary complexity now—just prepare the architecture for future growth.
+
+20. Final Goal
+
+Our objective is to run JanSetu as a fully self-hosted, production-ready SaaS platform on our own Ubuntu VPS using MongoDB Community Edition, with complete control over our infrastructure.
+
+Before deployment, please review the current codebase thoroughly, identify any production blockers, implement only the required production changes, and provide complete documentation so future deployments, updates, backups, and recovery can be performed reliably.

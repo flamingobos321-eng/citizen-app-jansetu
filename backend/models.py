@@ -377,6 +377,12 @@ class IssueFeedback(BaseModel):
     verified: bool  # True = resolved confirmed, False = reopen
 
 
+class BulkIssueStatusUpdate(BaseModel):
+    issue_ids: List[str]          # max 500 per request
+    status: str
+    remarks: Optional[str] = None
+
+
 # ---------- Visits ----------
 VISIT_STATUSES = ["Draft", "Pending Approval", "Approved", "Published"]
 
