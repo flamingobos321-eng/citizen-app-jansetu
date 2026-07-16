@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { SectionTitle, EmptyState } from "../components/Common";
-import { Bell, BellRing, BellOff, CheckCheck } from "lucide-react";
+import { Bell, BellRing, BellOff, CheckCheck, Zap, Send, Users } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
@@ -58,6 +58,7 @@ export default function Notifications() {
   };
 
   const canCompose = ["pa", "politician", "admin"].includes(user?.role);
+  const canAdmin = ["admin", "super_admin"].includes(user?.role);
   const pushBannerVisible = pushConfigured() && pushState !== "granted" && pushState !== "unsupported";
 
   return (
@@ -119,6 +120,10 @@ export default function Notifications() {
         </section>
       )}
 
+      {canAdmin && (
+        <PushDiagnostics />
+      )}
+
       {canCompose && (
         <Composer onCreated={(n) => setItems((x) => [n, ...x])} />
       )}
@@ -152,6 +157,145 @@ export default function Notifications() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function PushDiagnostics() {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [testingOwn, setTestingOwn] = useState(false);
+  const [sendForm, setSendForm] = useState({ user_id: "", title: "JanSetu test notification", body: "This is a test push notification from the admin panel." });
+  const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    api.get("/push/status").then((r) => setStatus(r.data)).catch(() => setStatus(null)).finally(() => setLoading(false));
+  }, []);
+
+  const testOwn = async () => {
+    setTestingOwn(true);
+    try {
+      const r = await api.post("/push/test");
+      if (r.data.mode === "development") {
+        toast.info("DEV mode — no real push sent (check backend logs). Register FCM_SERVICE_ACCOUNT_JSON to enable real delivery.");
+      } else if (r.data.delivered_to > 0) {
+        toast.success(`Test push sent to ${r.data.delivered_to} of your device(s).`);
+      } else if (r.data.inbox_only) {
+        toast.info("Inbox entry created but no device tokens registered for your account.");
+      } else {
+        toast.warning("Sent but 0 delivered — check your device tokens.");
+      }
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Test push failed");
+    } finally {
+      setTestingOwn(false);
+    }
+  };
+
+  const sendToUser = async () => {
+    if (!sendForm.user_id.trim()) return toast.error("Enter a user ID");
+    if (!sendForm.title.trim() || !sendForm.body.trim()) return toast.error("Title and body required");
+    setSending(true);
+    try {
+      const r = await api.post("/push/send-to-user", sendForm);
+      const name = r.data.target_name ? ` (${r.data.target_name})` : "";
+      if (r.data.mode === "development") {
+        toast.info(`DEV mode — no real push sent to user${name}. Backend logged the delivery.`);
+      } else if (r.data.delivered_to > 0) {
+        toast.success(`Push delivered to ${r.data.delivered_to} device(s) for user${name}.`);
+      } else if (r.data.inbox_only) {
+        toast.info(`Inbox entry created for user${name} but no device tokens registered.`);
+      } else {
+        toast.warning(`Sent but 0 delivered for user${name}. They may not have enabled push.`);
+      }
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to send");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg p-5" data-testid="push-diagnostics">
+      <div className="flex items-center gap-2 mb-4">
+        <Zap size={18} className="text-[#0A1128]" />
+        <h3 className="font-heading font-semibold text-gray-900">Push notification diagnostics</h3>
+      </div>
+
+      {loading ? (
+        <div className="text-xs text-gray-400">Loading status…</div>
+      ) : status ? (
+        <div className="flex flex-wrap gap-3 mb-4">
+          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold ${status.fcm_configured ? "bg-green-50 text-green-700 border border-green-200" : "bg-amber-50 text-amber-700 border border-amber-200"}`}>
+            <span className={`w-2 h-2 rounded-full ${status.fcm_configured ? "bg-green-500" : "bg-amber-400"}`} />
+            {status.fcm_configured ? "FCM live" : "DEV mode (no real delivery)"}
+          </div>
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-gray-50 text-gray-700 border border-gray-200">
+            <Users size={12} />
+            {(status.registered_tokens ?? status.total_registered_tokens ?? 0)} token{(status.registered_tokens ?? status.total_registered_tokens ?? 0) !== 1 ? "s" : ""} registered in this portal
+          </div>
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-gray-50 text-gray-700 border border-gray-200">
+            {status.your_registered_tokens} token{status.your_registered_tokens !== 1 ? "s" : ""} on your account
+          </div>
+        </div>
+      ) : (
+        <div className="text-xs text-gray-400 mb-4">Could not load push status.</div>
+      )}
+
+      {!status?.fcm_configured && (
+        <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-md text-xs text-amber-800">
+          <strong>FCM not configured.</strong> Set the <code>FCM_SERVICE_ACCOUNT_JSON</code> environment secret (Firebase service account JSON) to enable real push delivery. In dev mode, notifications are saved to the inbox only.
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3 mb-5">
+        <Button size="sm" variant="outline" onClick={testOwn} disabled={testingOwn} data-testid="push-test-self">
+          <Send size={13} className="mr-1" />
+          {testingOwn ? "Sending…" : "Send test to my devices"}
+        </Button>
+        <span className="text-xs text-gray-400">Sends a push to all your registered browser sessions.</span>
+      </div>
+
+      <div className="border-t border-gray-100 pt-4">
+        <div className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3">Send test to a specific citizen</div>
+        <div className="grid sm:grid-cols-3 gap-3">
+          <div className="sm:col-span-3 space-y-1">
+            <Label className="text-xs text-gray-500">Citizen user ID</Label>
+            <Input
+              data-testid="push-send-user-id"
+              placeholder="Paste the citizen's user ID from the Citizen Manager"
+              value={sendForm.user_id}
+              onChange={(e) => setSendForm((f) => ({ ...f, user_id: e.target.value }))}
+            />
+          </div>
+          <div className="sm:col-span-2 space-y-1">
+            <Label className="text-xs text-gray-500">Title</Label>
+            <Input
+              data-testid="push-send-title"
+              value={sendForm.title}
+              onChange={(e) => setSendForm((f) => ({ ...f, title: e.target.value }))}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-gray-500">Body</Label>
+            <Input
+              data-testid="push-send-body"
+              value={sendForm.body}
+              onChange={(e) => setSendForm((f) => ({ ...f, body: e.target.value }))}
+            />
+          </div>
+        </div>
+        <Button
+          size="sm"
+          className="mt-3 bg-[#0A1128] text-white hover:opacity-90"
+          onClick={sendToUser}
+          disabled={sending}
+          data-testid="push-send-to-user-btn"
+        >
+          <Send size={13} className="mr-1" />
+          {sending ? "Sending…" : "Send test push"}
+        </Button>
+      </div>
     </div>
   );
 }

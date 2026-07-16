@@ -2304,6 +2304,21 @@ async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends
             note=f"Assigned to {worker['name']}", actor_user=user)
     except Exception:
         logger.exception("V2 dualwrite skipped for issue assign")
+    # Push notification to citizen that their issue is being actioned.
+    try:
+        issue_for_push = await db.issues.find_one(
+            tenant_filter(user, {"id": issue_id}), {"_id": 0, "citizen_id": 1, "title": 1})
+        if issue_for_push and issue_for_push.get("citizen_id"):
+            issue_title = issue_for_push.get("title") or "your issue"
+            await _push_to_user(
+                issue_for_push["citizen_id"],
+                title="Your issue has been assigned",
+                body=f"A team member has been assigned to work on: {issue_title}",
+                kind="issue",
+                click_action=f"/app/issues/{issue_id}",
+            )
+    except Exception:
+        logger.exception("Push notification skipped for issue assign")
     return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
 
 
@@ -2341,6 +2356,31 @@ async def update_status(issue_id: str, payload: IssueUpdateStatus, user: dict = 
             actor_user=user)
     except Exception:
         logger.exception("V2 dualwrite skipped for issue status update")
+    # Push notification to the citizen who submitted the issue.
+    try:
+        _status_push_messages = {
+            "In Progress": ("Work started on your issue", "Your issue is now being actively worked on."),
+            "Resolved": ("Your issue has been resolved", "Please open the app to verify and rate the resolution."),
+            "Closed": ("Issue closed", "Your issue has been closed by the office."),
+            "Reopened": ("Issue reopened", "Your issue has been reopened for further action."),
+        }
+        if payload.status in _status_push_messages:
+            issue_for_push = await db.issues.find_one(
+                tenant_filter(user, {"id": issue_id}), {"_id": 0, "citizen_id": 1, "title": 1})
+            if issue_for_push and issue_for_push.get("citizen_id"):
+                push_title, push_body = _status_push_messages[payload.status]
+                issue_title = issue_for_push.get("title")
+                if issue_title:
+                    push_body = f"{push_body[:-1]}: {issue_title}" if push_body.endswith(".") else f"{push_body} — {issue_title}"
+                await _push_to_user(
+                    issue_for_push["citizen_id"],
+                    title=push_title,
+                    body=push_body,
+                    kind="issue",
+                    click_action=f"/app/issues/{issue_id}",
+                )
+    except Exception:
+        logger.exception("Push notification skipped for issue status update")
     return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
 
 
@@ -2690,6 +2730,77 @@ async def push_test(user: dict = Depends(require_roles("admin", "super_admin")))
         click_action="/app",
     )
     return r
+
+
+@api.get("/push/status")
+async def push_status(user: dict = Depends(require_roles("admin", "super_admin"))):
+    """Admin diagnostic — current push adapter mode and registered token counts.
+
+    Tenant admins see only their own tenant's token counts.
+    Super admins additionally receive the platform-wide total.
+    """
+    is_super = user.get("role") == "super_admin"
+    tid = user.get("tenant_id")
+    own_tokens = await db.device_tokens.count_documents({"user_id": user["id"]})
+
+    if is_super:
+        # Super admin: expose global count for platform diagnostics.
+        total_tokens = await db.device_tokens.count_documents({})
+        resp = {
+            "mode": push_service.current_mode(),
+            "fcm_configured": push_service.current_mode() == "fcm",
+            "total_registered_tokens": total_tokens,
+            "your_registered_tokens": own_tokens,
+        }
+    else:
+        # Tenant admin: only expose counts scoped to this tenant.
+        if not tid:
+            raise HTTPException(403, "User has no tenant")
+        tenant_tokens = await db.device_tokens.count_documents({"tenant_id": tid})
+        resp = {
+            "mode": push_service.current_mode(),
+            "fcm_configured": push_service.current_mode() == "fcm",
+            "registered_tokens": tenant_tokens,
+            "your_registered_tokens": own_tokens,
+        }
+    return resp
+
+
+class PushSendToUserRequest(BaseModel):
+    user_id: str
+    title: str
+    body: str
+
+
+@api.post("/push/send-to-user")
+async def push_send_to_user(
+    payload: PushSendToUserRequest,
+    user: dict = Depends(require_roles("admin", "super_admin")),
+):
+    """Admin-only — send a test push to a specific user by ID.
+    Useful for verifying end-to-end FCM delivery to a citizen's browser.
+
+    Tenant admins can only target users within their own tenant.
+    Super admins can target any user.
+    """
+    # Scope the lookup to the caller's tenant so a tenant admin cannot send
+    # to a user in another tenant (broken access control guard).
+    target_q = tenant_filter(user, {"id": payload.user_id})
+    target = await db.users.find_one(target_q, {"_id": 0, "id": 1, "name": 1, "tenant_id": 1})
+    if not target:
+        raise HTTPException(404, "User not found in your tenant")
+    r = await _push_to_user(
+        payload.user_id,
+        title=payload.title,
+        body=payload.body,
+        kind="info",
+        click_action="/app/notifications",
+    )
+    await _audit("push.send_to_user", user, {
+        "target_user_id": payload.user_id,
+        "title": payload.title,
+    })
+    return {**r, "target_name": target.get("name")}
 
 
 class PushBroadcastRequest(BaseModel):
