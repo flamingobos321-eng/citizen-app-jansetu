@@ -1,87 +1,103 @@
 # JANSETU — Production Deployment Guide
+## Git-Based CI/CD Workflow
 
-Self-hosted Ubuntu 24.04 VPS · MongoDB Community · Docker Compose · Nginx · Let's Encrypt
+```
+  Replit (development)
+        │ git push
+        ▼
+  GitHub (single source of truth)
+        │ git pull  ←── only way code reaches the VPS
+        ▼
+  Production VPS
+  ./scripts/deploy.sh
+  docker compose up -d --build
+```
+
+**Rule:** The VPS is never edited manually (except `.env` and `backend/secrets/`).
+Every change goes: Replit → GitHub → VPS.
 
 ---
 
 ## Table of Contents
 
-1. [Production readiness checklist](#1-production-readiness-checklist)
+1. [Architecture overview](#1-architecture-overview)
 2. [VPS preparation](#2-vps-preparation)
-3. [MongoDB compatibility](#3-mongodb-compatibility)
-4. [Project setup](#4-project-setup)
+3. [Isolation from VianBills](#3-isolation-from-vianbills)
+4. [First-time setup on the VPS](#4-first-time-setup-on-the-vps)
 5. [Environment variables](#5-environment-variables)
-6. [Firebase (push notifications)](#6-firebase-push-notifications)
-7. [First-time deployment](#7-first-time-deployment)
-8. [SSL / Let's Encrypt](#8-ssl--lets-encrypt)
-9. [DNS](#9-dns)
-10. [Verify everything works](#10-verify-everything-works)
-11. [Routine updates](#11-routine-updates)
-12. [Backups and restore](#12-backups-and-restore)
-13. [Monitoring](#13-monitoring)
-14. [Logging](#14-logging)
+6. [Firebase push notifications](#6-firebase-push-notifications)
+7. [Host Nginx + SSL](#7-host-nginx--ssl)
+8. [First deploy](#8-first-deploy)
+9. [Routine deploys](#9-routine-deploys)
+10. [Database migrations](#10-database-migrations)
+11. [Backups and restore](#11-backups-and-restore)
+12. [Rollback procedure](#12-rollback-procedure)
+13. [Health checks and monitoring](#13-health-checks-and-monitoring)
+14. [Logs](#14-logs)
 15. [Security hardening](#15-security-hardening)
-16. [Performance tuning](#16-performance-tuning)
-17. [Scaling roadmap](#17-scaling-roadmap)
-18. [Rollback procedure](#18-rollback-procedure)
-19. [Troubleshooting](#19-troubleshooting)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
-## 1. Production Readiness Checklist
+## 1. Architecture Overview
 
-Complete every item before going live.
+```
+Internet
+   │ HTTPS :443
+   ▼
+Host Nginx  (installed directly on VPS — shared with VianBills)
+   │  routes by domain name
+   ├─► vianbills.yourdomain.com  ──►  VianBills containers  (unchanged)
+   │
+   └─► jansetu.yourdomain.com   ──►  127.0.0.1:3000
+                                         │
+                               ┌─────────┴──────────────────────┐
+                               │  Docker network: jansetu_internal│
+                               │                                  │
+                               │  jansetu-frontend-1 :80          │
+                               │      │ /api proxy                │
+                               │  jansetu-backend-1  :8000        │
+                               │      │                           │
+                               │  jansetu-mongodb-1  :27017       │
+                               └──────────────────────────────────┘
+```
 
-| # | Item | Notes |
-|---|------|-------|
-| ✅ | VPS with Ubuntu 24.04 | 2 vCPU / 4 GB RAM minimum |
-| ✅ | Domain name with DNS A record pointing to VPS | |
-| ✅ | SSH access with key-based authentication | |
-| ✅ | UFW firewall configured (ports 22, 80, 443 only) | |
-| ✅ | Docker + Docker Compose installed | |
-| ✅ | `.env` file created from `.env.example` | |
-| ✅ | `JWT_SECRET` set to 64+ character random string | |
-| ✅ | `MONGO_ROOT_PASSWORD` set to strong password | |
-| ✅ | `CORS_ORIGINS` set to your production domain | |
-| ✅ | SSL certificate issued by Let's Encrypt | |
-| ✅ | `YOUR_DOMAIN` replaced in `frontend/nginx.conf` | |
-| ✅ | Firebase `firebase-admin.json` uploaded (or push disabled) | |
-| ✅ | `LOCAL_STORAGE_PATH` volume working (or S3 configured) | |
-| ✅ | `scripts/backup.sh` tested and cron scheduled | |
-| ✅ | Health check `GET /api/health` returns 200 | |
-| ✅ | Log rotation configured (logrotate or Docker json-file) | |
-| ✅ | MongoDB authentication enabled | |
-| ✅ | Ports 8000 and 27017 NOT exposed to the internet | |
+### Port allocation (host-level)
+
+| Service | Host port | Notes |
+|---------|-----------|-------|
+| Host Nginx | 80, 443 | Shared with VianBills, routes by domain |
+| JanSetu frontend | 127.0.0.1:3000 | Internal only — not internet-facing |
+| JanSetu MongoDB | 127.0.0.1:27018 | Different from VianBills on :27017 |
+| JanSetu backend | internal only | Only reachable inside Docker network |
+
+### Docker namespacing (Docker Compose `name: jansetu`)
+
+Everything is prefixed — zero overlap with VianBills:
+
+| Resource | Name |
+|----------|------|
+| Containers | `jansetu-mongodb-1`, `jansetu-backend-1`, `jansetu-frontend-1` |
+| Volumes | `jansetu_mongo_data`, `jansetu_mongo_config`, `jansetu_uploads_data` |
+| Network | `jansetu_internal` |
 
 ---
 
 ## 2. VPS Preparation
 
-Run all commands as root or with `sudo`.
+Run once on a fresh VPS (or skip steps already done for VianBills).
 
-### 2.1 System update
+### System packages
 
 ```bash
 apt-get update && apt-get upgrade -y
-apt-get install -y git curl wget unzip software-properties-common ca-certificates gnupg lsb-release
+apt-get install -y git curl wget nginx certbot python3-certbot-nginx \
+    python3 unzip software-properties-common
 ```
 
-### 2.2 UFW Firewall
+### Docker (skip if already installed for VianBills)
 
 ```bash
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow 22/tcp       # SSH
-ufw allow 80/tcp       # HTTP (Let's Encrypt + redirect)
-ufw allow 443/tcp      # HTTPS
-ufw enable
-ufw status verbose
-```
-
-### 2.3 Docker
-
-```bash
-# Add Docker's official GPG key and repo
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
     | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -89,532 +105,513 @@ chmod a+r /etc/apt/keyrings/docker.gpg
 
 echo "deb [arch=$(dpkg --print-architecture) \
     signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/ubuntu \
-    $(lsb_release -cs) stable" \
+    https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
     | tee /etc/apt/sources.list.d/docker.list
 
 apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+apt-get install -y docker-ce docker-ce-cli containerd.io \
+    docker-buildx-plugin docker-compose-plugin
 
-# Allow your deploy user to run docker without sudo
-usermod -aG docker $USER
-newgrp docker
-
-# Enable Docker to start on boot
-systemctl enable docker
-systemctl start docker
-docker --version          # verify
-docker compose version    # verify
+systemctl enable docker && systemctl start docker
+docker --version && docker compose version   # verify
 ```
 
-### 2.4 Certbot (Let's Encrypt)
+### Firewall (skip ports already open for VianBills)
 
 ```bash
-apt-get install -y certbot
-certbot --version    # verify
-```
-
-### 2.5 Backup directory
-
-```bash
-mkdir -p /var/backups/jansetu
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw enable
+ufw status
 ```
 
 ---
 
-## 3. MongoDB Compatibility
+## 3. Isolation from VianBills
 
-JANSETU uses **MongoDB Community Edition 7** (the version pinned in `docker-compose.yml`). It uses:
+JanSetu and VianBills share the same VPS but are **completely separate** at every layer:
 
-- Motor (async pymongo driver) for all queries
-- Standard indexes (no Atlas-only features)
-- No Atlas Search, Atlas Triggers, or Atlas Data API
-- Indexes are created automatically on startup via `ensure_indexes()`
+| Layer | VianBills | JanSetu | Conflict? |
+|-------|-----------|---------|-----------|
+| Docker project | `vianbills` (or default) | `jansetu` | ✅ None |
+| Containers | `vianbills-*` | `jansetu-*` | ✅ None |
+| Volumes | `vianbills_*` | `jansetu_*` | ✅ None |
+| Network | `vianbills_*` | `jansetu_internal` | ✅ None |
+| MongoDB port | 127.0.0.1:27017 | 127.0.0.1:27018 | ✅ None |
+| Frontend port | (its own) | 127.0.0.1:3000 | ✅ None |
+| Host Nginx | existing server blocks | new server block added | ✅ Additive only |
+| SSL certs | existing certs | new cert for JanSetu domain | ✅ Separate |
+| `.env` | not touched | `/opt/jansetu/.env` | ✅ None |
 
-No Atlas-specific code exists. Any MongoDB 6+ Community instance works.
-
-**Recommended version:** MongoDB 7 (LTS — pinned in `docker-compose.yml`)
+**You will never touch VianBills files, containers, or configuration.**
 
 ---
 
-## 4. Project Setup
+## 4. First-Time Setup on the VPS
 
 ```bash
-# Clone the repository
-git clone https://github.com/YOUR_ORG/jansetu.git /opt/jansetu
+# 1. Clone from GitHub (the single source of truth)
+git clone https://github.com/flamingobos321-eng/citizen-app-jansetu.git /opt/jansetu
 cd /opt/jansetu
 
-# Create .env
+# 2. Create .env from the template (only time you edit on the VPS)
 cp .env.example .env
-nano .env          # fill in all CHANGE_ME values
+nano .env          # fill in every CHANGE_ME value — see §5
 
-# Make scripts executable
+# 3. Add firebase-admin.json (if using push notifications)
+mkdir -p backend/secrets
+# Copy your Firebase service account JSON here:
+nano backend/secrets/firebase-admin.json
+chmod 600 backend/secrets/firebase-admin.json
+
+# 4. Make scripts executable
 chmod +x scripts/*.sh
-```
 
-### Replace the domain placeholder
-
-```bash
-# In frontend/nginx.conf — replace both occurrences of YOUR_DOMAIN
-sed -i 's/YOUR_DOMAIN/app.yourdomain.com/g' frontend/nginx.conf
+# 5. Create backup directory
+mkdir -p /var/backups/jansetu
 ```
 
 ---
 
 ## 5. Environment Variables
 
-Every required variable is documented in `.env.example`.  
-Critical ones to set before first boot:
+Copy `.env.example` → `.env` on the VPS and set every value. Key variables:
 
-| Variable | How to generate | Required |
-|----------|-----------------|----------|
-| `JWT_SECRET` | `python3 -c "import secrets; print(secrets.token_hex(48))"` | ✅ |
-| `SESSION_SECRET` | same as above | ✅ |
-| `MONGO_ROOT_PASSWORD` | use a password manager | ✅ |
-| `MONGO_URL` | include credentials and `authSource=admin` | ✅ |
-| `CORS_ORIGINS` | `https://yourdomain.com` | ✅ |
-| `LOCAL_STORAGE_PATH` | `/var/data/jansetu/uploads` (inside container) | ✅ |
-| `FIREBASE_CREDENTIALS_PATH` | `/app/secrets/firebase-admin.json` | push only |
-| `SMTP_*` | your mail provider | email only |
+```bash
+# MongoDB — use port 27018 (JanSetu's host port, avoids VianBills conflict)
+MONGO_URL=mongodb://admin:YOUR_PASSWORD@127.0.0.1:27018/jansetu?authSource=admin
+# OR using the internal Docker service name (recommended — no host port needed):
+MONGO_URL=mongodb://admin:YOUR_PASSWORD@mongodb:27017/jansetu?authSource=admin
+MONGO_ROOT_USER=admin
+MONGO_ROOT_PASSWORD=YOUR_STRONG_PASSWORD
+DB_NAME=jansetu
+
+# Auth
+JWT_SECRET=<64-char random string>    # python3 -c "import secrets; print(secrets.token_hex(48))"
+SESSION_SECRET=<another 64-char string>
+
+# Storage
+LOCAL_STORAGE_PATH=/var/data/jansetu/uploads
+
+# CORS — your production domain
+CORS_ORIGINS=https://jansetu.yourdomain.com
+
+# Firebase
+FIREBASE_CREDENTIALS_PATH=/app/secrets/firebase-admin.json
+REACT_APP_FIREBASE_VAPID_KEY=your_vapid_key_from_firebase_console
+
+# Workers (2 × CPU cores + 1)
+WORKERS=3
+```
+
+> ⚠️ **Never commit `.env` to GitHub.** It is in `.gitignore`. The VPS `.env` is the only place secrets live.
+
+> ℹ️ `DEPLOY_TAG` is set automatically by `scripts/deploy.sh` — do not set it manually.
 
 ---
 
-## 6. Firebase (Push Notifications)
-
-1. Go to **Firebase Console → Project Settings → Service Accounts**
-2. Click **Generate new private key** → download the JSON
-3. Place it at `backend/secrets/firebase-admin.json`
-4. The `docker-compose.yml` mounts it read-only into the container
+## 6. Firebase Push Notifications
 
 ```bash
-mkdir -p backend/secrets
-cp ~/firebase-admin.json backend/secrets/firebase-admin.json
-chmod 600 backend/secrets/firebase-admin.json
+# On your local machine: download from Firebase Console
+# Project Settings → Service Accounts → Generate new private key
+
+# Upload to VPS
+scp firebase-admin.json user@YOUR_VPS_IP:/opt/jansetu/backend/secrets/firebase-admin.json
+
+# Secure it
+ssh user@YOUR_VPS_IP "chmod 600 /opt/jansetu/backend/secrets/firebase-admin.json"
 ```
 
-If you don't need push notifications, leave the file absent — the app falls back to inbox-only delivery automatically.
+If this file is absent, the backend starts normally — push notifications are disabled and citizens receive in-app notifications only.
 
 ---
 
-## 7. First-Time Deployment
+## 7. Host Nginx + SSL
 
-### 7.1 Pre-SSL startup (HTTP only, to get the certificate)
+This is the only step that touches the shared Nginx (used by VianBills too). It is **additive only** — existing VianBills server blocks are not modified.
 
-Temporarily comment out the HTTPS `server {}` block in `frontend/nginx.conf`
-and the `return 301` line so Nginx starts on port 80 only:
-
-```bash
-# Start all services
-docker compose up -d
-
-# Check everything started
-docker compose ps
-docker compose logs -f backend   # watch for startup errors
-```
-
-### 7.2 Issue the SSL certificate (see §8)
-
-### 7.3 Re-enable HTTPS and restart
+### 7.1 Issue the SSL certificate
 
 ```bash
-# Restore the full nginx.conf (HTTPS block + redirect)
-docker compose restart frontend
-```
+# Stop Nginx temporarily to free port 80 for the standalone ACME challenge
+systemctl stop nginx
 
----
-
-## 8. SSL / Let's Encrypt
-
-### Issue the certificate (run ONCE)
-
-```bash
-# Stop any process using port 80 first
-docker compose stop frontend
-
-certbot certonly \
-    --standalone \
-    --non-interactive \
-    --agree-tos \
+certbot certonly --standalone \
+    --non-interactive --agree-tos \
     --email admin@yourdomain.com \
-    -d yourdomain.com \
-    -d www.yourdomain.com
+    -d jansetu.yourdomain.com
 
-docker compose start frontend
+systemctl start nginx
 ```
 
-### Auto-renewal via cron
+### 7.2 Install the JanSetu Nginx config
 
 ```bash
-# Renew daily at 3:15 AM, reload Nginx on success
-echo "15 3 * * * root certbot renew --quiet --post-hook 'docker compose -f /opt/jansetu/docker-compose.yml restart frontend'" \
+# Replace the placeholder domain in the config
+sed 's/JANSETU_DOMAIN/jansetu.yourdomain.com/g' \
+    /opt/jansetu/config/nginx-jansetu.conf \
+    > /etc/nginx/sites-available/jansetu.conf
+
+# Enable it (does NOT affect VianBills)
+ln -sf /etc/nginx/sites-available/jansetu.conf \
+        /etc/nginx/sites-enabled/jansetu.conf
+
+# Test and reload (not restart — keeps VianBills traffic flowing)
+nginx -t && systemctl reload nginx
+```
+
+### 7.3 Auto-renewal
+
+```bash
+echo "15 3 * * * root certbot renew --quiet --post-hook 'systemctl reload nginx'" \
     >> /etc/cron.d/certbot-renew
 ```
 
-### Test renewal
-
-```bash
-certbot renew --dry-run
-```
-
 ---
 
-## 9. DNS
-
-Point your domain to the VPS IP **before** running Certbot.
-
-| Type | Name | Value |
-|------|------|-------|
-| A | `yourdomain.com` | `<VPS_IP>` |
-| A | `www.yourdomain.com` | `<VPS_IP>` |
-
-TTL 300 s for initial setup; raise to 3600 s after it's stable.
-
----
-
-## 10. Verify Everything Works
-
-```bash
-# All containers healthy
-docker compose ps
-
-# Backend health endpoint
-curl https://yourdomain.com/api/health
-
-# MongoDB connectivity (from inside backend container)
-docker compose exec backend python -c "
-import asyncio, motor.motor_asyncio, os
-client = motor.motor_asyncio.AsyncIOMotorClient(os.environ['MONGO_URL'])
-async def ping(): print(await client.admin.command('ping'))
-asyncio.run(ping())
-"
-
-# View live logs
-docker compose logs -f --tail=50
-```
-
----
-
-## 11. Routine Updates
+## 8. First Deploy
 
 ```bash
 cd /opt/jansetu
-./scripts/update.sh
+
+# Build images and start all services
+./scripts/deploy.sh
+
+# Verify all containers are healthy
+docker compose ps
+
+# Check backend started correctly (look for migration logs)
+docker compose logs backend | grep -E "startup|migrat|INFO|ERROR" | head -30
+
+# Test the full stack
+curl -s https://jansetu.yourdomain.com/api/health
+# Expected: {"status": "ok"}
 ```
 
-The update script:
-1. Takes a pre-update backup
-2. `git pull --ff-only`
-3. Rebuilds Docker images
-4. Restarts backend, waits for healthy, then restarts frontend
-5. Runs a final HTTP health check
-6. Prints the rollback command if anything fails
+On first boot the backend runs `_migrate_to_multi_tenant()` automatically.
+See §10 for details on what it does and why it is safe.
 
 ---
 
-## 12. Backups and Restore
+## 9. Routine Deploys
+
+**Every deploy follows the same four steps — on Replit, then on the VPS:**
+
+```
+# 1. On Replit: develop, test, commit
+git add -A && git commit -m "feat: describe your change"
+
+# 2. Push to GitHub (Replit does this automatically, or run in Replit shell)
+git push origin main
+
+# 3. SSH into the VPS
+ssh user@YOUR_VPS_IP
+
+# 4. Deploy
+cd /opt/jansetu && ./scripts/deploy.sh
+```
+
+`scripts/deploy.sh` does the following automatically:
+1. Takes a database backup
+2. `git reset --hard origin/main` (never merges — always fast-forward to GitHub)
+3. Builds new Docker images tagged with the git commit hash
+4. Restarts backend → waits for health check → restarts frontend
+5. Verifies HTTP 200 from the frontend
+6. Auto-rolls back the backend if the health check fails
+7. Prunes old Docker images
+
+The deploy is **idempotent** — running it twice with no new commits is safe.
+
+---
+
+## 10. Database Migrations
+
+### How it works
+
+JanSetu uses MongoDB (schemaless). Migrations are:
+
+| Migration | Trigger | Safety |
+|-----------|---------|--------|
+| `ensure_indexes()` | Every startup | **Additive only** — creates indexes that don't exist, never drops |
+| `_migrate_to_multi_tenant()` | First startup only | **Idempotent** — checks a version stamp; does nothing if already run |
+| Field backfills (e.g. `$set` on new optional fields) | First startup | **Additive only** — only sets fields that don't already exist |
+
+### Why existing data is never overwritten
+
+- Every migration checks a version stamp (`system_meta._id = "multi_tenant"`) before running
+- Fields are set with `$set` on docs where the field is missing — existing values are preserved
+- No migration uses `drop`, `deleteMany`, `drop_collection`, or destructive `$unset`
+- The MongoDB container uses a **named Docker volume** (`jansetu_mongo_data`) — `docker compose down` does **not** delete volumes; only `docker compose down -v` does (never run that in production)
+
+### Check migration ran successfully
+
+```bash
+docker compose logs backend | grep -i "migrat"
+# Expected output on first run:
+#   Multi-tenant migration complete. Backfilled: {...}
+# Expected on subsequent runs:
+#   (silence — migration already done, skipped)
+```
+
+---
+
+## 11. Backups and Restore
+
+### Automatic daily backups
+
+```bash
+# Add to cron (runs at 2 AM)
+echo "0 2 * * * root /opt/jansetu/scripts/backup.sh >> /var/log/jansetu-backup.log 2>&1" \
+    > /etc/cron.d/jansetu-backup
+```
 
 ### Manual backup
 
 ```bash
-./scripts/backup.sh
-ls /var/backups/jansetu/
-```
-
-### Scheduled backup (cron — runs at 2 AM daily)
-
-```bash
-echo "0 2 * * * root /opt/jansetu/scripts/backup.sh >> /var/log/jansetu-backup.log 2>&1" \
-    >> /etc/cron.d/jansetu-backup
+cd /opt/jansetu && ./scripts/backup.sh
+ls /var/backups/jansetu/    # check it was created
 ```
 
 ### Restore from backup
 
 ```bash
 # List available backups
-ls /var/backups/jansetu/
+ls -lt /var/backups/jansetu/
 
-# Restore (interactive — will ask for confirmation)
-./scripts/restore.sh /var/backups/jansetu/20250716_020000
+# Restore (interactive — asks for confirmation, then replaces DB + uploads)
+cd /opt/jansetu && ./scripts/restore.sh /var/backups/jansetu/20250716_020000
 ```
 
-Restore replaces the live database and uploads volume, then restarts the backend.  
-**Test your restore procedure periodically** — a backup you've never tested is not a backup.
+Restore does **not** affect VianBills — it only touches `jansetu_mongo_data` and `jansetu_uploads_data` volumes.
 
-### mongodump / mongorestore manually
+---
+
+## 12. Rollback Procedure
+
+### Option A — Roll back code only (no data change)
+
+Use this when the new code is broken but the database is fine.
 
 ```bash
-# Dump
-docker compose exec mongodb mongodump \
-    --username $MONGO_ROOT_USER --password $MONGO_ROOT_PASSWORD \
-    --authenticationDatabase admin --db jansetu --out /tmp/dump
-docker compose cp mongodb:/tmp/dump ./backups/manual_dump
+cd /opt/jansetu
 
-# Restore
-docker compose cp ./backups/manual_dump mongodb:/tmp/restore
-docker compose exec mongodb mongorestore \
-    --username $MONGO_ROOT_USER --password $MONGO_ROOT_PASSWORD \
-    --authenticationDatabase admin --db jansetu --drop /tmp/restore/jansetu
+# Find the last known-good commit
+git log --oneline -10
+
+# Roll back to it
+git checkout <COMMIT_HASH>
+
+# Rebuild and redeploy from that commit
+DEPLOY_TAG=<COMMIT_HASH> docker compose build
+DEPLOY_TAG=<COMMIT_HASH> docker compose up -d --force-recreate backend frontend
+
+# Verify
+curl -s https://jansetu.yourdomain.com/api/health
+```
+
+### Option B — Full rollback (code + database)
+
+Use this when a migration caused data problems.
+
+```bash
+# 1. Find the backup taken just before the bad deploy
+ls -lt /var/backups/jansetu/
+
+# 2. Restore data (interactive)
+./scripts/restore.sh /var/backups/jansetu/<TIMESTAMP>
+
+# 3. Roll back code
+git checkout <COMMIT_HASH>
+
+# 4. Rebuild from old code
+DEPLOY_TAG=<COMMIT_HASH> docker compose build
+DEPLOY_TAG=<COMMIT_HASH> docker compose up -d --force-recreate backend frontend
+```
+
+### Option C — Emergency: keep VianBills running, stop JanSetu only
+
+```bash
+# Stop only JanSetu — VianBills is unaffected
+docker compose down        # (run from /opt/jansetu)
+
+# Restart JanSetu
+docker compose up -d
 ```
 
 ---
 
-## 13. Monitoring
+## 13. Health Checks and Monitoring
 
-### Free options (recommended)
-
-| Tool | What it monitors | Install |
-|------|-----------------|---------|
-| **Netdata** | CPU, RAM, disk, Docker, MongoDB | `docker run -d --name=netdata ...` |
-| **UptimeRobot** | HTTPS uptime, cert expiry | cloud, free tier |
-| **ctop** | Live container stats | `apt install ctop` |
-| **Grafana + Prometheus** | Full metrics stack | docker-compose add-on |
-
-### Quick one-liners
+### Built-in health endpoints
 
 ```bash
-# Container resource usage
+# API health (tests DB connectivity)
+curl https://jansetu.yourdomain.com/api/health
+
+# Nginx health (tests host proxy)
+curl https://jansetu.yourdomain.com/nginx-health
+
+# Container status
+docker compose ps
 docker stats --no-stream
-
-# Disk usage
-df -h && du -sh /var/lib/docker/volumes/*
-
-# MongoDB stats (inside container)
-docker compose exec mongodb mongosh \
-    -u $MONGO_ROOT_USER -p $MONGO_ROOT_PASSWORD \
-    --authenticationDatabase admin \
-    --eval "db.serverStatus().connections"
-
-# Check all containers are healthy
-docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Health}}"
 ```
 
-### Application health endpoint
+### Recommended free tools
 
-```
-GET https://yourdomain.com/api/health
-→ 200 OK  {"status": "ok"}
-```
+| Tool | Purpose | Setup |
+|------|---------|-------|
+| **UptimeRobot** | HTTPS uptime + cert expiry alerts | Free tier, 5-min checks |
+| **ctop** | Live Docker resource usage | `apt install ctop` |
+| **Netdata** | CPU/RAM/disk/Docker metrics | `docker run -d --name=netdata ...` |
 
 ---
 
-## 14. Logging
-
-Docker logs are stored as JSON files and rotated automatically (configured in `docker-compose.yml`):
-
-- Backend: max 100 MB × 7 files
-- Frontend / MongoDB: max 50 MB × 5 files
-
-### View logs
+## 14. Logs
 
 ```bash
-docker compose logs -f                    # all services
-docker compose logs -f backend            # backend only
-docker compose logs -f --since 1h backend # last hour
-docker compose logs backend 2>&1 | grep ERROR
-```
+# All services
+docker compose logs -f
 
-### Nginx access logs (inside frontend container)
+# Backend only (most useful for debugging)
+docker compose logs -f backend
 
-```bash
+# Last hour of backend errors
+docker compose logs --since 1h backend | grep -i error
+
+# Nginx access logs (inside frontend container)
 docker compose exec frontend tail -f /var/log/nginx/access.log
-docker compose exec frontend tail -f /var/log/nginx/error.log
+
+# Host Nginx logs (shared — includes VianBills traffic too)
+tail -f /var/log/nginx/access.log
+tail -f /var/log/nginx/error.log
+
+# Deploy log
+cat /var/log/jansetu-deploy.log 2>/dev/null || echo "No deploy log yet"
 ```
 
-### Persistent log export (optional)
-
-```bash
-# Mount a host log directory
-# Add to frontend service in docker-compose.yml:
-#   volumes:
-#     - /var/log/jansetu/nginx:/var/log/nginx
-```
+Log rotation is configured in `docker-compose.yml` (`json-file` driver, capped at 100 MB × 7 files for backend, 50 MB × 5 files for others).
 
 ---
 
 ## 15. Security Hardening
 
-### Already implemented
+### Already in place
 
-- JWT authentication on all protected endpoints
-- Per-IP in-memory rate limiter on auth endpoints (5 attempts / 5 min)
-- MongoDB bound to `127.0.0.1` only (not exposed to internet)
-- Nginx security headers: HSTS, X-Frame-Options, CSP, X-Content-Type-Options
+- JWT on all protected endpoints
+- Per-IP rate limiting on auth endpoints (5 attempts / 5 min)
+- MongoDB not exposed to internet (127.0.0.1 only)
+- HTTPS-only with HSTS header (host Nginx)
+- Security headers: X-Frame-Options, CSP, X-Content-Type-Options (host Nginx)
 - Non-root user inside backend container
-- File upload path-traversal protection in `storage_util.py`
-- Tenant isolation on every query (`tenant_id` filter)
-- CORS restricted to configured `CORS_ORIGINS`
+- Tenant isolation on every DB query
+- `backend/secrets/` is in `.gitignore` — keys never reach GitHub
 
-### Additional recommendations
+### Additional steps to do on the VPS
 
 ```bash
-# 1. SSH — disable password auth, use keys only
-sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+# Disable SSH password auth (keys only)
+sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 systemctl restart sshd
 
-# 2. Fail2ban — auto-ban brute-force SSH
+# Fail2ban — ban brute-force SSH attempts
 apt-get install -y fail2ban
 systemctl enable fail2ban
 
-# 3. Unattended security upgrades
+# Automatic security patches
 apt-get install -y unattended-upgrades
 dpkg-reconfigure --priority=low unattended-upgrades
-
-# 4. MongoDB — create a dedicated read-write user (optional but recommended)
-docker compose exec mongodb mongosh \
-    -u $MONGO_ROOT_USER -p $MONGO_ROOT_PASSWORD \
-    --authenticationDatabase admin \
-    --eval "
-    db.getSiblingDB('jansetu').createUser({
-        user: 'jansetu_app',
-        pwd: 'STRONG_PASSWORD',
-        roles: [{ role: 'readWrite', db: 'jansetu' }]
-    })
-    "
-# Then update MONGO_URL in .env to use jansetu_app credentials
 ```
 
 ---
 
-## 16. Performance Tuning
+## 16. Troubleshooting
 
-### Backend
-
-- `WORKERS=3` (or `2 × CPU_CORES + 1`) in `.env`
-- All MongoDB queries already use indexes (ensured on startup)
-- Motor connection pool: default 100 connections (sufficient to ~500 offices)
-
-### MongoDB
+### Backend won't start after deploy
 
 ```bash
-# Confirm indexes exist
-docker compose exec mongodb mongosh \
-    -u $MONGO_ROOT_USER -p $MONGO_ROOT_PASSWORD \
-    --authenticationDatabase admin \
-    --eval "db.getSiblingDB('jansetu').issues.getIndexes()"
-```
-
-### Nginx
-
-- Gzip enabled for all text types (see `frontend/nginx.conf`)
-- Static assets served with `Cache-Control: public, immutable` (1 year)
-- HTML served with `no-cache` (ensures users get the latest deploy)
-- `http2` enabled on HTTPS listener
-
-### MongoDB WiredTiger cache (for 4 GB RAM VPS)
-
-Add to `config/mongod.conf` and mount in `docker-compose.yml`:
-
-```yaml
-storage:
-  wiredTiger:
-    engineConfig:
-      cacheSizeGB: 1   # leave ~3 GB for OS + app
-```
-
----
-
-## 17. Scaling Roadmap
-
-| Offices | Recommended changes |
-|---------|---------------------|
-| 1–10 | Current setup (1 VPS, 1 MongoDB, local storage) |
-| 10–100 | Upgrade VPS to 8 vCPU / 16 GB RAM; add MongoDB replica set for HA |
-| 100–500 | Migrate uploads to S3/MinIO; add Redis for FCM cooldown; add Nginx load balancer with 2 backend replicas |
-| 500–1000 | Sharded MongoDB cluster; separate background-job workers; CDN for static assets; horizontal backend scaling behind load balancer |
-
-### Near-term additions (no code changes needed)
-
-- **Redis**: `storage_util.py` already reads `REDIS_URL` — set it to enable FCM dedup across multiple backend instances
-- **S3**: `storage_util.py` auto-switches to S3 when `S3_BUCKET_NAME` + `AWS_ACCESS_KEY_ID` are set
-- **MinIO** (self-hosted S3): set `S3_ENDPOINT_URL=https://minio.yourdomain.com` and the same S3 env vars
-
----
-
-## 18. Rollback Procedure
-
-### Quick rollback (last known-good commit)
-
-```bash
-cd /opt/jansetu
-git log --oneline -10         # find the target commit hash
-git checkout <COMMIT_HASH>
-./scripts/update.sh           # rebuild + restart from that code
-```
-
-### Full rollback (code + database)
-
-```bash
-# 1. Restore the pre-update backup (interactive)
-./scripts/restore.sh /var/backups/jansetu/<TIMESTAMP>
-
-# 2. Check out old code
-git checkout <COMMIT_HASH>
-
-# 3. Rebuild + restart
-docker compose build && docker compose up -d
-```
-
----
-
-## 19. Troubleshooting
-
-### Backend won't start
-
-```bash
-docker compose logs backend | tail -50
-# Common causes:
-# - MONGO_URL wrong credentials → check .env
-# - Port 8000 conflict → another process using it
-# - Missing Python package → rebuild: docker compose build backend
+docker compose logs backend | tail -40
+# Common fixes:
+# - Wrong MONGO_URL → edit .env, run docker compose restart backend
+# - Missing Python package → docker compose build backend && docker compose up -d --no-deps backend
+# - firebase-admin.json missing → see §6
 ```
 
 ### MongoDB container unhealthy
 
 ```bash
-docker compose logs mongodb | tail -30
+docker compose logs mongodb | tail -20
 # Common causes:
-# - Wrong MONGO_ROOT_PASSWORD (changed after volume was created)
+# - MONGO_ROOT_PASSWORD changed after the volume was created
+#   Fix: docker compose down, docker volume rm jansetu_mongo_data (⚠️ deletes data!), docker compose up -d
+#   OR: restore from backup
 # - Disk full: df -h
 ```
 
-### SSL certificate errors
+### `curl: (7) Failed to connect` on port 3000
 
 ```bash
-certbot certificates          # check expiry
-certbot renew --force-renewal # force renew
+# Is the frontend container running?
+docker compose ps frontend
+# Restart it
 docker compose restart frontend
 ```
 
-### Push notifications not delivered
+### Host Nginx 502 Bad Gateway
 
 ```bash
-# Check FCM mode
-curl https://yourdomain.com/api/push/status
-# Should return: {"mode": "fcm", "fcm_configured": true}
-
-# Check firebase-admin.json is mounted
-docker compose exec backend ls /app/secrets/
-```
-
-### File uploads failing
-
-```bash
-# Check uploads volume is mounted
-docker compose exec backend ls /var/data/jansetu/uploads/
-
-# Check disk space
-df -h
-docker system df
-```
-
-### After a VPS reboot
-
-Docker Compose and its containers start automatically (restart policies are `unless-stopped`). Verify with:
-
-```bash
+# Is the frontend container healthy?
 docker compose ps
+# Check the proxy target
+curl -s http://127.0.0.1:3000/health
+# Reload host Nginx
+nginx -t && systemctl reload nginx
+```
+
+### `docker compose` command not found
+
+```bash
+# Use Docker Compose v2 plugin syntax
+docker compose version
+# If missing: reinstall with docker-compose-plugin (see §2)
+```
+
+### VianBills stopped working after adding JanSetu
+
+The only change to the shared infrastructure is adding `/etc/nginx/sites-enabled/jansetu.conf`.
+If that caused an issue:
+
+```bash
+# Remove the JanSetu nginx config and reload
+rm /etc/nginx/sites-enabled/jansetu.conf
+nginx -t && systemctl reload nginx
+# VianBills traffic is now restored — debug jansetu.conf separately
 ```
 
 ---
 
-*Last updated: July 2025 — covers Tasks #4 (auth), #6 (storage), #7 (push), #18 (worker alerts), #19 (bulk-resolve flood protection)*
+## Quick Reference
+
+```bash
+# Deploy latest from GitHub
+cd /opt/jansetu && ./scripts/deploy.sh
+
+# Check container health
+docker compose ps
+
+# View live logs
+docker compose logs -f
+
+# Backup now
+./scripts/backup.sh
+
+# Stop JanSetu (VianBills unaffected)
+docker compose down
+
+# Start JanSetu
+docker compose up -d
+
+# Rollback to a specific commit
+git checkout <HASH> && DEPLOY_TAG=<HASH> docker compose up -d --build
+```

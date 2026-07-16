@@ -1,15 +1,25 @@
-version: "3.9"
+name: jansetu   # ← namespaces ALL containers, volumes and networks
+                # containers: jansetu-mongodb-1, jansetu-backend-1, jansetu-frontend-1
+                # volumes:    jansetu_mongo_data, jansetu_uploads_data …
+                # never conflicts with VianBills or any other Compose project
 
 # ── JANSETU — Production Docker Compose ────────────────────────────────────
-# Start everything:   docker compose up -d
-# View logs:          docker compose logs -f
-# Stop everything:    docker compose down
 #
-# Copy .env.example → .env and fill in all values before first run.
+# GitHub is the single source of truth.
+# NEVER edit files on the VPS — commit to GitHub, then run scripts/deploy.sh.
+#
+# First run:
+#   cp .env.example .env && nano .env
+#   ./scripts/deploy.sh
+#
+# Subsequent deploys:
+#   ./scripts/deploy.sh          ← pulls from GitHub, rebuilds, rolling restart
 
 services:
 
-  # ── MongoDB ───────────────────────────────────────────────────────────────
+  # ── MongoDB (JanSetu-exclusive) ───────────────────────────────────────────
+  # Host port 27018 avoids conflict with VianBills MongoDB on 27017.
+  # The container is only reachable from localhost — not from the internet.
   mongodb:
     image: mongo:7
     restart: unless-stopped
@@ -20,13 +30,10 @@ services:
     volumes:
       - mongo_data:/data/db
       - mongo_config:/data/configdb
-      # Optional: custom mongod.conf  (see docs/mongod.conf.example)
-      # - ./config/mongod.conf:/etc/mongod.conf:ro
     networks:
-      - jansetu
-    # Bind to localhost — not exposed to the internet
+      - internal
     ports:
-      - "127.0.0.1:27017:27017"
+      - "127.0.0.1:27018:27017"   # host:27018 → container:27017
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 15s
@@ -40,7 +47,10 @@ services:
         max-file: "5"
 
   # ── FastAPI backend ────────────────────────────────────────────────────────
+  # Not exposed to the host — only reachable inside the internal Docker network
+  # (the frontend container proxies /api → backend:8000).
   backend:
+    image: jansetu-backend:${DEPLOY_TAG:-latest}
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -50,13 +60,11 @@ services:
       mongodb:
         condition: service_healthy
     networks:
-      - jansetu
+      - internal
     expose:
       - "8000"
     volumes:
-      # Persistent local file storage — mounted at the path set in LOCAL_STORAGE_PATH
       - uploads_data:/var/data/jansetu/uploads
-      # Firebase service-account key (push notifications)
       - ./backend/secrets/firebase-admin.json:/app/secrets/firebase-admin.json:ro
     healthcheck:
       test: ["CMD", "python", "-c",
@@ -71,28 +79,24 @@ services:
         max-size: "100m"
         max-file: "7"
 
-  # ── React frontend served by Nginx ────────────────────────────────────────
+  # ── React frontend — HTTP only on host port 3000 ──────────────────────────
+  # SSL termination is handled by the HOST Nginx (shared with VianBills).
+  # Host Nginx config: config/nginx-jansetu.conf
   frontend:
+    image: jansetu-frontend:${DEPLOY_TAG:-latest}
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        # Leave empty so the built app uses relative /api URLs (proxied by Nginx)
-        REACT_APP_BACKEND_URL: ""
+        REACT_APP_BACKEND_URL: ""   # relative URLs — proxied by Nginx inside container
     restart: unless-stopped
     depends_on:
       backend:
         condition: service_healthy
     networks:
-      - jansetu
+      - internal
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      # Let's Encrypt certs (managed by certbot on the host)
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-      # ACME challenge renewal dir
-      - /var/www/certbot:/var/www/certbot:ro
+      - "127.0.0.1:3000:80"     # host Nginx → 127.0.0.1:3000 → this container
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost/"]
       interval: 30s
@@ -106,12 +110,9 @@ services:
 
 volumes:
   mongo_data:
-    driver: local
   mongo_config:
-    driver: local
   uploads_data:
-    driver: local
 
 networks:
-  jansetu:
+  internal:
     driver: bridge
