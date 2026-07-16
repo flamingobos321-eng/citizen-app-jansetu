@@ -2192,6 +2192,27 @@ async def create_issue(payload: IssueCreate, user: dict = Depends(get_current_us
         await v2dw.sync_issue_to_v2(db, issue.model_dump(), citizen_user=user)
     except Exception:
         logger.exception("V2 dualwrite skipped for issue creation")
+    # Notify office staff (admin / pa) in the same tenant about the new issue.
+    try:
+        staff_cursor = db.users.find(
+            {"tenant_id": tid, "role": {"$in": ["admin", "pa"]}},
+            {"_id": 0, "id": 1},
+        )
+        async for staff_user in staff_cursor:
+            try:
+                await _push_to_user(
+                    staff_user["id"],
+                    title="New issue submitted",
+                    body=f"{issue.title} ({issue.issue_code})",
+                    kind="issue",
+                    data={"issue_id": issue.id, "issue_code": issue.issue_code},
+                    click_action=f"/issues/{issue.id}",
+                )
+            except Exception:
+                logger.exception("Failed to push new-issue alert to staff %s", staff_user["id"])
+    except Exception:
+        logger.exception("Failed to look up staff for new-issue push alerts")
+
     # Return latest stamped doc so the frontend gets the V2 fields too.
     return await db.issues.find_one({"id": issue.id}, {"_id": 0}) or issue.model_dump()
 
