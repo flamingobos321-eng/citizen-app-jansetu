@@ -79,6 +79,20 @@ _LOGIN_RL_LOCKOUT: int = 15 * 60         # lockout duration
 _login_failures: dict = {}               # rl_key -> [timestamps]
 _login_lockouts: dict = {}               # rl_key -> lockout_until_ts
 
+# ----------------- Push FCM cooldown -----------------
+# When a bulk action (e.g. admin resolving 50 issues) fires _push_to_user in a
+# tight loop, every citizen would receive a separate FCM call per issue.  To
+# prevent FCM quota saturation and browser notification spam, we apply a
+# per-(user_id, kind) cooldown: if the same notification kind was already
+# dispatched to a given user within the cooldown window we still persist the
+# inbox row but skip the FCM delivery for that event.
+#
+# The cooldown window is configurable via PUSH_FCM_COOLDOWN_SECONDS (default 60 s).
+# NOTE: in-memory only — resets on worker restart.  For multi-worker deployments
+# back this with a short-TTL Redis key.
+_PUSH_FCM_COOLDOWN_SECONDS: int = int(os.environ.get("PUSH_FCM_COOLDOWN_SECONDS", "60"))
+_push_fcm_last_sent: dict = {}  # (user_id, kind) -> monotonic timestamp of last FCM delivery
+
 
 def _client_ip(request: Request) -> str:
     """Best-effort client IP (honours common proxy headers)."""
@@ -2799,11 +2813,32 @@ async def _push_to_user(user_id: str, title: str, body: str,
                 "mode": push_service.current_mode(),
             }
 
+    # FCM cooldown: suppress delivery (but not inbox persistence) if a push of
+    # the same kind was already sent to this user within the cooldown window.
+    # This prevents FCM quota saturation when an admin bulk-resolves many issues.
+    ck = (user_id, kind)
+    now_mono = time.monotonic()
+    last_sent = _push_fcm_last_sent.get(ck)
+    if last_sent is not None and (now_mono - last_sent) < _PUSH_FCM_COOLDOWN_SECONDS:
+        logger.debug(
+            "[push] FCM suppressed for user=%s kind=%s (cooldown %.0fs remaining)",
+            user_id, kind, _PUSH_FCM_COOLDOWN_SECONDS - (now_mono - last_sent),
+        )
+        return {
+            "delivered_to": 0,
+            "inbox_only": True,
+            "inbox_id": inbox_row.id,
+            "skipped_reason": "fcm_cooldown",
+            "mode": push_service.current_mode(),
+        }
+
     tokens = [t["token"] async for t in db.device_tokens.find({"user_id": user_id}, {"_id": 0, "token": 1})]
     if not tokens:
-        return {"delivered_to": 0, "inbox_only": True, "mode": push_service.current_mode()}
+        return {"delivered_to": 0, "inbox_only": True, "inbox_id": inbox_row.id, "mode": push_service.current_mode()}
 
     result = push_service.send(tokens, title, body, data=data, click_action=click_action)
+    # Record the timestamp of this successful FCM dispatch for cooldown tracking.
+    _push_fcm_last_sent[ck] = now_mono
     # Prune invalid tokens.
     if result.get("invalid_tokens"):
         await db.device_tokens.delete_many({"token": {"$in": result["invalid_tokens"]}})
