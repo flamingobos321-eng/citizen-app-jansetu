@@ -92,24 +92,13 @@ function HomeRoute() {
   return <StaffDashboard />;
 }
 
-// Replit's development Preview tab opens the site at "/". Show the
-// mobile-first entry screen there during development so the preview matches
-// the Capacitor app. Production keeps the public marketing landing page.
-function PreviewRoot() {
-  if (process.env.NODE_ENV === "development") {
-    return <Navigate to="/native" replace />;
-  }
-  return isNativePlatform() ? <Navigate to="/native" replace /> : <Landing />;
-}
-
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
         <Toaster richColors position="top-right" />
         <Routes>
-          <Route path="/" element={<PreviewRoot />} />
-          <Route path="/web" element={<Landing />} />
+          <Route path="/" element={isNativePlatform() ? <Navigate to="/native" replace /> : <Landing />} />
           <Route path="/native" element={<WelcomeScreen />} />
           <Route path="/native/login" element={<LoginChoice />} />
           <Route path="/portal" element={<PortalIndex />} />
