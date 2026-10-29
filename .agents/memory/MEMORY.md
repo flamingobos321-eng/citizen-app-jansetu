@@ -1,2 +1,1 @@
-- [Jansetu Replit setup](jansetu-setup.md) — key quirks for running the backend + frontend on Replit
-- [Jansetu modules built](jansetu-modules.md) — summary of major features added and their patterns
+- [Dependency snapshot portability](dependency-portability.md) — legacy environment snapshots may contain unused, unresolvable packages; preserve originals and lock only the workspace runtime.

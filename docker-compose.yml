@@ -88,7 +88,7 @@ services:
   frontend:
     image: jansetu-frontend:${DEPLOY_TAG:-latest}
     build:
-      context: ./frontend
+      context: ./artifacts/jansetu-web
       dockerfile: Dockerfile
       args:
         REACT_APP_BACKEND_URL: ""   # relative URLs — /api goes through Nginx → backend

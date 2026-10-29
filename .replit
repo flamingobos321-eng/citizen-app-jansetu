@@ -1,13 +1,73 @@
-modules = ["python-3.12", "nodejs-20", "web"]
-[agent]
-expertMode = true
+modules = ["nodejs-24", "python-3.12"]
 
-[nix]
-channel = "stable-25_05"
+[deployment]
+router = "application"
+deploymentTarget = "autoscale"
+
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "auth-tests"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "web-build"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "production-runtime"
+
+[[workflows.workflow]]
+name = "auth-tests"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "env -u MONGO_URL -u DB_NAME -u JWT_SECRET python -m pytest tests/test_auth_flow.py -q"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "web-build"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "CI=false pnpm --filter @workspace/jansetu-web run build"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "production-runtime"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python scripts/check-production-runtime.py"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
 
 [postMerge]
 path = "scripts/post-merge.sh"
-timeoutMs = 180000
+timeoutMs = 300000
 
 [userenv]
 
@@ -24,53 +84,6 @@ REACT_APP_FIREBASE_AUTH_DOMAIN = "jansetu-c8b85.firebaseapp.com"
 REACT_APP_FIREBASE_MESSAGING_SENDER_ID = "1001872155963"
 REACT_APP_FIREBASE_PROJECT_ID = "jansetu-c8b85"
 
-[workflows]
-runButton = "Project"
-
-[[workflows.workflow]]
-name = "Project"
-mode = "parallel"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Backend API"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Start application"
-
-[[workflows.workflow]]
-name = "Backend API"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd backend && uvicorn server:app --host 0.0.0.0 --port 8000 --reload"
-waitForPort = 8000
-
-[workflows.workflow.metadata]
-outputType = "console"
-
-[[workflows.workflow]]
-name = "Start application"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd frontend && PORT=5000 yarn start"
-waitForPort = 5000
-
-[workflows.workflow.metadata]
-outputType = "webview"
-
-[[ports]]
-localPort = 5000
-externalPort = 80
-
-[[ports]]
-localPort = 8000
-externalPort = 8000
-
-[deployment]
-deploymentTarget = "cloudrun"
+[nix]
+channel = "stable-25_05"
+packages = ["awsebcli", "c-ares", "cacert", "cargo", "freetype", "glibcLocales", "grpc", "lcms2", "libffi", "libiconv", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "libyaml", "openjpeg", "openssl", "pkg-config", "rustc", "tcl", "tk", "zlib"]

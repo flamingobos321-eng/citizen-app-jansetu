@@ -1,0 +1,5401 @@
+"""JANSETU - Constituency Management Platform API."""
+import os
+import io
+import time
+import uuid
+import logging
+import asyncio
+import re
+from datetime import datetime, timezone, timedelta
+
+import httpx
+import otp_service
+from dataclasses import asdict as _dc_asdict
+import electoral_parser
+import push_service
+from pathlib import Path
+from typing import List, Literal, Optional
+
+from pydantic import BaseModel
+
+import bcrypt
+import jwt
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Header, Query, Response, Request
+from dotenv import load_dotenv
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+
+from models import (
+    CitizenOTPRequest, CitizenOTPVerify, StaffLogin, ChangePassword,
+    CitizenRegister, StaffCreate, User,
+    Constituency, Area, AreaCreate, Household,
+    Issue, IssueCreate, IssueAssign, IssueUpdateStatus, IssueFeedback, BulkIssueStatusUpdate,
+    Visit, VisitCreate, Notification, NotificationCreate,
+    DevWork, DevWorkCreate,
+    Relationship, RelationshipCreate, RELATION_TYPES, inverse_relation,
+    PortalConfig, PortalConfigCreate,
+    ServiceInteraction, ServiceInteractionCreate,
+    TransferInitiate, TransferVerify, CitizenMobileCheck,
+    Caste, Religion, TaxonomyCreate,
+    FamilyInvitation, FamilyLinkRequest,
+    Karyakarta, PendingKaryakarta, KaryakartaCreate,
+    ElectoralRollImport,
+    DeviceToken, PushNotification,
+    NotificationPrefsUpdate, PUSH_NOTIFICATION_CATEGORIES,
+    DEFAULT_NOTIFICATION_PREFS, KIND_TO_CATEGORY,
+    ISSUE_CATEGORIES, ISSUE_STATUSES, DEV_STATUSES, VISIT_STATUSES,
+    now_iso, new_id,
+)
+from storage_util import put_object, get_object, init_storage, APP_NAME
+import v2_dualwrite as v2dw
+import v2_transfer as v2tr
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env")
+
+mongo_url = os.environ["MONGO_URL"]
+client = AsyncIOMotorClient(mongo_url)
+db = client[os.environ["DB_NAME"]]
+
+JWT_SECRET = os.environ["JWT_SECRET"]
+JWT_ALG = "HS256"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("jansetu")
+
+app = FastAPI(title="JANSETU API")
+api = APIRouter(prefix="/api")
+
+
+# ----------------- Rate limiting (staff login) -----------------
+# In-memory sliding-window rate limiter — 5 failed attempts per (IP, email)
+# within 15 minutes triggers a 15-minute lockout.  Guards against brute-force
+# attacks on the platform Super Admin account and tenant admin accounts.
+# NOTE: in-memory only — resets when the worker restarts. For a multi-worker
+# production deployment, back this with Redis.
+_LOGIN_RL_WINDOW: int = 15 * 60         # 15 minutes
+_LOGIN_RL_THRESHOLD: int = 5             # attempts before lockout
+_LOGIN_RL_LOCKOUT: int = 15 * 60         # lockout duration
+_login_failures: dict = {}               # rl_key -> [timestamps]
+_login_lockouts: dict = {}               # rl_key -> lockout_until_ts
+
+# ----------------- Push FCM cooldown -----------------
+# When a bulk action (e.g. admin resolving 50 issues) fires _push_to_user in a
+# tight loop, every citizen would receive a separate FCM call per issue.  To
+# prevent FCM quota saturation and browser notification spam, we apply a
+# per-(user_id, kind) cooldown: if the same notification kind was already
+# dispatched to a given user within the cooldown window we still persist the
+# inbox row but skip the FCM delivery for that event.
+#
+# The cooldown window is configurable via PUSH_FCM_COOLDOWN_SECONDS (default 60 s).
+# NOTE: in-memory only — resets on worker restart.  For multi-worker deployments
+# back this with a short-TTL Redis key.
+_PUSH_FCM_COOLDOWN_SECONDS: int = int(os.environ.get("PUSH_FCM_COOLDOWN_SECONDS", "60"))
+_push_fcm_last_sent: dict = {}  # (user_id, kind) -> monotonic timestamp of last FCM delivery
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort client IP (honours common proxy headers)."""
+    fwd = request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+# ----------------- Auth helpers -----------------
+def hash_password(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
+
+
+def verify_password(pw: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(pw.encode(), hashed.encode())
+    except Exception:
+        return False
+
+
+def create_token(user_id: str, role: str, tenant_id: Optional[str] = None) -> str:
+    payload = {
+        "sub": user_id,
+        "role": role,
+        "tid": tenant_id,
+        "exp": datetime.now(timezone.utc) + timedelta(days=30),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Missing token")
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    except jwt.PyJWTError:
+        raise HTTPException(401, "Invalid token")
+    user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(401, "User not found")
+    return user
+
+
+async def get_current_user_flexible(
+    authorization: Optional[str] = Header(None),
+    t: Optional[str] = Query(None),
+) -> dict:
+    """Like get_current_user but also accepts ?t=<token> for <img> tags / file downloads
+    which cannot set custom headers."""
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1]
+    elif t:
+        token = t
+    if not token:
+        raise HTTPException(401, "Missing token")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    except jwt.PyJWTError:
+        raise HTTPException(401, "Invalid token")
+    user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(401, "User not found")
+    return user
+
+
+async def get_current_user_optional(authorization: Optional[str] = Header(None)) -> Optional[dict]:
+    """Like get_current_user but returns None instead of raising when no token is supplied.
+    Used for endpoints that are public but can be scoped when a token is present."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    except jwt.PyJWTError:
+        return None
+    user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+    return user or None
+
+
+def require_roles(*roles):
+    async def _dep(user: dict = Depends(get_current_user)):
+        # super_admin is treated as a superset of admin for backward compatibility.
+        # Phase 3 will tighten admin-only portal endpoints to require super_admin explicitly.
+        if user["role"] not in roles and not (user["role"] == "super_admin" and "admin" in roles):
+            raise HTTPException(403, "Forbidden")
+        return user
+    return _dep
+
+
+STAFF_ROLES = ("worker", "pa", "politician", "admin", "super_admin")
+
+
+def is_staff(user: dict) -> bool:
+    return user.get("role") in STAFF_ROLES
+
+
+# ----------------- Multi-tenant helpers -----------------
+def get_tenant_id(user: dict) -> Optional[str]:
+    """Return the tenant_id the user belongs to. None means platform super_admin."""
+    return user.get("tenant_id")
+
+
+def tenant_filter(user: dict, extra_q: Optional[dict] = None) -> dict:
+    """Compose a Mongo query that scopes to the user's tenant.
+
+    Behavior:
+      - super_admin: no tenant scoping applied (sees all tenants).
+      - any other role: query is filtered to user.tenant_id.
+      - user with no tenant_id (and not super_admin): 403.
+    """
+    q = dict(extra_q or {})
+    if user.get("role") == "super_admin":
+        return q  # platform-wide access (rule 2)
+    tid = user.get("tenant_id")
+    if not tid:
+        raise HTTPException(403, "User has no tenant")
+    q["tenant_id"] = tid
+    return q
+
+
+def get_tenant_id_for_write(user: dict) -> str:
+    """Return the tenant_id to auto-attach on a write operation. Rule 3:
+    frontend never sends tenant_id; backend derives it from the auth session.
+    Super_admin cannot create tenant-scoped records (rule 2 keeps them as platform-only).
+    """
+    if user.get("role") == "super_admin":
+        raise HTTPException(400, "Super admin cannot create tenant-scoped records; use a tenant admin account")
+    tid = user.get("tenant_id")
+    if not tid:
+        raise HTTPException(403, "User has no tenant")
+    return tid
+
+
+async def can_access_file(user: dict, path: str) -> bool:
+    """Permission check for /api/files/{path}.
+
+    - Super_admin: all files (platform-wide access).
+    - Staff (pa/politician/admin) of the tenant that owns the file: all files in their tenant.
+    - Citizen: own profile photo, photos on their own issues, photos on approved (public) dev works.
+    - Worker: additionally, photos on issues assigned to them.
+    Files are tenant-bounded — a user from tenant A cannot access tenant B files.
+    """
+    role = user.get("role")
+    if role == "super_admin":
+        return True
+    # Look up the file record to get its tenant_id; deny cross-tenant access.
+    file_rec = await db.files.find_one({"storage_path": path}, {"tenant_id": 1, "uploaded_by": 1})
+    file_tid = file_rec.get("tenant_id") if file_rec else None
+    user_tid = user.get("tenant_id")
+    if file_tid and user_tid and file_tid != user_tid:
+        return False
+    if role in ("pa", "politician", "admin"):
+        return True
+    # Own profile photo (any role)
+    if await db.users.find_one({"id": user["id"], "profile_photo": path}, {"id": 1}):
+        return True
+    # Approved dev work photos are public to all logged-in users in the same tenant
+    if await db.devworks.find_one(tenant_filter(user, {"photos": path, "approved": True}), {"id": 1}):
+        return True
+    # Issue photos — owning citizen or assigned worker (within same tenant)
+    issue = await db.issues.find_one(
+        tenant_filter(user, {"$or": [{"photos": path}, {"completion_photos": path}]}),
+        {"citizen_id": 1, "assigned_to": 1},
+    )
+    if issue:
+        if user["id"] == issue.get("citizen_id"):
+            return True
+        if role == "worker" and user["id"] == issue.get("assigned_to"):
+            return True
+    return False
+
+
+# ----------------- Code generation -----------------
+async def next_seq(name: str, tenant_id: Optional[str] = None) -> int:
+    """Atomic counter. If tenant_id is provided, the counter is scoped per-tenant
+    (each tenant restarts ISS/H sequences from 1). Without tenant_id, behaves
+    legacy / global.
+    """
+    counter_id = f"{tenant_id}:{name}" if tenant_id else name
+    res = await db.counters.find_one_and_update(
+        {"_id": counter_id},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
+    )
+    return res["seq"]
+
+
+# ----------------- Startup -----------------
+@app.on_event("startup")
+async def on_start():
+    try:
+        init_storage()
+    except Exception as e:
+        logger.warning(f"Storage init deferred: {e}")
+    # seed if empty
+    if await db.users.count_documents({"role": "admin"}) == 0:
+        await seed_demo_data()
+    # Backfill: ensure at least one default portal exists for already-seeded environments
+    if await db.portal_configs.count_documents({}) == 0:
+        await _ensure_default_portal()
+        await _approve_demo_content()
+    # Multi-tenant foundation migration (idempotent)
+    await _migrate_to_multi_tenant()
+    # Counter sync runs every startup (idempotent, only raises counters):
+    await _sync_tenant_counters()
+    # V2 indexes (M1, additive, idempotent — see migrations/__init__.py)
+    await _ensure_v2_indexes()
+    # Backfill office_code for portals created before v1.1.
+    await _backfill_office_codes()
+    # Electoral roll search + import history indexes (idempotent).
+    await _ensure_electoral_indexes()
+    # Push notification indexes (device tokens + inbox).
+    try:
+        from pymongo import ASCENDING
+        await db.device_tokens.create_index("token", unique=True, name="device_token_unique", background=True)
+        await db.device_tokens.create_index([("user_id", ASCENDING)], name="device_by_user", background=True)
+        await db.push_notifications.create_index([("user_id", ASCENDING), ("created_at", -1)],
+                                                 name="push_by_user_recent", background=True)
+    except Exception as e:
+        logger.warning(f"Push indexes deferred: {e}")
+
+
+async def _backfill_office_codes():
+    """Assign an Office Code (JS####) to any portal_configs row that doesn't
+    have one yet. Idempotent — only touches rows without office_code."""
+    missing = await db.portal_configs.find(
+        {"$or": [{"office_code": None}, {"office_code": {"$exists": False}}, {"office_code": ""}]},
+        {"_id": 0, "id": 1, "slug": 1},
+    ).to_list(500)
+    if not missing:
+        return
+    for p in missing:
+        code = await _next_office_code()
+        await db.portal_configs.update_one(
+            {"id": p["id"]},
+            {"$set": {"office_code": code, "updated_at": now_iso()}},
+        )
+        logger.info("Backfilled office_code %s for portal slug=%s", code, p.get("slug"))
+
+
+async def _ensure_v2_indexes():
+    """M1 — Create indexes for V2 collections. Idempotent. Does not write data.
+
+    These indexes are needed before M2 backfill can run efficiently. They are
+    additive and have no effect on V1 behaviour (empty collections in v1)."""
+    from pymongo import ASCENDING, DESCENDING
+    try:
+        # persons: lookup by status, by merge chain
+        await db.persons.create_index([("status", ASCENDING)])
+        await db.persons.create_index([("merged_into_person_id", ASCENDING)],
+                                      sparse=True)
+
+        # credentials: unique (type, value) among active rows only
+        await db.credentials.create_index(
+            [("type", ASCENDING), ("value", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"status": "active"},
+            name="cred_type_value_active_unique",
+        )
+        await db.credentials.create_index([("person_id", ASCENDING)])
+
+        # memberships: most queries by (person, status) or (org, status)
+        await db.memberships.create_index(
+            [("person_id", ASCENDING), ("status", ASCENDING)])
+        await db.memberships.create_index(
+            [("organisation_id", ASCENDING), ("status", ASCENDING)])
+        await db.memberships.create_index(
+            [("person_id", ASCENDING), ("organisation_id", ASCENDING)])
+        await db.memberships.create_index([("household_id", ASCENDING)],
+                                          sparse=True)
+
+        # relationships: directed family edges (global; no tenant_id)
+        await db.relationships_v2.create_index([("from_person_id", ASCENDING)])
+        await db.relationships_v2.create_index([("to_person_id", ASCENDING)])
+
+        # audit & consent
+        await db.person_audit.create_index(
+            [("person_id", ASCENDING), ("at", DESCENDING)])
+        await db.person_consents.create_index(
+            [("person_id", ASCENDING), ("organisation_id", ASCENDING),
+             ("scope", ASCENDING)],
+            unique=True, name="consent_unique")
+        await db.access_audit.create_index(
+            [("person_id", ASCENDING), ("at", DESCENDING)])
+        await db.access_audit.create_index(
+            [("accessed_by_user_id", ASCENDING), ("at", DESCENDING)])
+
+        # Political CRM (Sprint B but indexes safe to create now)
+        await db.parties.create_index([("name", ASCENDING)])
+        await db.position_definitions.create_index(
+            [("party_id", ASCENDING), ("level", ASCENDING)])
+        await db.party_memberships.create_index(
+            [("person_id", ASCENDING), ("start_date", DESCENDING)])
+        await db.elections.create_index(
+            [("year", DESCENDING), ("type", ASCENDING)])
+        await db.election_events.create_index(
+            [("person_id", ASCENDING), ("election_id", ASCENDING)])
+        await db.influence_signals.create_index(
+            [("person_id", ASCENDING), ("recorded_at", DESCENDING)])
+
+        # Amendment 1.1 — Person timeline + origin-membership index
+        await db.person_timeline_events.create_index(
+            [("person_id", ASCENDING), ("at", DESCENDING)])
+        await db.person_timeline_events.create_index(
+            [("organisation_id", ASCENDING), ("at", DESCENDING)],
+            sparse=True)
+        # Tenant-visibility gate on operational records
+        await db.issues.create_index([("origin_membership_id", ASCENDING)], sparse=True)
+
+        # Stamp the V2 schema version so we know indexes are in place.
+        await db.system_meta.update_one(
+            {"_id": "v2_schema"},
+            {"$set": {"version": 2, "applied_at": now_iso()}},
+            upsert=True,
+        )
+        logger.info("V2 indexes ensured (M1 + Amendment 1.1).")
+    except Exception as e:
+        logger.warning(f"V2 index creation deferred: {e}")
+
+
+async def _migrate_to_multi_tenant():
+    """One-time multi-tenant migration. Idempotent. Records version in system_meta.
+
+    Steps:
+      1. Identify the default tenant (existing portal_configs with is_default=true).
+      2. Backfill tenant_id on every domain doc missing it.
+      3. Promote admin@jansetu.in to role=super_admin, tenant_id=null.
+      4. Ensure the default tenant has its own admin user (auto-provisioned with temp password).
+      5. Migrate global counters to tenant-prefixed keys.
+      6. Stamp version meta.
+    """
+    meta = await db.system_meta.find_one({"_id": "multi_tenant"})
+    if meta and meta.get("version", 0) >= 1:
+        return  # already migrated
+
+    default_tenant = await db.portal_configs.find_one({"is_default": True, "is_active": True})
+    if not default_tenant:
+        # No portal yet — nothing to migrate. The startup hook above seeds one
+        # before this runs, so this branch is defensive only.
+        logger.warning("Multi-tenant migration: no default portal — skipping")
+        return
+    default_tid = default_tenant["id"]
+
+    # Step 2: Backfill tenant_id on every domain collection
+    domain_collections = [
+        "users", "households", "issues", "visits", "notifications",
+        "devworks", "relationships", "interactions", "constituencies", "areas",
+    ]
+    backfill_counts = {}
+    for coll in domain_collections:
+        # Match docs where tenant_id is missing OR explicitly null.
+        # The seed inserts users with tenant_id=None (null), so $exists: False
+        # alone misses them — we must also catch the null case.
+        q = {"$or": [{"tenant_id": {"$exists": False}}, {"tenant_id": None}]}
+        # Never overwrite the platform super-admin whose tenant_id should stay null.
+        if coll == "users":
+            q["email"] = {"$ne": "admin@jansetu.in"}
+        res = await db[coll].update_many(q, {"$set": {"tenant_id": default_tid}})
+        backfill_counts[coll] = res.modified_count
+
+    # Step 2b: Backfill new lifecycle fields on portal_configs for existing portals.
+    await db.portal_configs.update_many(
+        {"subscription_plan": {"$exists": False}},
+        {"$set": {
+            "subscription_plan": "trial",
+            "is_trial": True,
+            "portal_status": "active",
+            "max_staff_limit": 25,
+            "timezone": "Asia/Kolkata",
+            "language": "en",
+            "whatsapp_config": {},
+            "sms_config": {},
+            "communication_mode": "development",
+            "otp_config": {},
+        }},
+    )
+
+    # Step 3: Promote platform super-admin (admin@jansetu.in)
+    await db.users.update_one(
+        {"email": "admin@jansetu.in"},
+        {"$set": {"role": "super_admin", "tenant_id": None}},
+    )
+
+    # Step 4: Ensure the default tenant has its own dedicated admin user
+    tenant_admin_email = f"admin@{default_tenant['slug']}.jansetu.in"
+    existing_tenant_admin = await db.users.find_one(
+        {"email": tenant_admin_email, "tenant_id": default_tid}
+    )
+    temp_password_for_log = None
+    if not existing_tenant_admin:
+        import secrets
+        import string
+        alphabet = string.ascii_letters + string.digits
+        temp_password = "".join(secrets.choice(alphabet) for _ in range(12))
+        temp_password_for_log = temp_password
+        admin_user = User(
+            role="admin",
+            tenant_id=default_tid,
+            name=f"Admin - {default_tenant['constituency_name']}",
+            email=tenant_admin_email,
+            password_hash=hash_password(temp_password),
+        )
+        await db.users.insert_one(admin_user.model_dump())
+        await db.portal_configs.update_one(
+            {"id": default_tid},
+            {"$set": {
+                "primary_admin_email": tenant_admin_email,
+                "primary_admin_user_id": admin_user.id,
+                "updated_at": now_iso(),
+            }},
+        )
+
+    # Step 5: Migrate counters that don't have a tenant prefix
+    # Counter docs with _id like "issue", "household" (no colon) get re-keyed to "{tid}:issue".
+    async for counter in db.counters.find({"_id": {"$not": {"$regex": ":"}}}):
+        old_id = counter["_id"]
+        new_id = f"{default_tid}:{old_id}"
+        # Only migrate if new key doesn't already exist
+        if not await db.counters.find_one({"_id": new_id}):
+            await db.counters.insert_one({"_id": new_id, "seq": counter.get("seq", 0)})
+        await db.counters.delete_one({"_id": old_id})
+
+    # Step 5b: Per-tenant counter sync — ensure each tenant's counter is at
+    # least max(existing_code) so newly generated codes don't collide with
+    # pre-seeded records.
+    await _sync_tenant_counters()
+
+    # Step 6: Stamp version
+    await db.system_meta.update_one(
+        {"_id": "multi_tenant"},
+        {"$set": {"version": 1, "migrated_at": now_iso(), "default_tenant_id": default_tid}},
+        upsert=True,
+    )
+
+    logger.info(f"Multi-tenant migration complete. Backfilled: {backfill_counts}")
+    if temp_password_for_log:
+        logger.info("=" * 80)
+        logger.info("[ONE-TIME] Default tenant admin created:")
+        logger.info(f"  Email:    {tenant_admin_email}")
+        logger.info(f"  Password: {temp_password_for_log}")
+        logger.info(f"  Tenant:   {default_tenant['constituency_name']} ({default_tenant['slug']})")
+        logger.info("=" * 80)
+
+
+async def _ensure_default_portal():
+    """Create a single default portal config linked to the first constituency if none exists."""
+    constituency = await db.constituencies.find_one({}, {"_id": 0})
+    politician = await db.users.find_one({"role": "politician"}, {"_id": 0, "password_hash": 0})
+    name = (politician or {}).get("name") or "Hon. Politician"
+    designation = (politician or {}).get("designation") or "MLA"
+    cname = (constituency or {}).get("name") or "Constituency"
+    portal = PortalConfig(
+        slug=_normalize_slug(cname) or "default",
+        is_active=True,
+        is_default=True,
+        politician_name=name,
+        designation=designation,
+        constituency_name=cname,
+        constituency_id=(constituency or {}).get("id"),
+        welcome_message=f"Welcome to {cname}. Together, we build a stronger constituency.",
+        tagline="Sewa. Suvidha. Sashaktikaran.",
+        theme_color="#0A1128",
+        contact_phone=None,
+        contact_email=None,
+        contact_address=None,
+        office_hours="Mon - Sat, 10:00 AM to 6:00 PM",
+        social_links={},
+    )
+    await db.portal_configs.insert_one(portal.model_dump())
+    logger.info(f"Backfilled default portal: {portal.slug}")
+
+
+async def _approve_demo_content():
+    """One-time backfill: approve seeded devworks and visits so the demo portal is populated."""
+    r1 = await db.devworks.update_many({"approved": {"$ne": True}}, {"$set": {"approved": True, "approved_at": now_iso()}})
+    r2 = await db.visits.update_many({"status": "Pending Approval"}, {"$set": {"status": "Approved", "approved_at": now_iso()}})
+    logger.info(f"Approved demo content: devworks={r1.modified_count}, visits={r2.modified_count}")
+
+
+async def _sync_tenant_counters():
+    """For each tenant, set counter['{tid}:issue'].seq = max(existing ISS code number)
+    and same for household. This prevents code collisions when previously-seeded
+    records exist before the counter sequence catches up.
+    Idempotent — never lowers a counter, only raises it.
+    """
+    import re as _re
+    code_pat = _re.compile(r"\d+")
+    async for portal in db.portal_configs.find({}, {"id": 1}):
+        tid = portal["id"]
+        # Issues
+        max_iss = 0
+        async for doc in db.issues.find({"tenant_id": tid}, {"issue_code": 1}):
+            m = code_pat.search(doc.get("issue_code", ""))
+            if m:
+                max_iss = max(max_iss, int(m.group()))
+        if max_iss > 0:
+            target = max_iss - 10000  # codes are "ISS-10001" → seq=1
+            existing = await db.counters.find_one({"_id": f"{tid}:issue"}) or {"seq": 0}
+            if target > existing.get("seq", 0):
+                await db.counters.update_one({"_id": f"{tid}:issue"}, {"$set": {"seq": target}}, upsert=True)
+        # Households
+        max_hh = 0
+        async for doc in db.households.find({"tenant_id": tid}, {"household_code": 1}):
+            m = code_pat.search(doc.get("household_code", ""))
+            if m:
+                max_hh = max(max_hh, int(m.group()))
+        if max_hh > 0:
+            target = max_hh - 10000
+            existing = await db.counters.find_one({"_id": f"{tid}:household"}) or {"seq": 0}
+            if target > existing.get("seq", 0):
+                await db.counters.update_one({"_id": f"{tid}:household"}, {"$set": {"seq": target}}, upsert=True)
+
+
+# ----------------- Health -----------------
+@api.get("/")
+async def root():
+    return {"name": "JANSETU API", "status": "ok"}
+
+
+# ----------------- LEADS (public marketing form) -----------------
+class LeadCreate(BaseModel):
+    lead_type: Literal["demo", "trial", "sales"]
+    name: str
+    organisation: Optional[str] = None
+    role: Optional[str] = None
+    email: str
+    mobile: str
+    message: Optional[str] = None
+    source_url: Optional[str] = None
+
+
+# NOTE: The sales-lead email notification is fired FROM THE BROWSER (see
+# `frontend/src/components/ContactDialog.jsx → forwardLeadEmail`). FormSubmit.co
+# enforces a browser-Referer anti-abuse check that rejects direct
+# server-to-server POSTs, so doing it browser-side is the reliable path.
+# This backend endpoint stays as the DB source of truth + audit trail.
+
+
+@api.post("/leads")
+async def create_lead(payload: LeadCreate):
+    """Public endpoint used by the Landing hero + Final CTA (Book Demo /
+    Request Free Trial / Contact Sales) forms. Persists the lead into
+    `sales_leads` (source of truth) and logs a `lead.captured` audit entry.
+    Email delivery to the sales inbox is handled directly by the browser
+    (FormSubmit.co); see the comment above."""
+    doc = payload.model_dump()
+    doc["id"] = str(uuid.uuid4())
+    doc["status"] = "new"
+    doc["created_at"] = now_iso()
+    await db.sales_leads.insert_one(doc)
+    await _audit("lead.captured", None,
+                 {"lead_id": doc["id"], "lead_type": doc["lead_type"],
+                  "source_url": doc.get("source_url")})
+    return {"ok": True, "lead_id": doc["id"]}
+
+
+@api.get("/admin/leads")
+async def list_leads(user: dict = Depends(get_current_user)):
+    """Super-admin view of all inbound sales leads."""
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    rows = await db.sales_leads.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return rows
+
+
+# ============================================================================
+# PRELOADED CITIZENS — Import → Search → Claim & Activate (v1.2+)
+# ============================================================================
+# The office imports its Electoral Roll / existing database before launch.
+# Each imported row is a "preloaded" citizen with `activation_status="unclaimed"`
+# and no mobile. Citizens claim their record during onboarding: search →
+# select → OTP → activate. Once activated, mobile + device + activated_at
+# are stored and future logins skip search entirely.
+
+
+class CitizenImportRow(BaseModel):
+    """Fields accepted per row when the office imports its citizen database.
+    All optional except `name` — offices ship varying levels of detail."""
+    name: str
+    father_name: Optional[str] = None
+    husband_name: Optional[str] = None
+    gender: Optional[str] = None
+    dob: Optional[str] = None
+    age: Optional[int] = None
+    house_number: Optional[str] = None
+    address: Optional[str] = None
+    village: Optional[str] = None       # free-text village/area label
+    ward: Optional[str] = None          # free-text ward label
+    caste: Optional[str] = None         # free-text caste (resolved to caste_id later)
+    religion: Optional[str] = None
+    mobile: Optional[str] = None        # optional — if present, auto-activate
+
+
+@api.post("/admin/citizens/import")
+async def import_citizens(rows: List[CitizenImportRow],
+                          user: dict = Depends(require_roles("admin", "super_admin"))):
+    """Bulk-import an office's citizen roll. Duplicates are avoided based on
+    (tenant_id, name, house_number/address, dob). Returns per-row status."""
+    tid = get_tenant_id_for_write(user)
+    imported, skipped, activated = 0, 0, 0
+    errors: List[dict] = []
+    for row in rows:
+        try:
+            # De-dupe: same tenant + same name + same house_number/address.
+            dedup_q = {
+                "tenant_id": tid,
+                "role": "citizen",
+                "name": row.name.strip(),
+            }
+            if row.house_number:
+                dedup_q["house_number"] = row.house_number.strip()
+            existing = await db.users.find_one(dedup_q, {"_id": 0, "id": 1})
+            if existing:
+                skipped += 1
+                continue
+            # Base user record — preloaded unless a mobile was provided.
+            u = User(
+                role="citizen",
+                tenant_id=tid,
+                name=row.name.strip(),
+                father_name=(row.father_name or "").strip() or None,
+                husband_name=(row.husband_name or "").strip() or None,
+                gender=(row.gender or "").strip() or None,
+                dob=(row.dob or "").strip() or None,
+                age=row.age,
+                house_number=(row.house_number or "").strip() or None,
+                address=(row.address or "").strip() or None,
+                mobile=(row.mobile or "").strip() or None,
+                preloaded=True,
+                is_active=bool(row.mobile),
+                activation_status="activated" if row.mobile else "unclaimed",
+                activated_at=now_iso() if row.mobile else None,
+            )
+            await db.users.insert_one(u.model_dump())
+            imported += 1
+            if row.mobile:
+                activated += 1
+        except Exception as e:
+            errors.append({"row_name": row.name, "error": str(e)})
+    await _audit("citizens.import", user,
+                 {"imported": imported, "skipped": skipped, "auto_activated": activated,
+                  "error_count": len(errors), "total": len(rows)})
+    return {"imported": imported, "skipped": skipped, "auto_activated": activated,
+            "errors": errors, "total": len(rows)}
+
+
+class CitizenSearchRequest(BaseModel):
+    office_code: str
+    name: str
+    father_or_husband: Optional[str] = None
+    village: Optional[str] = None
+    house_number: Optional[str] = None
+
+
+@api.post("/auth/citizen/search")
+async def search_citizen(payload: CitizenSearchRequest):
+    """Public endpoint used during onboarding — citizen searches the office's
+    preloaded roll to claim their record. Returns unclaimed matches only,
+    limited to 20 rows for privacy."""
+    tid = await _resolve_tenant_id(payload.office_code)
+    if not tid:
+        raise HTTPException(400, "office_code required")
+    q: dict = {
+        "tenant_id": tid,
+        "role": "citizen",
+        "activation_status": "unclaimed",
+    }
+    if payload.name:
+        # Anchored case-insensitive contains on `name`.
+        q["name"] = {"$regex": re.escape(payload.name.strip()), "$options": "i"}
+    if payload.house_number:
+        q["house_number"] = {"$regex": re.escape(payload.house_number.strip()), "$options": "i"}
+    rows = await db.users.find(
+        q,
+        {"_id": 0, "id": 1, "name": 1, "father_name": 1, "husband_name": 1,
+         "age": 1, "dob": 1, "house_number": 1, "address": 1, "village_id": 1,
+         "activation_status": 1},
+    ).limit(50).to_list(50)
+    # Optional secondary filter by father/husband/village (Python side to keep
+    # index footprint small on Mongo).
+    if payload.father_or_husband:
+        fh = payload.father_or_husband.strip().lower()
+        rows = [r for r in rows if fh in ((r.get("father_name") or "").lower() + " " + (r.get("husband_name") or "").lower())]
+    return {"matches": rows[:20], "total": len(rows)}
+
+
+class CitizenClaimRequest(BaseModel):
+    office_code: str
+    person_id: str
+    mobile: str
+
+
+@api.post("/auth/citizen/claim")
+async def claim_citizen(payload: CitizenClaimRequest):
+    """Citizen selected an unclaimed preloaded record and provided their mobile.
+    Issues an OTP tied to (mobile, office_code, person_id). Actual activation
+    happens in a follow-up verify-otp call."""
+    tid = await _resolve_tenant_id(payload.office_code)
+    person = await db.users.find_one(
+        {"id": payload.person_id, "tenant_id": tid, "role": "citizen"},
+        {"_id": 0, "id": 1, "name": 1, "activation_status": 1, "mobile": 1},
+    )
+    if not person:
+        raise HTTPException(404, "Record not found")
+    if person.get("activation_status") == "activated":
+        raise HTTPException(409, "This citizen profile has already been activated. Please contact the office if you believe this is a mistake.")
+    # If another activated user already exists with this mobile in the tenant,
+    # block — one mobile can only own one citizen record per office.
+    dup = await db.users.find_one(
+        {"tenant_id": tid, "role": "citizen", "mobile": payload.mobile,
+         "activation_status": "activated"},
+        {"_id": 0, "id": 1},
+    )
+    if dup:
+        raise HTTPException(409, "This mobile number is already linked to another activated profile in this office.")
+    # Issue an OTP (respects dev/production mode of the tenant).
+    portal = await db.portal_configs.find_one(
+        {"id": tid}, {"_id": 0, "communication_mode": 1, "otp_config": 1},
+    )
+    is_dev = not portal or (portal.get("communication_mode") or "development") != "production"
+    if is_dev:
+        otp_code = otp_service.FIXED_DEV_OTP
+        mode = "development"
+        reason = None
+    else:
+        otp_code = otp_service.generate_otp()
+        dispatch = await otp_service.send_otp(payload.mobile, otp_code, portal.get("otp_config") or {})
+        mode = "production"
+        reason = dispatch.get("reason") if not dispatch.get("delivered") else None
+        await _audit(
+            "otp.sent" if dispatch.get("delivered") else "otp.send_failed",
+            None,
+            {"tenant_id": tid, "mobile_last4": payload.mobile[-4:],
+             "provider": dispatch.get("provider"), "reason": reason,
+             "context": "claim"},
+        )
+    # Store OTP scoped to the person_id so verify can activate the correct row.
+    await db.otps.update_one(
+        {"mobile": payload.mobile, "tenant_slug": payload.office_code,
+         "context": "claim"},
+        {"$set": {"mobile": payload.mobile,
+                  "tenant_slug": payload.office_code,
+                  "otp": otp_code, "at": now_iso(), "mode": mode,
+                  "person_id": payload.person_id,
+                  "context": "claim"}},
+        upsert=True,
+    )
+    return {
+        "sent": True if is_dev else True,
+        "mode": mode,
+        "reason": reason,
+        "demo_otp": otp_code if is_dev else None,
+        "person": {"id": person["id"], "name": person["name"]},
+    }
+
+
+class CitizenActivateRequest(BaseModel):
+    office_code: str
+    person_id: str
+    mobile: str
+    otp: str
+    device: Optional[str] = None
+    # DPDP Act 2023 — India's Digital Personal Data Protection Act requires
+    # explicit consent capture before personal data processing.
+    dpdp_consent: bool = False
+    dpdp_consent_version: Optional[str] = "1.0"
+
+
+@api.post("/auth/citizen/activate")
+async def activate_citizen(payload: CitizenActivateRequest, request: Request):
+    """Finalises the claim: verifies OTP, links mobile→person, issues a JWT."""
+    tid = await _resolve_tenant_id(payload.office_code)
+    stored = await db.otps.find_one(
+        {"mobile": payload.mobile, "tenant_slug": payload.office_code, "context": "claim"},
+        {"_id": 0, "otp": 1, "mode": 1, "person_id": 1},
+    )
+    if not stored or stored.get("person_id") != payload.person_id:
+        raise HTTPException(400, "OTP session expired — please search again")
+    mode = stored.get("mode") or "development"
+    if mode == "production":
+        if stored.get("otp") != payload.otp:
+            raise HTTPException(400, "Invalid OTP")
+    else:
+        if not (payload.otp.isdigit() and len(payload.otp) == 6):
+            raise HTTPException(400, "Invalid OTP")
+    person = await db.users.find_one(
+        {"id": payload.person_id, "tenant_id": tid, "role": "citizen"},
+        {"_id": 0, "password_hash": 0},
+    )
+    if not person:
+        raise HTTPException(404, "Record not found")
+    if person.get("activation_status") == "activated":
+        raise HTTPException(409, "This citizen profile has already been activated.")
+    # DPDP consent gate — refuse activation unless the user checked the box.
+    if not payload.dpdp_consent:
+        raise HTTPException(400, "Consent to Terms & Privacy Policy is required to activate your account.")
+    device = payload.device or (request.headers.get("user-agent") or "")[:200]
+    now = now_iso()
+    await db.users.update_one(
+        {"id": payload.person_id},
+        {"$set": {"mobile": payload.mobile, "is_active": True,
+                  "activation_status": "activated", "activated_at": now,
+                  "activation_device": device, "last_login_at": now,
+                  "dpdp_consent": True,
+                  "dpdp_consent_version": payload.dpdp_consent_version or "1.0",
+                  "dpdp_consent_at": now,
+                  "dpdp_consent_ip": _client_ip(request)}},
+    )
+    await db.otps.delete_one({"mobile": payload.mobile, "tenant_slug": payload.office_code, "context": "claim"})
+    # Ensure V2 Person record exists + link back to this User (person_id).
+    # Preloaded voter rows don't have a persons/ row until first activation.
+    try:
+        pid = await v2dw.ensure_person_for_user(db, {**person, "mobile": payload.mobile,
+                                                    "is_active": True,
+                                                    "activation_status": "activated"})
+        if pid:
+            await db.users.update_one({"id": payload.person_id}, {"$set": {"person_id": pid}})
+    except Exception:
+        logger.exception(f"v2 person link failed for user={payload.person_id}")
+    await _audit("citizen.activated", None,
+                 {"tenant_id": tid, "person_id": payload.person_id,
+                  "mobile_last4": payload.mobile[-4:]})
+    # Refetch and issue JWT.
+    fresh = await db.users.find_one({"id": payload.person_id}, {"_id": 0, "password_hash": 0})
+    token = create_token(fresh["id"], "citizen", fresh.get("tenant_id"))
+    return {"token": token, "user": fresh}
+
+
+@api.get("/admin/citizens")
+async def list_citizens_by_status(
+    status: Optional[Literal["activated", "unclaimed"]] = None,
+    limit: int = 500,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    """Admin roster split by activation status.
+    - activated : citizens with `activation_status='activated'` (usually recent)
+    - unclaimed : preloaded records not yet claimed
+    - (omit)    : combined, most recent first.
+    Response items are trimmed to what the admin table needs."""
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    q: dict = {"role": "citizen"}
+    if tid:
+        q["tenant_id"] = tid
+    if status:
+        q["activation_status"] = status
+    rows = await db.users.find(
+        q,
+        {"_id": 0, "id": 1, "name": 1, "mobile": 1, "father_name": 1, "husband_name": 1,
+         "house_number": 1, "activation_status": 1, "activated_at": 1,
+         "last_login_at": 1, "preloaded": 1, "created_at": 1},
+    ).sort("activated_at", -1).limit(max(1, min(limit, 2000))).to_list(2000)
+    return rows
+
+
+@api.get("/admin/citizens/stats")
+async def citizen_activation_stats(user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician"))):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    base = {"role": "citizen"}
+    if tid:
+        base["tenant_id"] = tid
+    activated = await db.users.count_documents({**base, "activation_status": "activated"})
+    unclaimed = await db.users.count_documents({**base, "activation_status": "unclaimed"})
+    return {"activated": activated, "unclaimed": unclaimed,
+            "total": activated + unclaimed}
+
+
+# ============================================================================
+# ELECTORAL ROLL IMPORT MODULE (Election Commission of India)
+# ============================================================================
+# Business rules (per PRD, do NOT change without approval):
+#   - Each voter card becomes ONE independent Person (db.users role=citizen).
+#   - Family relationships are NEVER inferred here.
+#   - Duplicate detection uses (tenant_id, epic_number).
+#   - Languages supported: English + Marathi (auto-detected).
+#   - Only Super Admin and Office Admin can upload.
+# ============================================================================
+async def _ensure_electoral_indexes():
+    """Idempotent — search indexes for voter records + import history."""
+    try:
+        from pymongo import ASCENDING
+        # Voter search (used by citizen registration).
+        await db.users.create_index([("tenant_id", ASCENDING), ("epic_number", ASCENDING)],
+                                    name="voter_epic_by_tenant", background=True, sparse=True)
+        await db.users.create_index([("tenant_id", ASCENDING), ("name", ASCENDING)],
+                                    name="voter_name_by_tenant", background=True)
+        await db.users.create_index([("tenant_id", ASCENDING), ("relative_name", ASCENDING)],
+                                    name="voter_relname_by_tenant", background=True, sparse=True)
+        await db.users.create_index([("tenant_id", ASCENDING), ("house_number", ASCENDING)],
+                                    name="voter_house_by_tenant", background=True, sparse=True)
+        await db.users.create_index([("tenant_id", ASCENDING), ("part_number", ASCENDING), ("serial_number", ASCENDING)],
+                                    name="voter_part_serial", background=True, sparse=True)
+        await db.users.create_index([("tenant_id", ASCENDING), ("booth_number", ASCENDING)],
+                                    name="voter_booth", background=True, sparse=True)
+        # Import history (list by tenant + recency).
+        await db.electoral_roll_imports.create_index([("tenant_id", ASCENDING), ("created_at", -1)],
+                                                    name="er_imports_by_tenant", background=True)
+    except Exception as e:
+        logger.warning(f"Electoral indexes deferred: {e}")
+
+
+async def _process_electoral_pdf(import_row: ElectoralRollImport, pdf_bytes: bytes, user: dict) -> ElectoralRollImport:
+    """Parse a single PDF and upsert its voters into db.users.
+
+    Returns the (mutated) import_row with final counters + status.
+    """
+    started = datetime.now(timezone.utc)
+    try:
+        # pdfplumber is CPU-bound — run in a threadpool so we don't block the loop.
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, electoral_parser.parse_pdf, pdf_bytes,
+        )
+    except Exception as e:
+        import_row.status = "failed"
+        import_row.errors.append({"page": None, "record_number": None, "error": f"parse failed: {e}"})
+        import_row.completed_at = now_iso()
+        import_row.processing_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+        await db.electoral_roll_imports.update_one({"id": import_row.id}, {"$set": import_row.model_dump()})
+        return import_row
+
+    # Persist parsed header fields for later display.
+    header = result.header
+    import_row.language = result.language if result.language in ("english", "marathi") else "english"
+    import_row.part_number = header.part_number
+    import_row.booth_number = header.booth_number
+    import_row.assembly_constituency = header.assembly_constituency
+    import_row.parliamentary_constituency = header.parliamentary_constituency
+    import_row.state = header.state
+    import_row.district = header.district
+    import_row.taluka = header.taluka
+    import_row.village_label = header.village
+    import_row.header = _dc_asdict(header)
+
+    tid = import_row.tenant_id
+    complete = partial = failed = imported = updated = 0
+
+    for v in result.voters:
+        try:
+            # ---- Classify: critical (name/age/gender) vs non-critical fields ----
+            missing_critical: List[str] = []
+            if not v.full_name:
+                missing_critical.append("name")
+            if not v.age:
+                missing_critical.append("age")
+            if not v.gender:
+                missing_critical.append("gender")
+
+            missing_optional: List[str] = []
+            if not v.epic_number:
+                missing_optional.append("epic")
+            if not v.house_number:
+                missing_optional.append("house")
+            if not v.relative_name:
+                missing_optional.append("relative_name")
+
+            if missing_critical:
+                status = "failed"
+            elif missing_optional:
+                status = "partial"
+            else:
+                status = "complete"
+
+            # ---- Dedupe strategy ----
+            # 1. If EPIC present → dedupe on (tenant, epic).
+            # 2. Else → dedupe on (tenant, lowercased name + age + relative_name).
+            #    This guards against re-runs of the same PDF creating duplicates
+            #    when EPIC is unreadable but the name+age fingerprint matches.
+            existing = None
+            if v.epic_number:
+                existing = await db.users.find_one(
+                    {"tenant_id": tid, "role": "citizen", "epic_number": v.epic_number},
+                    {"_id": 0, "id": 1, "manually_corrected_fields": 1},
+                )
+            elif v.full_name:
+                fp = (v.full_name or "").strip().lower()
+                q = {
+                    "tenant_id": tid, "role": "citizen",
+                    "name": {"$regex": f"^{re.escape(fp)}$", "$options": "i"},
+                    "age": v.age,
+                }
+                if v.relative_name:
+                    q["relative_name"] = {"$regex": f"^{re.escape(v.relative_name)}$", "$options": "i"}
+                existing = await db.users.find_one(q, {"_id": 0, "id": 1, "manually_corrected_fields": 1})
+
+            payload = {
+                "role": "citizen",
+                "tenant_id": tid,
+                "name": v.full_name or "Unknown",
+                "gender": v.gender,
+                "age": v.age,
+                "house_number": v.house_number,
+                "relation_type": v.relation_type,
+                "relative_name": v.relative_name,
+                "father_name": v.relative_name if v.relation_type == "Father" else None,
+                "husband_name": v.relative_name if v.relation_type == "Husband" else None,
+                "mother_name": v.relative_name if v.relation_type == "Mother" else None,
+                "epic_number": v.epic_number,
+                "serial_number": v.serial_number,
+                "part_number": v.part_number,
+                "booth_number": v.booth_number,
+                "section_name": v.section_name,
+                "assembly_constituency": v.assembly_constituency,
+                "parliamentary_constituency": v.parliamentary_constituency,
+                "state": v.state,
+                "district": v.district,
+                "taluka": v.taluka,
+                "village_label": v.village,
+                "electoral_import_id": import_row.id,
+                "preloaded": True,
+                "import_status": status,
+                "import_missing_fields": (missing_critical + missing_optional) or None,
+            }
+            # Drop None values so we don't overwrite existing good data with
+            # blanks on re-import. Also NEVER touch manually_corrected fields.
+            payload = {k: val for k, val in payload.items() if val is not None}
+
+            if existing:
+                # Reimport rule: only fill missing fields; never overwrite a
+                # field the admin manually corrected.
+                protected = set(existing.get("manually_corrected_fields") or [])
+                # Also never overwrite existing non-null values with the new payload.
+                existing_full = await db.users.find_one({"id": existing["id"]}, {"_id": 0})
+                only_missing = {}
+                for k, val in payload.items():
+                    if k in protected:
+                        continue
+                    if existing_full and existing_full.get(k) not in (None, "", "Unknown"):
+                        # Keep existing value — reimport must not overwrite.
+                        continue
+                    only_missing[k] = val
+                # But always refresh import_status if it improves.
+                # (e.g. complete beats partial beats failed)
+                ranking = {"failed": 0, "partial": 1, "complete": 2}
+                if ranking.get(status, 0) > ranking.get(existing_full.get("import_status") if existing_full else None, -1):
+                    only_missing["import_status"] = status
+                    only_missing["import_missing_fields"] = payload.get("import_missing_fields")
+                if only_missing:
+                    await db.users.update_one({"id": existing["id"]}, {"$set": only_missing})
+                updated += 1
+                if status == "complete":
+                    complete += 1
+                elif status == "partial":
+                    partial += 1
+                else:
+                    failed += 1
+            else:
+                new_user = User(**payload)
+                new_user.is_active = False
+                new_user.activation_status = "unclaimed"
+                await db.users.insert_one(new_user.model_dump())
+                imported += 1
+                if status == "complete":
+                    complete += 1
+                elif status == "partial":
+                    partial += 1
+                else:
+                    failed += 1
+                    import_row.errors.append({"page": v._page, "record_number": v.serial_number,
+                                              "error": "missing critical: " + ",".join(missing_critical)})
+        except Exception as e:
+            failed += 1
+            import_row.errors.append({"page": v._page, "record_number": v.serial_number,
+                                      "error": str(e)})
+
+    # Parser-level errors (page decode failures etc).
+    for e in result.errors:
+        import_row.errors.append({"page": e.page, "record_number": e.record_number, "error": e.error})
+
+    import_row.total_records = len(result.voters)
+    import_row.complete = complete
+    import_row.partial = partial
+    import_row.failed = failed
+    import_row.imported = imported
+    import_row.updated = updated
+    import_row.duplicates = 0
+    import_row.status = "completed"
+    import_row.completed_at = now_iso()
+    import_row.processing_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+    await db.electoral_roll_imports.update_one({"id": import_row.id}, {"$set": import_row.model_dump()})
+    await _audit("electoral.imported", user,
+                 {"tenant_id": tid, "file_name": import_row.file_name,
+                  "complete": complete, "partial": partial, "failed": failed,
+                  "imported": imported, "updated": updated,
+                  "language": import_row.language})
+    return import_row
+
+
+@api.post("/admin/electoral-roll/upload")
+async def upload_electoral_rolls(
+    files: List[UploadFile] = File(...),
+    user: dict = Depends(require_roles("admin", "super_admin")),
+):
+    """Upload one or more Electoral Roll PDFs.
+
+    Processing is **asynchronous** — the endpoint creates one import row per
+    file with `status="processing"`, kicks off OCR in a background task, and
+    returns immediately with the import ids. Poll ``GET /imports/{id}`` for
+    completion status (updated to `completed` or `failed`).
+
+    * Language is auto-detected (English or Marathi).
+    * Each voter card becomes ONE independent Person; family relationships are
+      NEVER inferred from the roll.
+    * Duplicates are keyed on (tenant_id, EPIC) — repeat uploads UPDATE.
+    """
+    if not files:
+        raise HTTPException(400, "At least one PDF file is required")
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    if not tid:
+        raise HTTPException(400, "Super admin must operate within an office (open the office admin panel)")
+    await _ensure_electoral_indexes()
+
+    started: List[dict] = []
+    for f in files:
+        raw = await f.read()
+        if not raw:
+            started.append({"file_name": f.filename, "status": "failed", "error": "empty file"})
+            continue
+        if not (f.filename or "").lower().endswith(".pdf"):
+            started.append({"file_name": f.filename, "status": "failed", "error": "not a PDF"})
+            continue
+        import_row = ElectoralRollImport(
+            tenant_id=tid,
+            uploaded_by=user["id"],
+            uploaded_by_name=user.get("name"),
+            file_name=f.filename or "roll.pdf",
+            file_size=len(raw),
+            status="processing",
+        )
+        await db.electoral_roll_imports.insert_one(import_row.model_dump())
+        started.append({
+            "id": import_row.id,
+            "file_name": import_row.file_name,
+            "status": "processing",
+        })
+        # Fire-and-forget — OCR on a scanned 34-page ECI PDF can take minutes.
+        asyncio.create_task(_process_electoral_pdf(import_row, raw, user))
+    return {"queued": started, "total_files": len(files)}
+
+
+@api.get("/admin/electoral-roll/imports")
+async def list_electoral_imports(user: dict = Depends(require_roles("admin", "super_admin"))):
+    """Import history — most-recent first, tenant-scoped."""
+    q: dict = {}
+    if user.get("role") != "super_admin":
+        q["tenant_id"] = user.get("tenant_id")
+    rows = await db.electoral_roll_imports.find(
+        q,
+        {"_id": 0, "errors": 0, "header": 0},
+    ).sort("created_at", -1).limit(500).to_list(500)
+    return rows
+
+
+@api.get("/admin/electoral-roll/imports/{import_id}")
+async def get_electoral_import(import_id: str, user: dict = Depends(require_roles("admin", "super_admin"))):
+    q: dict = {"id": import_id}
+    if user.get("role") != "super_admin":
+        q["tenant_id"] = user.get("tenant_id")
+    row = await db.electoral_roll_imports.find_one(q, {"_id": 0})
+    if not row:
+        raise HTTPException(404, "Import not found")
+    return row
+
+
+@api.get("/admin/electoral-roll/imports/{import_id}/errors.csv")
+async def download_electoral_errors(import_id: str, user: dict = Depends(require_roles("admin", "super_admin"))):
+    q: dict = {"id": import_id}
+    if user.get("role") != "super_admin":
+        q["tenant_id"] = user.get("tenant_id")
+    row = await db.electoral_roll_imports.find_one(q, {"_id": 0, "id": 1, "file_name": 1, "errors": 1})
+    if not row:
+        raise HTTPException(404, "Import not found")
+    import csv as _csv
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["PDF Name", "Page Number", "Record Number", "Error"])
+    for e in row.get("errors", []):
+        w.writerow([row.get("file_name") or "", e.get("page") or "",
+                    e.get("record_number") or "", e.get("error") or ""])
+    csv_data = buf.getvalue()
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="electoral_errors_{import_id}.csv"'},
+    )
+
+
+# --------------------------------------------------------------------------
+# Public: enhanced citizen search for the new registration flow.
+# --------------------------------------------------------------------------
+class VoterSearchRequest(BaseModel):
+    office_code: str
+    name: Optional[str] = None
+    relative_name: Optional[str] = None
+    house_number: Optional[str] = None
+    epic_number: Optional[str] = None
+
+
+@api.post("/auth/citizen/search-voter")
+async def search_voter(payload: VoterSearchRequest):
+    """Public — used during citizen registration to search the office's
+    Electoral Roll (or preloaded citizen DB) and pick their record."""
+    tid = await _resolve_tenant_id(payload.office_code)
+    if not tid:
+        raise HTTPException(400, "Invalid Office Code")
+
+    q: dict = {
+        "tenant_id": tid,
+        "role": "citizen",
+        "activation_status": "unclaimed",
+        # Failed records lack critical identity — never expose them for claim.
+        # Partial records ARE searchable (EPIC not mandatory for claim).
+        "import_status": {"$ne": "failed"},
+    }
+    if payload.epic_number:
+        q["epic_number"] = payload.epic_number.strip().upper()
+    if payload.name and (payload.name or "").strip():
+        # Anchor + contains (case-insensitive).
+        q["name"] = {"$regex": re.escape(payload.name.strip()), "$options": "i"}
+    if payload.house_number:
+        q["house_number"] = {"$regex": re.escape(payload.house_number.strip()), "$options": "i"}
+
+    rows = await db.users.find(
+        q,
+        {"_id": 0, "id": 1, "name": 1, "father_name": 1, "husband_name": 1,
+         "mother_name": 1, "relation_type": 1, "relative_name": 1,
+         "age": 1, "gender": 1, "house_number": 1, "epic_number": 1,
+         "serial_number": 1, "part_number": 1, "booth_number": 1,
+         "activation_status": 1, "import_status": 1},
+    ).limit(80).to_list(80)
+
+    if payload.relative_name and payload.relative_name.strip():
+        rn = payload.relative_name.strip().lower()
+        rows = [
+            r for r in rows
+            if rn in ((r.get("relative_name") or "").lower()
+                      + " " + (r.get("father_name") or "").lower()
+                      + " " + (r.get("husband_name") or "").lower()
+                      + " " + (r.get("mother_name") or "").lower())
+        ]
+    return {"matches": rows[:20], "total": len(rows)}
+
+
+# --------------------------------------------------------------------------
+# Manual Review Queue — office admin fixes partial/failed voter records.
+# --------------------------------------------------------------------------
+@api.get("/admin/electoral-roll/review")
+async def list_review_queue(
+    status: Optional[str] = None,       # "partial" | "failed" | None (both)
+    missing: Optional[str] = None,      # "epic" | "house" | "relative_name" | "name" | "age" | "gender"
+    q: Optional[str] = None,            # free-text name / relative search
+    limit: int = 100,
+    user: dict = Depends(require_roles("admin", "super_admin")),
+):
+    """List preloaded voters that need attention (partial or failed)."""
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    if not tid:
+        raise HTTPException(400, "Super admin must operate within an office")
+
+    query: dict = {
+        "tenant_id": tid,
+        "role": "citizen",
+        "preloaded": True,
+    }
+    if status in ("partial", "failed"):
+        query["import_status"] = status
+    else:
+        query["import_status"] = {"$in": ["partial", "failed"]}
+    if missing:
+        query["import_missing_fields"] = missing
+    if q and q.strip():
+        term = re.escape(q.strip())
+        query["$or"] = [
+            {"name": {"$regex": term, "$options": "i"}},
+            {"relative_name": {"$regex": term, "$options": "i"}},
+        ]
+
+    rows = await db.users.find(
+        query,
+        {"_id": 0, "id": 1, "name": 1, "age": 1, "gender": 1,
+         "relative_name": 1, "relation_type": 1, "house_number": 1,
+         "epic_number": 1, "part_number": 1, "booth_number": 1, "serial_number": 1,
+         "import_status": 1, "import_missing_fields": 1,
+         "manually_corrected_fields": 1, "activation_status": 1,
+         "electoral_import_id": 1, "created_at": 1},
+    ).sort("created_at", -1).limit(min(limit, 500)).to_list(min(limit, 500))
+
+    # Bucket counts (independent of current filter).
+    base = {"tenant_id": tid, "role": "citizen", "preloaded": True}
+    counts = {
+        "partial": await db.users.count_documents({**base, "import_status": "partial"}),
+        "failed": await db.users.count_documents({**base, "import_status": "failed"}),
+        "complete": await db.users.count_documents({**base, "import_status": "complete"}),
+    }
+    return {"records": rows, "counts": counts}
+
+
+class ReviewPatch(BaseModel):
+    name: Optional[str] = None
+    age: Optional[int] = None
+    gender: Optional[Literal["Male", "Female", "Other"]] = None
+    epic_number: Optional[str] = None
+    house_number: Optional[str] = None
+    relative_name: Optional[str] = None
+    relation_type: Optional[Literal["Father", "Husband", "Mother", "Other"]] = None
+
+
+@api.patch("/admin/electoral-roll/review/{person_id}")
+async def edit_review_record(
+    person_id: str,
+    patch: ReviewPatch,
+    user: dict = Depends(require_roles("admin", "super_admin")),
+):
+    """Edit a partial/failed voter record. All edited fields are marked as
+    ``manually_corrected_fields`` so future re-imports will never overwrite them.
+    Re-classifies the record's ``import_status`` after the edit."""
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"id": person_id, "role": "citizen", "preloaded": True}
+    if tid:
+        query["tenant_id"] = tid
+    row = await db.users.find_one(query, {"_id": 0})
+    if not row:
+        raise HTTPException(404, "Voter record not found")
+
+    updates: dict = {}
+    corrected: set = set(row.get("manually_corrected_fields") or [])
+    for k, v in patch.model_dump(exclude_none=True).items():
+        if k == "epic_number":
+            v = (v or "").strip().upper()
+        elif isinstance(v, str):
+            v = v.strip()
+        if v == "" or v is None:
+            continue
+        updates[k] = v
+        corrected.add(k)
+        # Sync father/husband/mother mirror fields.
+        if k == "relative_name" and (patch.relation_type or row.get("relation_type")):
+            rel = patch.relation_type or row.get("relation_type")
+            if rel == "Father":
+                updates["father_name"] = v
+            elif rel == "Husband":
+                updates["husband_name"] = v
+            elif rel == "Mother":
+                updates["mother_name"] = v
+
+    if not updates:
+        raise HTTPException(400, "No editable fields provided")
+
+    # Re-classify import_status after edit.
+    merged = {**row, **updates}
+    missing_critical = [f for f in ("name", "age", "gender") if not merged.get(f)]
+    missing_optional = [f for f in ("epic_number", "house_number", "relative_name") if not merged.get(f)]
+    if missing_critical:
+        updates["import_status"] = "failed"
+    elif missing_optional:
+        updates["import_status"] = "partial"
+    else:
+        updates["import_status"] = "complete"
+    updates["import_missing_fields"] = (missing_critical + missing_optional) or None
+    updates["manually_corrected_fields"] = sorted(corrected)
+
+    await db.users.update_one({"id": person_id}, {"$set": updates})
+    await _audit("electoral.review.edited", user,
+                 {"person_id": person_id, "fields": list(updates.keys()),
+                  "new_status": updates["import_status"]})
+    return {"id": person_id, "updated": updates}
+
+
+@api.get("/meta/categories")
+async def meta_cats():
+    return {"issue_categories": ISSUE_CATEGORIES, "issue_statuses": ISSUE_STATUSES, "dev_statuses": DEV_STATUSES, "visit_statuses": VISIT_STATUSES}
+
+
+async def _resolve_tenant_id(identifier: Optional[str], allow_archived_for_super_admin: bool = False) -> Optional[str]:
+    """Resolve a portal identifier (Office Code preferred, legacy slug fallback)
+    to its tenant_id. Returns None if no identifier provided.
+
+    Accepts EITHER:
+        - Office Code (e.g. "JS1045") — canonical v1.1+
+        - Slug (e.g. "pune-cantonment") — legacy, still supported
+
+    Archived portals reject all new logins by default (per production rule).
+    Only super_admin flows may pass ``allow_archived_for_super_admin=True`` and
+    still authenticate against an archived portal — used from staff login when
+    the caller turns out to be super_admin."""
+    if not identifier:
+        return None
+    ident = identifier.strip()
+    # Match Office Code first (uppercase JS-prefixed). Fall back to slug otherwise.
+    q: dict
+    if _is_valid_office_code(ident.upper()):
+        q = {"office_code": ident.upper()}
+    else:
+        q = {"slug": ident.lower()}
+    portal = await db.portal_configs.find_one(
+        q, {"id": 1, "portal_status": 1, "is_active": 1, "office_code": 1, "slug": 1},
+    )
+    if not portal:
+        raise HTTPException(404, "Portal not found")
+    status = portal.get("portal_status")
+    if status == "archived" and not allow_archived_for_super_admin:
+        raise HTTPException(423, "Portal is archived and is not accepting new logins. Contact platform admin.")
+    if status == "suspended":
+        raise HTTPException(403, "Portal is currently suspended")
+    if not portal.get("is_active") and status != "archived":
+        raise HTTPException(404, "Portal not found")
+    return portal["id"]
+
+
+@api.get("/me/portal-config")
+async def me_portal_config(user: dict = Depends(get_current_user)):
+    """Small caller-scoped portal config for the app shell.
+
+    Returns ONLY safe display fields (never the OTP api_key / provider secrets).
+    Used by the frontend to render the Development Mode badge and any future
+    tenant-level display flags."""
+    tid = user.get("tenant_id")
+    if not tid:
+        return {"communication_mode": None, "otp_provider": None}
+    p = await db.portal_configs.find_one(
+        {"id": tid},
+        {"_id": 0, "communication_mode": 1, "otp_config": 1, "portal_status": 1, "slug": 1},
+    )
+    if not p:
+        return {"communication_mode": None, "otp_provider": None}
+    provider = (p.get("otp_config") or {}).get("provider")
+    return {
+        "communication_mode": p.get("communication_mode") or "development",
+        "otp_provider": provider,
+        "portal_status": p.get("portal_status"),
+        "slug": p.get("slug"),
+    }
+
+
+# ----------------- AUTH -----------------
+@api.post("/auth/citizen/request-otp")
+async def request_otp(payload: CitizenOTPRequest):
+    """Issue an OTP for citizen sign-in.
+
+    Development-mode tenants (or a request without a tenant slug) always use
+    the fixed OTP ``123456`` and no external provider is called. Production
+    tenants generate a secure random OTP and dispatch it through the tenant's
+    own SMS provider config — credentials are strictly per-tenant (see
+    ``portal_configs.otp_config``).
+    """
+    # Validate identifier + resolve to tenant id (also enforces archive/suspend gates).
+    # Backwards-compat: `tenant_slug` on the payload accepts either the legacy
+    # slug or the new Office Code (JS####).
+    await _resolve_tenant_id(payload.tenant_slug)
+    portal = None
+    if payload.tenant_slug:
+        ident = payload.tenant_slug.strip()
+        q = {"office_code": ident.upper()} if _is_valid_office_code(ident.upper()) else {"slug": ident.lower()}
+        portal = await db.portal_configs.find_one(
+            q,
+            {"_id": 0, "communication_mode": 1, "otp_config": 1, "id": 1},
+        )
+    is_dev = not portal or (portal.get("communication_mode") or "development") != "production"
+    if is_dev:
+        otp_code = otp_service.FIXED_DEV_OTP
+        dispatch = {"delivered": True, "provider": "dev-mode",
+                    "reason": None, "raw": None, "mode": "development"}
+    else:
+        otp_code = otp_service.generate_otp()
+        dispatch = await otp_service.send_otp(
+            payload.mobile, otp_code, portal.get("otp_config") or {})
+        dispatch["mode"] = "production"
+        # Audit but never break the request contract on delivery failure —
+        # surface the reason to the caller so the frontend can show it.
+        await _audit(
+            "otp.sent" if dispatch["delivered"] else "otp.send_failed",
+            None,
+            {"tenant_id": portal.get("id"), "mobile_last4": payload.mobile[-4:],
+             "provider": dispatch.get("provider"), "reason": dispatch.get("reason")},
+        )
+    await db.otps.update_one(
+        {"mobile": payload.mobile, "tenant_slug": payload.tenant_slug},
+        {"$set": {"mobile": payload.mobile, "tenant_slug": payload.tenant_slug,
+                  "otp": otp_code, "at": now_iso(), "mode": dispatch["mode"]}},
+        upsert=True,
+    )
+    # In dev mode we intentionally surface the OTP so demos/E2E tests work
+    # without a live SMS gateway. In production we never expose the code.
+    if is_dev:
+        return {"sent": True, "mode": "development", "demo_otp": otp_code}
+    return {
+        "sent": bool(dispatch["delivered"]),
+        "mode": "production",
+        "provider": dispatch.get("provider"),
+        "reason": dispatch.get("reason"),
+    }
+
+
+@api.post("/auth/citizen/verify-otp")
+async def verify_otp(payload: CitizenOTPVerify):
+    """Verify the OTP issued to this mobile+tenant pair.
+
+    In production mode the stored OTP is the one dispatched by the tenant's
+    provider. In development mode any 6-digit OTP is accepted (backwards
+    compatible with existing demos), because the stored code is the fixed
+    ``123456`` but demos and E2E scripts may type any 6-digit filler.
+    """
+    tid = await _resolve_tenant_id(payload.tenant_slug)
+    stored = await db.otps.find_one(
+        {"mobile": payload.mobile, "tenant_slug": payload.tenant_slug},
+        {"_id": 0, "otp": 1, "mode": 1},
+    )
+    mode = (stored or {}).get("mode") or "development"
+    if mode == "production":
+        # Strict match against the code we issued.
+        if not stored or stored.get("otp") != payload.otp:
+            raise HTTPException(400, "Invalid OTP")
+    else:
+        # Dev / demo: fixed OTP is 123456, but any 6-digit input is accepted
+        # to keep old E2E scripts and manual QA smooth. Length + digits only.
+        if not (payload.otp.isdigit() and len(payload.otp) == 6):
+            raise HTTPException(400, "Invalid OTP")
+    q = {"mobile": payload.mobile, "role": "citizen"}
+    if tid:
+        q["tenant_id"] = tid
+    # Skip transferred-out (is_active=False) rows so a citizen can't log into
+    # a constituency they've been transferred away from.
+    user = await db.users.find_one({**q, "is_active": {"$ne": False}},
+                                   {"_id": 0, "password_hash": 0})
+    if not user:
+        # If they exist but were transferred away, surface that hint.
+        archived = await db.users.find_one({**q, "is_active": False},
+                                           {"_id": 0, "password_hash": 0})
+        if archived:
+            person_id = archived.get("person_id")
+            new_user = None
+            if person_id:
+                new_user = await db.users.find_one(
+                    {"role": "citizen", "person_id": person_id,
+                     "is_active": True}, {"_id": 0, "password_hash": 0})
+            cur_portal = await db.portal_configs.find_one(
+                {"id": (new_user or {}).get("tenant_id")},
+                {"_id": 0, "slug": 1, "politician_name": 1, "constituency_name": 1},
+            ) if new_user else None
+            return {"new_user": False, "transferred_out": True,
+                    "current_portal": cur_portal,
+                    "message": "You have been transferred to another constituency."}
+        return {"new_user": True, "mobile": payload.mobile, "tenant_id": tid}
+    token = create_token(user["id"], "citizen", user.get("tenant_id"))
+    return {"token": token, "user": user, "new_user": False}
+
+
+@api.post("/auth/citizen/check-mobile")
+async def check_mobile(payload: CitizenMobileCheck):
+    """Pre-registration helper. Tells the frontend whether the mobile already
+    has a Person — and if so, whether they need to log in (same tenant) or
+    transfer (different tenant). Used by CitizenRegister.jsx to drive the
+    "Mobile already exists — transfer?" dialog.
+    """
+    tid = await _resolve_tenant_id(payload.tenant_slug)
+    if not tid:
+        raise HTTPException(400, "Invalid portal slug")
+    return await v2tr.detect_transfer_need(
+        db, mobile=payload.mobile.strip(),
+        target_tenant_id=tid, target_tenant_slug=payload.tenant_slug,
+    )
+
+
+@api.post("/auth/citizen/transfer/initiate")
+async def transfer_initiate(payload: TransferInitiate):
+    """Step 1 of the transfer flow — emit the (mocked) OTP and persist a
+    TransferRequest. Returns transfer_request_id + expiry.
+    """
+    try:
+        result = await v2tr.initiate_transfer(
+            db, mobile=payload.mobile.strip(),
+            target_tenant_slug=payload.target_tenant_slug,
+            reason=payload.reason,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@api.post("/auth/citizen/transfer/verify")
+async def transfer_verify(payload: TransferVerify):
+    """Step 2 of the transfer flow — verify OTP and execute the transfer
+    atomically (archive old membership, create new one, cross-link, etc.).
+    Returns a fresh JWT for the citizen on the new tenant.
+    """
+    try:
+        result = await v2tr.verify_and_execute_transfer(
+            db, transfer_request_id=payload.transfer_request_id,
+            otp=payload.otp, new_address=payload.new_address,
+            next_seq_fn=next_seq, create_token_fn=create_token,
+            now_iso_fn=now_iso,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@api.get("/me/transfer-info")
+async def me_transfer_info(user: dict = Depends(get_current_user)):
+    """Returns transfer-related context for the logged-in citizen:
+        - Whether their current membership was transferred from another org
+        - The previous organisation's display info (if applicable)
+        - The full membership history visible to the citizen's CURRENT tenant
+          (their own Person id → all memberships of that Person — this is
+          a citizen self-view so cross-tenant history is allowed).
+    Used by the citizen UI to render the "Transferred from <Org>" banner.
+    """
+    pid = user.get("person_id")
+    if not pid:
+        return {"transferred_in": False, "history": []}
+    current_mid = user.get("origin_membership_id")
+    current_mem = await db.memberships.find_one({"id": current_mid}, {"_id": 0}) if current_mid else None
+    transferred_in = False
+    transferred_from = None
+    if current_mem and current_mem.get("transferred_from_membership_id"):
+        transferred_in = True
+        from_mem = await db.memberships.find_one(
+            {"id": current_mem["transferred_from_membership_id"]}, {"_id": 0})
+        if from_mem:
+            org = await db.portal_configs.find_one(
+                {"id": from_mem["organisation_id"]},
+                {"_id": 0, "id": 1, "slug": 1, "politician_name": 1,
+                 "tenant_name": 1, "constituency_name": 1},
+            )
+            transferred_from = {
+                "organisation": org,
+                "archived_membership_id": from_mem["id"],
+                "archived_at": from_mem.get("end_date"),
+                "reason": from_mem.get("transfer_reason"),
+            }
+    history = await v2tr.get_person_membership_history(db, person_id=pid)
+    return {
+        "person_id": pid,
+        "transferred_in": transferred_in,
+        "transferred_from": transferred_from,
+        "current_membership_id": current_mid,
+        "history": history,
+    }
+
+
+@api.post("/auth/citizen/register")
+async def citizen_register(payload: CitizenRegister):
+    tid = await _resolve_tenant_id(getattr(payload, "tenant_slug", None))
+    if not tid:
+        # No slug provided — fall back to the default active portal only when this is a
+        # strict single-portal install (exactly one active portal). In multi-portal
+        # deployments an explicit tenant_slug/office_code is required to avoid silently
+        # registering citizens under the wrong constituency.
+        active_portal_count = await db.portal_configs.count_documents({"is_active": True})
+        if active_portal_count == 1:
+            default_portal = await db.portal_configs.find_one({"is_active": True}, {"id": 1})
+            if default_portal:
+                tid = default_portal["id"]
+    if not tid:
+        raise HTTPException(400, "Portal context required for registration. Provide tenant_slug or office_code.")
+    # Per-tenant mobile uniqueness (rule 6)
+    if await db.users.find_one({"mobile": payload.mobile, "role": "citizen",
+                                "tenant_id": tid, "is_active": True}):
+        raise HTTPException(400, "Mobile already registered in this constituency")
+    # Cross-tenant detection: a mobile already linked to a Person in another
+    # constituency must go through the explicit Transfer Workflow rather than
+    # silently mint a second Person record.
+    detection = await v2tr.detect_transfer_need(
+        db, mobile=payload.mobile, target_tenant_id=tid,
+        target_tenant_slug=getattr(payload, "tenant_slug", None) or "")
+    if detection.get("exists") and not detection.get("same_tenant"):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "TRANSFER_REQUIRED", **detection,
+                    "message": "Mobile already registered in another constituency"})
+
+    existing_hh = None
+    if payload.house_number:
+        hh_query = {"house_number": payload.house_number, "tenant_id": tid}
+        if payload.ward_id:
+            hh_query["ward_id"] = payload.ward_id
+        if payload.village_id:
+            hh_query["village_id"] = payload.village_id
+        existing_hh = await db.households.find_one(hh_query)
+
+    if existing_hh:
+        await db.households.update_one({"id": existing_hh["id"]}, {"$inc": {"members_count": 1}})
+        hh_id = existing_hh["id"]
+    else:
+        hh_seq = await next_seq("household", tid)
+        hh_code = f"H-{10000 + hh_seq}"
+        hh = Household(
+            tenant_id=tid,
+            household_code=hh_code,
+            family_head_name=payload.family_head_name or payload.name,
+            address=payload.address,
+            house_number=payload.house_number,
+            region_type=payload.region_type,
+            ward_id=payload.ward_id,
+            area_id=payload.area_id,
+            village_id=payload.village_id,
+            members_count=payload.members_count,
+        )
+        await db.households.insert_one(hh.model_dump())
+        hh_id = hh.id
+
+    user = User(
+        role="citizen",
+        tenant_id=tid,
+        name=payload.name,
+        mobile=payload.mobile,
+        gender=payload.gender,
+        dob=payload.dob,
+        household_id=hh_id,
+        region_type=payload.region_type,
+        ward_id=payload.ward_id,
+        area_id=payload.area_id,
+        village_id=payload.village_id,
+        house_number=payload.house_number,
+        address=payload.address,
+    )
+    await db.users.insert_one(user.model_dump())
+    # M3 dual-write — mirror this citizen into the V2 identity model.
+    # Never raises; if V2 mirror fails the nightly parity check catches it.
+    try:
+        pid = await v2dw.ensure_person_for_user(db, user.model_dump())
+        if pid:
+            mem = await v2dw.resolve_active_membership(
+                db, person_id=pid, organisation_id=tid)
+            await db.users.update_one(
+                {"id": user.id},
+                {"$set": {"person_id": pid,
+                          "origin_membership_id": mem["id"] if mem else None}},
+            )
+    except Exception:
+        logger.exception("V2 dualwrite skipped for citizen registration")
+    # ---- Pending Karyakarta promotion: attach role if we imported this mobile earlier ----
+    try:
+        pending_k = await db.pending_karyakartas.find_one(
+            {"mobile": payload.mobile.strip(), "tenant_id": tid, "status": "pending"})
+        if pending_k:
+            pid_row = await db["_v2_user_to_person"].find_one({"_id": user.id})
+            pid = pid_row.get("person_id") if pid_row else None
+            k_doc = Karyakarta(
+                tenant_id=tid, person_id=pid or "", user_id=user.id,
+                name=pending_k["name"] or user.name, mobile=user.mobile,
+                designation=pending_k.get("designation"),
+                ward_id=pending_k.get("ward_id"), village_id=pending_k.get("village_id"),
+                dob=pending_k.get("dob"), anniversary=pending_k.get("anniversary"),
+                notes=pending_k.get("notes"),
+            ).model_dump()
+            await db.karyakartas.insert_one(k_doc)
+            await db.users.update_one(
+                {"id": user.id},
+                {"$addToSet": {"extra_roles": "karyakarta"},
+                 "$set": {"karyakarta_designation": pending_k.get("designation")}},
+            )
+            if pid:
+                await db.persons.update_one(
+                    {"id": pid}, {"$addToSet": {"types": "karyakarta"}})
+            await db.pending_karyakartas.update_one(
+                {"id": pending_k["id"]},
+                {"$set": {"status": "linked", "linked_person_id": pid,
+                          "resolved_at": now_iso()}},
+            )
+    except Exception:
+        logger.exception("Pending karyakarta promotion failed")
+    # ---- Pending Family Invitations: return them so the UI can prompt ----
+    pending_invs: List[dict] = []
+    try:
+        pending_invs = await db.family_invitations.find(
+            {"target_mobile": user.mobile, "tenant_id": tid, "status": "pending"},
+            {"_id": 0},
+        ).to_list(50)
+    except Exception:
+        pending_invs = []
+    final_hh = await db.households.find_one({"id": hh_id}, {"_id": 0})
+    token = create_token(user.id, "citizen", user.tenant_id)
+    # Refetch user so promoted roles (extra_roles) are reflected in response.
+    fresh_user = await db.users.find_one({"id": user.id}, {"_id": 0, "password_hash": 0}) or user.model_dump(exclude={"password_hash"})
+    return {"token": token, "user": fresh_user,
+            "household": final_hh, "pending_family_invitations": pending_invs}
+
+
+@api.post("/auth/staff/login")
+async def staff_login(payload: StaffLogin, request: Request):
+    """Staff login endpoint. Archived portals reject all new logins EXCEPT
+    for super_admin — this lets platform operators still access archived
+    portals to run diagnostics or restore them.
+
+    Rate limited: 5 failed attempts per (client IP + email) within 15 minutes
+    triggers a 15-minute lockout. Prevents brute-force attacks against the
+    platform Super Admin account and tenant admin accounts.
+    """
+    email = payload.email.strip().lower()
+    client_ip = _client_ip(request)
+    rl_key = f"{client_ip}|{email}"
+
+    lock_until = _login_lockouts.get(rl_key)
+    now = time.time()
+    if lock_until and lock_until > now:
+        remaining = int(lock_until - now)
+        raise HTTPException(
+            429, f"Too many failed attempts. Try again in {remaining // 60}m {remaining % 60}s.",
+        )
+    elif lock_until:
+        _login_lockouts.pop(rl_key, None)
+
+    # First pass: peek at the user record (without portal validation) so we can
+    # detect super_admin and let them through.
+    q_probe = {"email": email, "role": {"$ne": "citizen"}}
+    probe = await db.users.find_one(q_probe, {"role": 1, "tenant_id": 1})
+    is_super = bool(probe and probe.get("role") == "super_admin")
+    tid = await _resolve_tenant_id(
+        payload.tenant_slug,
+        allow_archived_for_super_admin=is_super,
+    )
+    q = {"email": email, "role": {"$ne": "citizen"}}
+    if tid:
+        q["tenant_id"] = tid
+    user = await db.users.find_one(q)
+    if not user or not verify_password(payload.password, user.get("password_hash", "")):
+        # Record failure + potentially lock out.
+        attempts = _login_failures.setdefault(rl_key, [])
+        attempts.append(now)
+        # Prune attempts older than the window.
+        _login_failures[rl_key] = [t for t in attempts if now - t < _LOGIN_RL_WINDOW]
+        if len(_login_failures[rl_key]) >= _LOGIN_RL_THRESHOLD:
+            _login_lockouts[rl_key] = now + _LOGIN_RL_LOCKOUT
+            _login_failures.pop(rl_key, None)
+            await _audit("auth.staff.locked_out", None,
+                         {"email": email, "ip": client_ip, "lockout_seconds": _LOGIN_RL_LOCKOUT})
+        raise HTTPException(401, "Invalid credentials")
+
+    # Success — clear counters.
+    _login_failures.pop(rl_key, None)
+    _login_lockouts.pop(rl_key, None)
+
+    user.pop("_id", None)
+    user.pop("password_hash", None)
+    token = create_token(user["id"], user["role"], user.get("tenant_id"))
+    return {"token": token, "user": user}
+
+
+@api.get("/me/timeline")
+async def me_timeline(user: dict = Depends(get_current_user),
+                      limit: int = 200):
+    """Citizen Person-360 timeline (cross-tenant self-view)."""
+    pid = user.get("person_id")
+    if not pid:
+        return {"person_id": None, "events": []}
+    events = await db.person_timeline_events.find(
+        {"person_id": pid}, {"_id": 0}
+    ).sort("at", -1).to_list(max(1, min(limit, 500)))
+    return {"person_id": pid, "events": events}
+
+
+@api.get("/persons/{person_id}/timeline")
+async def person_timeline(person_id: str,
+                          user: dict = Depends(get_current_user),
+                          limit: int = 200):
+    """Staff view of a person's timeline, scoped to the staff's tenant.
+    Returns only events emitted by the staff's organisation (operational
+    tenant isolation enforced via organisation_id filter)."""
+    target = await db.users.find_one(tenant_filter(user, {"id": person_id}), {"_id": 0, "person_id": 1})
+    if not target:
+        raise HTTPException(404, "Person not found")
+    pid = target.get("person_id")
+    if not pid:
+        return {"person_id": None, "events": []}
+    q = {"person_id": pid, "organisation_id": user.get("tenant_id")}
+    events = await db.person_timeline_events.find(q, {"_id": 0}).sort("at", -1).to_list(max(1, min(limit, 500)))
+    return {"person_id": pid, "events": events}
+
+
+@api.get("/auth/me")
+async def me(user: dict = Depends(get_current_user)):
+    return user
+
+
+@api.post("/auth/change-password")
+async def change_password(payload: ChangePassword, user: dict = Depends(get_current_user)):
+    full = await db.users.find_one({"id": user["id"]})
+    if not full or not verify_password(payload.current_password, full.get("password_hash", "")):
+        raise HTTPException(400, "Current password is incorrect")
+    if len(payload.new_password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"password_hash": hash_password(payload.new_password), "must_change_password": False}},
+    )
+    return {"ok": True}
+
+
+@api.get("/tenant/setup")
+async def get_setup_progress(user: dict = Depends(require_roles("admin"))):
+    tid = get_tenant_id_for_write(user)
+    portal = await db.portal_configs.find_one({"id": tid}, {"_id": 0})
+    if not portal:
+        raise HTTPException(404, "Portal not found")
+    return {"setup_progress": portal.get("setup_progress", {}), "setup_completed": portal.get("setup_completed", False), "portal": portal}
+
+
+@api.post("/tenant/setup/step")
+async def update_setup_step(payload: dict, user: dict = Depends(require_roles("admin"))):
+    tid = get_tenant_id_for_write(user)
+    step = payload.get("step")
+    done = bool(payload.get("done", True))
+    if step not in ("branding", "constituency", "pa", "workers", "areas", "citizens"):
+        raise HTTPException(400, "Invalid step")
+    await db.portal_configs.update_one(
+        {"id": tid},
+        {"$set": {f"setup_progress.{step}": done, "updated_at": now_iso()}},
+    )
+    portal = await db.portal_configs.find_one({"id": tid}, {"_id": 0})
+    # If all required steps done, mark setup_completed
+    required = ["branding", "pa", "workers", "areas"]
+    progress = portal.get("setup_progress", {})
+    if all(progress.get(s) for s in required):
+        await db.portal_configs.update_one({"id": tid}, {"$set": {"setup_completed": True}})
+        portal["setup_completed"] = True
+    return {"setup_progress": portal.get("setup_progress", {}), "setup_completed": portal.get("setup_completed", False)}
+
+
+# ----------------- USERS / STAFF -----------------
+@api.post("/admin/staff")
+async def create_staff(payload: StaffCreate, user: dict = Depends(require_roles("admin"))):
+    tid = get_tenant_id_for_write(user)
+    email_norm = (payload.email or "").strip().lower()
+    if not email_norm:
+        raise HTTPException(400, "Email is required")
+    # Block reuse of any platform-level (super_admin) email for tenant staff.
+    platform_user = await db.users.find_one({"email": email_norm, "tenant_id": None})
+    if platform_user:
+        raise HTTPException(400, "This email is reserved for the platform and cannot be used for tenant staff")
+    # Email uniqueness is per-tenant (rule 6 + clean multi-tenant semantics).
+    if await db.users.find_one({"email": email_norm, "tenant_id": tid}):
+        raise HTTPException(400, "Email exists in this tenant")
+    u = User(
+        role=payload.role,
+        name=payload.name,
+        tenant_id=tid,
+        email=email_norm,
+        password_hash=hash_password(payload.password),
+        designation=payload.designation,
+        mobile=payload.mobile,
+    )
+    await db.users.insert_one(u.model_dump())
+    # M3 dual-write — mirror staff into V2 (Person + staff Membership). Then
+    # stamp person_id / origin_membership_id back onto the V1 row for symmetry
+    # with the citizen-register flow (testing_agent_v3 minor #1).
+    try:
+        pid = await v2dw.ensure_person_for_user(db, u.model_dump())
+        if pid:
+            mem = await v2dw.resolve_active_membership(
+                db, person_id=pid, organisation_id=u.tenant_id)
+            await db.users.update_one(
+                {"id": u.id},
+                {"$set": {"person_id": pid,
+                          "origin_membership_id": mem["id"] if mem else None}},
+            )
+    except Exception:
+        logger.exception("V2 dualwrite skipped for staff creation")
+    out = await db.users.find_one({"id": u.id}, {"_id": 0, "password_hash": 0})
+    return out or u.model_dump()
+
+
+@api.get("/users")
+async def list_users(role: Optional[str] = None, user: dict = Depends(get_current_user)):
+    # Staff-only directory. Citizens never need a full user listing.
+    if not is_staff(user):
+        raise HTTPException(403, "Forbidden")
+    q = tenant_filter(user)
+    if role:
+        q["role"] = role
+    docs = await db.users.find(q, {"_id": 0, "password_hash": 0}).to_list(1000)
+    return docs
+
+
+# ----------------- AREAS -----------------
+@api.get("/constituencies")
+async def list_constituencies(user: dict = Depends(get_current_user)):
+    return await db.constituencies.find(tenant_filter(user), {"_id": 0}).to_list(100)
+
+
+@api.get("/areas")
+async def list_areas(kind: Optional[str] = None, region_type: Optional[str] = None, user: Optional[dict] = Depends(get_current_user_optional)):
+    """List areas. Public when called without a token (uses default tenant);
+    tenant-scoped when an authenticated token is provided."""
+    if user:
+        q = tenant_filter(user)
+    else:
+        # Unauthenticated callers (e.g. citizen registration form) get areas from
+        # the default active portal so they can pick their ward/village.
+        default_portal = await db.portal_configs.find_one({"is_default": True, "is_active": True}, {"id": 1})
+        if not default_portal:
+            raise HTTPException(404, "No active portal found; cannot list areas without authentication")
+        q = {"tenant_id": default_portal["id"]}
+    if kind:
+        q["kind"] = kind
+    if region_type:
+        q["region_type"] = region_type
+    return await db.areas.find(q, {"_id": 0}).sort("name", 1).to_list(2000)
+
+
+@api.post("/areas")
+async def create_area(payload: AreaCreate, user: dict = Depends(require_roles("admin"))):
+    if user.get("role") == "super_admin":
+        # Super_admin acts on the default active portal when no tenant is specified.
+        default_portal = await db.portal_configs.find_one({"is_default": True, "is_active": True}, {"id": 1})
+        if not default_portal:
+            raise HTTPException(400, "No default portal found; cannot determine target tenant")
+        tid = default_portal["id"]
+    else:
+        tid = get_tenant_id_for_write(user)
+    a = Area(**payload.model_dump(), tenant_id=tid)
+    await db.areas.insert_one(a.model_dump())
+    return a.model_dump()
+
+
+@api.delete("/areas/{area_id}")
+async def delete_area(area_id: str, user: dict = Depends(require_roles("admin"))):
+    await db.areas.delete_one(tenant_filter(user, {"id": area_id}))
+    return {"ok": True}
+
+
+# ----------------- HOUSEHOLDS -----------------
+@api.get("/households")
+async def list_households(search: Optional[str] = None, user: dict = Depends(get_current_user)):
+    # Staff-only listing. Citizens look up their own via /households/{id} with their household_id.
+    if not is_staff(user):
+        raise HTTPException(403, "Forbidden")
+    q = tenant_filter(user)
+    if search:
+        # also match member mobile/name (member lookup is also tenant-scoped)
+        member_q = tenant_filter(user, {"$or": [{"mobile": {"$regex": search, "$options": "i"}}, {"name": {"$regex": search, "$options": "i"}}]})
+        member_hh_ids = [u["household_id"] async for u in db.users.find(member_q, {"household_id": 1}) if u.get("household_id")]
+        q["$or"] = [
+            {"household_code": {"$regex": search, "$options": "i"}},
+            {"family_head_name": {"$regex": search, "$options": "i"}},
+            {"house_number": {"$regex": search, "$options": "i"}},
+            {"address": {"$regex": search, "$options": "i"}},
+            {"id": {"$in": member_hh_ids}},
+        ]
+    return await db.households.find(q, {"_id": 0}).limit(200).to_list(200)
+
+
+@api.post("/admin/reset-demo")
+async def reset_demo(_: dict = Depends(require_roles("admin"))):
+    """Wipe all non-admin data so the platform is ready for real onboarding."""
+    await db.issues.delete_many({})
+    await db.visits.delete_many({})
+    await db.notifications.delete_many({})
+    await db.devworks.delete_many({})
+    await db.households.delete_many({})
+    await db.users.delete_many({"role": "citizen"})
+    await db.counters.delete_many({})
+    return {"ok": True, "message": "Demo data cleared. Households, citizens, issues, visits, notifications and dev works removed."}
+
+
+@api.get("/households/{hh_id}")
+async def household_detail(hh_id: str, user: dict = Depends(get_current_user)):
+    # Staff can view any household in their tenant; a citizen can only view their own household.
+    if not is_staff(user) and user.get("household_id") != hh_id:
+        raise HTTPException(403, "Forbidden")
+    hh = await db.households.find_one(tenant_filter(user, {"id": hh_id}), {"_id": 0})
+    if not hh:
+        raise HTTPException(404, "Not found")
+    members = await db.users.find(tenant_filter(user, {"household_id": hh_id}), {"_id": 0, "password_hash": 0}).to_list(100)
+    issues = await db.issues.find(tenant_filter(user, {"household_id": hh_id}), {"_id": 0}).sort("created_at", -1).to_list(200)
+    # Development benefits = approved dev works in same ward/village
+    bq = tenant_filter(user, {"approved": True})
+    or_clauses = []
+    if hh.get("ward_id"):
+        or_clauses.append({"ward_id": hh["ward_id"]})
+    if hh.get("village_id"):
+        or_clauses.append({"village_id": hh["village_id"]})
+    if or_clauses:
+        bq["$or"] = or_clauses
+    benefits = await db.devworks.find(bq, {"_id": 0}).sort("created_at", -1).to_list(100) if or_clauses else []
+    total = await db.issues.count_documents(tenant_filter(user, {"household_id": hh_id}))
+    resolved = await db.issues.count_documents(tenant_filter(user, {"household_id": hh_id, "status": {"$in": ["Resolved", "Verified"]}}))
+    pending = total - resolved
+    return {"household": hh, "members": members, "issues": issues, "benefits": benefits, "stats": {"total": total, "resolved": resolved, "pending": pending}}
+
+
+# ----------------- ISSUES -----------------
+@api.post("/issues")
+async def create_issue(payload: IssueCreate, user: dict = Depends(get_current_user)):
+    tid = get_tenant_id_for_write(user)
+    seq = await next_seq("issue", tid)
+    code = f"ISS-{10000 + seq}"
+    issue = Issue(
+        tenant_id=tid,
+        issue_code=code,
+        citizen_id=user["id"],
+        household_id=user.get("household_id"),
+        category=payload.category,
+        title=payload.title,
+        description=payload.description,
+        photos=payload.photos,
+        gps_lat=payload.gps_lat,
+        gps_lng=payload.gps_lng,
+        location_address=payload.location_address,
+        ward_id=user.get("ward_id"),
+        village_id=user.get("village_id"),
+        timeline=[{"status": "New", "at": now_iso(), "by": user["name"], "note": "Issue raised"}],
+        # Anchor the escalation clock at creation.
+        escalation_anchor_at=now_iso(),
+    )
+    await db.issues.insert_one(issue.model_dump())
+    # M3 dual-write — stamp person_id + origin_membership_id, emit timeline.
+    try:
+        await v2dw.sync_issue_to_v2(db, issue.model_dump(), citizen_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for issue creation")
+    # Notify office staff (admin / pa) in the same tenant about the new issue.
+    try:
+        staff_cursor = db.users.find(
+            {"tenant_id": tid, "role": {"$in": ["admin", "pa"]}},
+            {"_id": 0, "id": 1},
+        )
+        async for staff_user in staff_cursor:
+            try:
+                await _push_to_user(
+                    staff_user["id"],
+                    title="New issue submitted",
+                    body=f"{issue.title} ({issue.issue_code})",
+                    kind="issue",
+                    data={"issue_id": issue.id, "issue_code": issue.issue_code},
+                    click_action=f"/issues/{issue.id}",
+                )
+            except Exception:
+                logger.exception("Failed to push new-issue alert to staff %s", staff_user["id"])
+    except Exception:
+        logger.exception("Failed to look up staff for new-issue push alerts")
+
+    # Return latest stamped doc so the frontend gets the V2 fields too.
+    return await db.issues.find_one({"id": issue.id}, {"_id": 0}) or issue.model_dump()
+
+
+@api.get("/issues")
+async def list_issues(
+    mine: bool = False,
+    status: Optional[str] = None,
+    category: Optional[str] = None,
+    ward_id: Optional[str] = None,
+    village_id: Optional[str] = None,
+    assigned_to: Optional[str] = None,
+    search: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    q = tenant_filter(user)
+    if mine or user["role"] == "citizen":
+        q["citizen_id"] = user["id"]
+    if status:
+        q["status"] = status
+    if category:
+        q["category"] = category
+    if ward_id:
+        q["ward_id"] = ward_id
+    if village_id:
+        q["village_id"] = village_id
+    if assigned_to:
+        q["assigned_to"] = assigned_to
+    if user["role"] == "worker":
+        q["assigned_to"] = user["id"]
+    if search:
+        q["$or"] = [
+            {"issue_code": {"$regex": search, "$options": "i"}},
+            {"title": {"$regex": search, "$options": "i"}},
+            {"description": {"$regex": search, "$options": "i"}},
+        ]
+    return await db.issues.find(q, {"_id": 0}).sort("created_at", -1).limit(500).to_list(500)
+
+
+@api.get("/issues/{issue_id}")
+async def issue_detail(issue_id: str, user: dict = Depends(get_current_user)):
+    issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
+    if not issue:
+        raise HTTPException(404, "Not found")
+    # Access policy within the tenant: staff (pa/politician/admin/super_admin) — all;
+    # assigned worker — yes; owning citizen — yes; everyone else — 403.
+    role = user.get("role")
+    allowed = (
+        role in ("pa", "politician", "admin", "super_admin")
+        or (role == "worker" and user["id"] == issue.get("assigned_to"))
+        or user["id"] == issue.get("citizen_id")
+    )
+    if not allowed:
+        raise HTTPException(403, "Forbidden")
+    citizen = await db.users.find_one(tenant_filter(user, {"id": issue["citizen_id"]}), {"_id": 0, "password_hash": 0})
+    # Compute escalation projection (next level + when it would fire) for UI.
+    escalation = {
+        "current_level": int(issue.get("escalation_level") or 0),
+        "anchor_at": issue.get("escalation_anchor_at") or issue.get("created_at"),
+        "last_escalated_at": issue.get("last_escalated_at"),
+        "next_level": None,
+        "next_escalation_at": None,
+        "next_recipient_role": None,
+        "halted_reason": None,
+    }
+    if issue.get("status") in _TERMINAL_ISSUE_STATUSES:
+        escalation["halted_reason"] = f"Status is {issue['status']} — escalation stopped."
+    else:
+        cur = escalation["current_level"]
+        if cur < len(_ESCALATION_THRESHOLDS_DAYS):
+            nxt_dt = _next_escalation_dt(escalation["anchor_at"], cur)
+            escalation["next_level"] = cur + 1
+            escalation["next_escalation_at"] = nxt_dt.isoformat() if nxt_dt else None
+            escalation["next_recipient_role"] = ["worker", "pa", "politician"][cur]
+    return {"issue": issue, "citizen": citizen, "escalation": escalation}
+
+
+@api.post("/issues/{issue_id}/assign")
+async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends(require_roles("pa", "admin"))):
+    worker = await db.users.find_one(tenant_filter(user, {"id": payload.assigned_to}), {"_id": 0})
+    if not worker:
+        raise HTTPException(404, "Worker not found")
+    mobile_part = f" · Mobile: {worker.get('mobile')}" if worker.get("mobile") else ""
+    reassign_anchor = now_iso()
+    update = {
+        "assigned_to": payload.assigned_to,
+        "assigned_to_name": worker["name"],
+        "due_date": payload.due_date,
+        "remarks": payload.remarks,
+        "status": "Assigned",
+        "updated_at": now_iso(),
+        # Reassignment resets the escalation clock from scratch. Anchor moves
+        # to now() so the 3-day worker reminder starts fresh from this moment.
+        "escalation_level": 0,
+        "last_escalated_at": None,
+        "escalation_anchor_at": reassign_anchor,
+    }
+    res = await db.issues.update_one(
+        tenant_filter(user, {"id": issue_id}),
+        {
+            "$set": update,
+            "$push": {"timeline": {"status": "Assigned", "at": reassign_anchor, "by": user["name"], "note": f"Assigned to {worker['name']}{mobile_part} — escalation timer reset"}},
+        },
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Issue not found")
+    try:
+        await v2dw.sync_issue_event(
+            db, issue_id=issue_id, event_label="Assigned",
+            note=f"Assigned to {worker['name']}", actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for issue assign")
+    # Push notification to citizen that their issue is being actioned.
+    try:
+        issue_for_push = await db.issues.find_one(
+            tenant_filter(user, {"id": issue_id}), {"_id": 0, "citizen_id": 1, "title": 1})
+        if issue_for_push and issue_for_push.get("citizen_id"):
+            issue_title = issue_for_push.get("title") or "your issue"
+            await _push_to_user(
+                issue_for_push["citizen_id"],
+                title="Your issue has been assigned",
+                body=f"A team member has been assigned to work on: {issue_title}",
+                kind="issue",
+                click_action=f"/app/issues/{issue_id}",
+            )
+    except Exception:
+        logger.exception("Push notification skipped for issue assign")
+    return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
+
+
+@api.post("/issues/{issue_id}/status")
+async def update_status(issue_id: str, payload: IssueUpdateStatus, user: dict = Depends(require_roles("worker", "pa", "admin"))):
+    if payload.status not in ISSUE_STATUSES:
+        raise HTTPException(400, "Invalid status")
+    # workers can only update issues assigned to them
+    if user["role"] == "worker":
+        issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
+        if not issue or issue.get("assigned_to") != user["id"]:
+            raise HTTPException(403, "Not your assignment")
+    update = {"status": payload.status, "updated_at": now_iso(),
+              # Any staff action stops the escalation clock.
+              "escalation_level": 0, "last_escalated_at": None}
+    if payload.completion_notes:
+        update["completion_notes"] = payload.completion_notes
+    if payload.completion_photos:
+        update["completion_photos"] = payload.completion_photos
+    if payload.remarks:
+        update["remarks"] = payload.remarks
+    res = await db.issues.update_one(
+        tenant_filter(user, {"id": issue_id}),
+        {
+            "$set": update,
+            "$push": {"timeline": {"status": payload.status, "at": now_iso(), "by": user["name"], "note": payload.remarks or payload.completion_notes or ""}},
+        },
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Issue not found")
+    try:
+        await v2dw.sync_issue_event(
+            db, issue_id=issue_id, event_label=payload.status,
+            note=payload.remarks or payload.completion_notes,
+            actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for issue status update")
+    # Push notification to the citizen who submitted the issue.
+    try:
+        _status_push_messages = {
+            "In Progress": ("Work started on your issue", "Your issue is now being actively worked on."),
+            "Resolved": ("Your issue has been resolved", "Please open the app to verify and rate the resolution."),
+            "Closed": ("Issue closed", "Your issue has been closed by the office."),
+            "Reopened": ("Issue reopened", "Your issue has been reopened for further action."),
+        }
+        if payload.status in _status_push_messages:
+            issue_for_push = await db.issues.find_one(
+                tenant_filter(user, {"id": issue_id}), {"_id": 0, "citizen_id": 1, "title": 1})
+            if issue_for_push and issue_for_push.get("citizen_id"):
+                push_title, push_body = _status_push_messages[payload.status]
+                issue_title = issue_for_push.get("title")
+                if issue_title:
+                    push_body = f"{push_body[:-1]}: {issue_title}" if push_body.endswith(".") else f"{push_body} — {issue_title}"
+                await _push_to_user(
+                    issue_for_push["citizen_id"],
+                    title=push_title,
+                    body=push_body,
+                    kind="issue",
+                    click_action=f"/app/issues/{issue_id}",
+                )
+    except Exception:
+        logger.exception("Push notification skipped for issue status update")
+    return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
+
+
+@api.post("/issues/bulk-status")
+async def bulk_update_issue_status(
+    payload: BulkIssueStatusUpdate,
+    user: dict = Depends(require_roles("pa", "admin")),
+):
+    """Update status for up to 500 issues in one call.
+
+    Push notifications are consolidated per citizen — if a citizen has
+    multiple issues in the batch, they receive a single summary message
+    instead of N individual alerts.  A Semaphore caps concurrent FCM calls
+    so the operation never fans out to more than 10 simultaneous sends.
+    """
+    if payload.status not in ISSUE_STATUSES:
+        raise HTTPException(400, f"Invalid status: {payload.status!r}")
+    if not payload.issue_ids:
+        raise HTTPException(400, "issue_ids must not be empty")
+    if len(payload.issue_ids) > 500:
+        raise HTTPException(400, "Cannot update more than 500 issues per request")
+
+    tid = get_tenant_id_for_write(user)
+    ts  = now_iso()
+
+    # ── Fetch matching issues (citizens + titles) ──────────────────────────
+    issues = await db.issues.find(
+        {"id": {"$in": payload.issue_ids}, "tenant_id": tid},
+        {"_id": 0, "id": 1, "citizen_id": 1, "title": 1, "status": 1},
+    ).to_list(None)
+
+    if not issues:
+        raise HTTPException(404, "No matching issues found in this tenant")
+
+    found_ids = [i["id"] for i in issues]
+
+    # ── Bulk write (single round-trip to MongoDB) ──────────────────────────
+    from pymongo import UpdateOne
+    operations = [
+        UpdateOne(
+            {"id": iid},
+            {
+                "$set": {
+                    "status": payload.status,
+                    "updated_at": ts,
+                    "escalation_level": 0,
+                    "last_escalated_at": None,
+                },
+                "$push": {
+                    "timeline": {
+                        "status": payload.status,
+                        "at": ts,
+                        "by": user["name"],
+                        "note": payload.remarks or "",
+                    }
+                },
+            },
+        )
+        for iid in found_ids
+    ]
+    result = await db.issues.bulk_write(operations, ordered=False)
+
+    # ── Consolidated push notifications — 1 per citizen, not 1 per issue ──
+    _push_titles = {
+        "In Progress": ("Work started on your issue",  "Work started on {n} of your issues"),
+        "Resolved":    ("Your issue has been resolved", "{n} of your issues have been resolved"),
+        "Closed":      ("Issue closed",                 "{n} of your issues have been closed"),
+        "Reopened":    ("Issue reopened",               "{n} of your issues have been reopened"),
+    }
+
+    notified = 0
+    if payload.status in _push_titles:
+        singular_tpl, plural_tpl = _push_titles[payload.status]
+
+        # Group issues by citizen_id
+        citizen_map: dict[str, list[dict]] = {}
+        for issue in issues:
+            cid = issue.get("citizen_id")
+            if cid:
+                citizen_map.setdefault(cid, []).append(issue)
+
+        # Cap concurrent FCM sends — prevents thundering-herd against Firebase
+        sem = asyncio.Semaphore(10)
+
+        async def _notify(citizen_id: str, citizen_issues: list[dict]) -> None:
+            async with sem:
+                n = len(citizen_issues)
+                if n == 1:
+                    title = singular_tpl
+                    body  = f"{title}: {citizen_issues[0].get('title') or 'your issue'}"
+                else:
+                    title = plural_tpl.format(n=n)
+                    body  = title
+                try:
+                    await _push_to_user(
+                        citizen_id,
+                        title=title,
+                        body=body,
+                        kind="issue",
+                    )
+                except Exception:
+                    logger.exception("Bulk push failed for citizen %s", citizen_id)
+
+        # Limit to 200 unique citizens per call to bound worst-case latency
+        citizen_items = list(citizen_map.items())[:200]
+        await asyncio.gather(*[_notify(cid, iss) for cid, iss in citizen_items])
+        notified = len(citizen_items)
+
+    return {
+        "matched":          len(issues),
+        "modified":         result.modified_count,
+        "notified_citizens": notified,
+        "status":           payload.status,
+    }
+
+
+@api.post("/issues/{issue_id}/feedback")
+async def feedback(issue_id: str, payload: IssueFeedback, user: dict = Depends(get_current_user)):
+    issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
+    if not issue or issue["citizen_id"] != user["id"]:
+        raise HTTPException(403, "Forbidden")
+    # State guard: feedback may only be submitted when the issue has reached
+    # "Resolved". Verifying earlier states (New / Assigned / In Progress) does
+    # not make sense and was previously silently allowed.
+    if issue.get("status") != "Resolved":
+        raise HTTPException(400, "Feedback can only be submitted on Resolved issues")
+    update = {
+        "rating": payload.rating,
+        "feedback_comment": payload.comment,
+        "status": "Verified" if payload.verified else "Reopened",
+        "updated_at": now_iso(),
+    }
+    note = f"Citizen rated {payload.rating}/5" + (f" — {payload.comment}" if payload.comment else "")
+    await db.issues.update_one(
+        tenant_filter(user, {"id": issue_id}),
+        {
+            "$set": update,
+            "$push": {"timeline": {"status": update["status"], "at": now_iso(), "by": user["name"], "note": note}},
+        },
+    )
+    try:
+        await v2dw.sync_issue_event(
+            db, issue_id=issue_id, event_label="Feedback",
+            note=f"Rating {payload.rating}/5 — {payload.comment or ''}".strip(' —'),
+            actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for issue feedback")
+    return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
+
+
+# ----------------- VISITS -----------------
+@api.post("/visits")
+async def create_visit(payload: VisitCreate, user: dict = Depends(require_roles("pa", "admin"))):
+    tid = get_tenant_id_for_write(user)
+    v = Visit(**payload.model_dump(), tenant_id=tid, created_by=user["id"])
+    if user["role"] == "admin":
+        v.status = "Published"
+        v.approved_by = user["id"]
+        v.approved_at = now_iso()
+    else:
+        v.status = "Pending Approval"
+    await db.visits.insert_one(v.model_dump())
+    # M3 dual-write
+    try:
+        await v2dw.sync_visit_to_v2(db, visit=v.model_dump(), actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for visit creation")
+    if v.status == "Published" and v.visibility != "internal":
+        await _publish_visit_notification(v, user)
+    return await db.visits.find_one({"id": v.id}, {"_id": 0}) or v.model_dump()
+
+
+async def _publish_visit_notification(v: Visit, user: dict):
+    recipients = await _count_recipients(user, "wards" if v.ward_ids else ("villages" if v.village_ids else "all"), v.ward_ids, v.village_ids)
+    notif = Notification(
+        tenant_id=v.tenant_id,
+        title=f"Visit: {v.title}",
+        body=f"{v.visit_type} on {v.date} at {v.time} — {v.location}",
+        notif_type="Politician Visit",
+        scope="wards" if v.ward_ids else ("villages" if v.village_ids else "all"),
+        ward_ids=v.ward_ids,
+        village_ids=v.village_ids,
+        created_by=user["id"],
+        created_by_name=user["name"],
+        recipients_count=recipients,
+    )
+    await db.notifications.insert_one(notif.model_dump())
+    try:
+        await v2dw.sync_notification_to_v2(
+            db, notification=notif.model_dump(), actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for visit notification")
+
+
+@api.post("/visits/{visit_id}/approve")
+async def approve_visit(visit_id: str, user: dict = Depends(require_roles("politician", "admin"))):
+    v = await db.visits.find_one(tenant_filter(user, {"id": visit_id}))
+    if not v:
+        raise HTTPException(404, "Not found")
+    if v.get("status") == "Published":
+        return {**{k: v[k] for k in v if k != "_id"}}
+    await db.visits.update_one(tenant_filter(user, {"id": visit_id}), {"$set": {"status": "Published", "approved_by": user["id"], "approved_at": now_iso()}})
+    visit = Visit(**{**v, "status": "Published", "approved_by": user["id"], "approved_at": now_iso()})
+    if visit.visibility != "internal":
+        await _publish_visit_notification(visit, user)
+    try:
+        await v2dw.sync_visit_approved(db, visit=visit.model_dump(), actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for visit approval")
+    return await db.visits.find_one(tenant_filter(user, {"id": visit_id}), {"_id": 0})
+
+
+@api.get("/visits")
+async def list_visits(upcoming: bool = False, user: dict = Depends(get_current_user)):
+    q = tenant_filter(user)
+    if upcoming:
+        q["date"] = {"$gte": datetime.now(timezone.utc).strftime("%Y-%m-%d")}
+    if user["role"] == "citizen":
+        q["status"] = "Published"
+        # Internal-only visits are strictly hidden from citizens.
+        q["visibility"] = {"$ne": "internal"}
+    return await db.visits.find(q, {"_id": 0}).sort("date", 1).limit(200).to_list(200)
+
+
+async def _count_recipients(user: dict, scope: str, ward_ids: list, village_ids: list) -> int:
+    q = tenant_filter(user, {"role": "citizen"})
+    if scope == "all":
+        return await db.users.count_documents(q)
+    or_clauses = []
+    if ward_ids:
+        or_clauses.append({"ward_id": {"$in": ward_ids}})
+    if village_ids:
+        or_clauses.append({"village_id": {"$in": village_ids}})
+    if or_clauses:
+        q["$or"] = or_clauses
+    return await db.users.count_documents(q)
+
+
+# ----------------- NOTIFICATIONS -----------------
+@api.post("/notifications")
+async def create_notif(payload: NotificationCreate, user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    tid = get_tenant_id_for_write(user)
+    recipients = await _count_recipients(user, payload.scope, payload.ward_ids, payload.village_ids)
+    n = Notification(**payload.model_dump(), tenant_id=tid, created_by=user["id"], created_by_name=user["name"], recipients_count=recipients)
+    await db.notifications.insert_one(n.model_dump())
+    try:
+        await v2dw.sync_notification_to_v2(
+            db, notification=n.model_dump(), actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for notification creation")
+    return await db.notifications.find_one({"id": n.id}, {"_id": 0}) or n.model_dump()
+
+
+@api.get("/notifications")
+async def list_notifs(user: dict = Depends(get_current_user)):
+    # filter for citizen by scope
+    q = tenant_filter(user)
+    if user["role"] == "citizen":
+        clauses = [{"scope": "all"}, {"scope": "user", "user_ids": user["id"]}]
+        if user.get("ward_id"):
+            clauses.append({"ward_ids": user["ward_id"]})
+        if user.get("village_id"):
+            clauses.append({"village_ids": user["village_id"]})
+        q["$or"] = clauses
+    else:
+        # Staff see all broadcasts in their tenant + any user-scoped
+        # notifications targeting them personally (e.g., escalation reminders).
+        q["$or"] = [
+            {"scope": {"$ne": "user"}},
+            {"scope": "user", "user_ids": user["id"]},
+        ]
+    return await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+
+
+# ============================================================================
+# PUSH NOTIFICATIONS — Device tokens + delivery + in-app inbox
+# ============================================================================
+# Design:
+#   1. Client (Web / Android via Capacitor) obtains an FCM registration token
+#      and POSTs it to `/push/register`.
+#   2. Server persists (user_id, token, platform) — deduped on token.
+#   3. Server-side notification events (issue update, celebration reminder,
+#      etc.) call `_push_to_user(user_id, ...)` which fans out to all of the
+#      user's device tokens AND persists a `push_notifications` row for the
+#      in-app inbox (`GET /push/inbox`).
+#   4. Invalid tokens returned by FCM are auto-pruned.
+# ============================================================================
+class DeviceTokenRegister(BaseModel):
+    token: str
+    platform: Literal["web", "android", "ios"] = "web"
+    device_info: Optional[str] = None
+
+
+@api.post("/push/register")
+async def register_device_token(payload: DeviceTokenRegister,
+                                user: dict = Depends(get_current_user)):
+    """Register / refresh a device's push token. Idempotent per token."""
+    if not payload.token or len(payload.token) < 10:
+        raise HTTPException(400, "Invalid device token")
+    row = await db.device_tokens.find_one({"token": payload.token}, {"_id": 0, "id": 1})
+    now = now_iso()
+    if row:
+        await db.device_tokens.update_one(
+            {"id": row["id"]},
+            {"$set": {"user_id": user["id"], "tenant_id": user.get("tenant_id"),
+                      "person_id": user.get("person_id"),
+                      "platform": payload.platform,
+                      "device_info": payload.device_info,
+                      "last_seen_at": now}},
+        )
+        return {"id": row["id"], "status": "refreshed"}
+    d = DeviceToken(
+        user_id=user["id"],
+        tenant_id=user.get("tenant_id"),
+        person_id=user.get("person_id"),
+        token=payload.token,
+        platform=payload.platform,
+        device_info=payload.device_info,
+    )
+    await db.device_tokens.insert_one(d.model_dump())
+    return {"id": d.id, "status": "registered"}
+
+
+@api.delete("/push/register")
+async def unregister_device_token(token: str,
+                                  user: dict = Depends(get_current_user)):
+    """De-register a specific device token (e.g. on logout)."""
+    await db.device_tokens.delete_one({"token": token, "user_id": user["id"]})
+    return {"ok": True}
+
+
+@api.get("/push/inbox")
+async def push_inbox(unread_only: bool = False,
+                     limit: int = 100,
+                     user: dict = Depends(get_current_user)):
+    """User's in-app push notification inbox."""
+    q: dict = {"user_id": user["id"]}
+    if unread_only:
+        q["read"] = False
+    rows = await db.push_notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(min(limit, 500)).to_list(min(limit, 500))
+    unread_count = await db.push_notifications.count_documents({"user_id": user["id"], "read": False})
+    return {"notifications": rows, "unread_count": unread_count}
+
+
+@api.post("/push/inbox/{notif_id}/read")
+async def push_mark_read(notif_id: str, user: dict = Depends(get_current_user)):
+    await db.push_notifications.update_one(
+        {"id": notif_id, "user_id": user["id"]},
+        {"$set": {"read": True, "read_at": now_iso()}},
+    )
+    return {"ok": True}
+
+
+@api.post("/push/inbox/read-all")
+async def push_mark_all_read(user: dict = Depends(get_current_user)):
+    now = now_iso()
+    r = await db.push_notifications.update_many(
+        {"user_id": user["id"], "read": False},
+        {"$set": {"read": True, "read_at": now}},
+    )
+    return {"updated": r.modified_count}
+
+
+async def _push_to_user(user_id: str, title: str, body: str,
+                       kind: str = "info", data: Optional[dict] = None,
+                       click_action: Optional[str] = None) -> dict:
+    """Fan out a notification to all of a user's registered device tokens AND
+    persist a row for the in-app inbox. Prunes invalid tokens returned by FCM.
+
+    Respects per-user notification_prefs: if the user has opted out of the
+    category that this ``kind`` maps to, the inbox row is still persisted but
+    FCM delivery is skipped (token is NOT removed).
+    """
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "tenant_id": 1, "notification_prefs": 1})
+    inbox_row = PushNotification(
+        user_id=user_id,
+        tenant_id=u.get("tenant_id") if u else None,
+        title=title, body=body, kind=kind,
+        data=data or {},
+        click_action=click_action,
+    )
+    await db.push_notifications.insert_one(inbox_row.model_dump())
+
+    # Check per-category preference before delivering to device.
+    if u:
+        prefs = u.get("notification_prefs") or {}
+        category = KIND_TO_CATEGORY.get(kind, "announcements")
+        # Default is True (opted-in) when the key is absent.
+        opted_in = prefs.get(category, True)
+        if not opted_in:
+            return {
+                "delivered_to": 0,
+                "inbox_only": True,
+                "skipped_reason": "user_preference",
+                "mode": push_service.current_mode(),
+            }
+
+    # FCM cooldown: suppress delivery (but not inbox persistence) if a push of
+    # the same kind was already sent to this user within the cooldown window.
+    # This prevents FCM quota saturation when an admin bulk-resolves many issues.
+    ck = (user_id, kind)
+    now_mono = time.monotonic()
+    last_sent = _push_fcm_last_sent.get(ck)
+    if last_sent is not None and (now_mono - last_sent) < _PUSH_FCM_COOLDOWN_SECONDS:
+        logger.debug(
+            "[push] FCM suppressed for user=%s kind=%s (cooldown %.0fs remaining)",
+            user_id, kind, _PUSH_FCM_COOLDOWN_SECONDS - (now_mono - last_sent),
+        )
+        return {
+            "delivered_to": 0,
+            "inbox_only": True,
+            "inbox_id": inbox_row.id,
+            "skipped_reason": "fcm_cooldown",
+            "mode": push_service.current_mode(),
+        }
+
+    tokens = [t["token"] async for t in db.device_tokens.find({"user_id": user_id}, {"_id": 0, "token": 1})]
+    if not tokens:
+        return {"delivered_to": 0, "inbox_only": True, "inbox_id": inbox_row.id, "mode": push_service.current_mode()}
+
+    result = push_service.send(tokens, title, body, data=data, click_action=click_action)
+    # Record the timestamp of this successful FCM dispatch for cooldown tracking.
+    _push_fcm_last_sent[ck] = now_mono
+    # Prune invalid tokens.
+    if result.get("invalid_tokens"):
+        await db.device_tokens.delete_many({"token": {"$in": result["invalid_tokens"]}})
+    return {
+        "delivered_to": result["success"],
+        "failed": result["failure"],
+        "inbox_id": inbox_row.id,
+        "mode": push_service.current_mode(),
+    }
+
+
+@api.get("/me/notification-prefs")
+async def get_notification_prefs(user: dict = Depends(get_current_user)):
+    """Return the current user's per-category push notification preferences.
+
+    Missing categories default to True (opted-in).
+    """
+    prefs = user.get("notification_prefs") or {}
+    return {
+        cat: prefs.get(cat, True)
+        for cat in PUSH_NOTIFICATION_CATEGORIES
+    }
+
+
+@api.put("/me/notification-prefs")
+async def update_notification_prefs(
+    payload: NotificationPrefsUpdate,
+    user: dict = Depends(get_current_user),
+):
+    """Update the current user's per-category push notification preferences.
+
+    Only fields explicitly set in the payload are updated; omitted fields are
+    unchanged.  Device tokens are never removed — unsubscribing only silences
+    FCM delivery for that category.
+    """
+    current_prefs: dict = dict(user.get("notification_prefs") or DEFAULT_NOTIFICATION_PREFS)
+    updates = payload.model_dump(exclude_none=True)
+    # Validate keys against the canonical category list.
+    for key in updates:
+        if key not in PUSH_NOTIFICATION_CATEGORIES:
+            raise HTTPException(400, f"Unknown notification category: {key}")
+        current_prefs[key] = updates[key]
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"notification_prefs": current_prefs}},
+    )
+    return current_prefs
+
+
+@api.post("/push/test")
+async def push_test(user: dict = Depends(require_roles("admin", "super_admin"))):
+    """Admin-only — send a test push to the current admin's own devices."""
+    r = await _push_to_user(
+        user["id"],
+        title="JanSetu test notification",
+        body="If you see this, push notifications are working correctly.",
+        kind="info",
+        click_action="/app",
+    )
+    return r
+
+
+@api.get("/push/status")
+async def push_status(user: dict = Depends(require_roles("admin", "super_admin"))):
+    """Admin diagnostic — current push adapter mode and registered token counts.
+
+    Tenant admins see only their own tenant's token counts.
+    Super admins additionally receive the platform-wide total.
+    """
+    is_super = user.get("role") == "super_admin"
+    tid = user.get("tenant_id")
+    own_tokens = await db.device_tokens.count_documents({"user_id": user["id"]})
+
+    if is_super:
+        # Super admin: expose global count for platform diagnostics.
+        total_tokens = await db.device_tokens.count_documents({})
+        resp = {
+            "mode": push_service.current_mode(),
+            "fcm_configured": push_service.current_mode() == "fcm",
+            "total_registered_tokens": total_tokens,
+            "your_registered_tokens": own_tokens,
+        }
+    else:
+        # Tenant admin: only expose counts scoped to this tenant.
+        if not tid:
+            raise HTTPException(403, "User has no tenant")
+        tenant_tokens = await db.device_tokens.count_documents({"tenant_id": tid})
+        resp = {
+            "mode": push_service.current_mode(),
+            "fcm_configured": push_service.current_mode() == "fcm",
+            "registered_tokens": tenant_tokens,
+            "your_registered_tokens": own_tokens,
+        }
+    return resp
+
+
+class PushSendToUserRequest(BaseModel):
+    user_id: str
+    title: str
+    body: str
+
+
+@api.post("/push/send-to-user")
+async def push_send_to_user(
+    payload: PushSendToUserRequest,
+    user: dict = Depends(require_roles("admin", "super_admin")),
+):
+    """Admin-only — send a test push to a specific user by ID.
+    Useful for verifying end-to-end FCM delivery to a citizen's browser.
+
+    Tenant admins can only target users within their own tenant.
+    Super admins can target any user.
+    """
+    # Scope the lookup to the caller's tenant so a tenant admin cannot send
+    # to a user in another tenant (broken access control guard).
+    target_q = tenant_filter(user, {"id": payload.user_id})
+    target = await db.users.find_one(target_q, {"_id": 0, "id": 1, "name": 1, "tenant_id": 1})
+    if not target:
+        raise HTTPException(404, "User not found in your tenant")
+    r = await _push_to_user(
+        payload.user_id,
+        title=payload.title,
+        body=payload.body,
+        kind="info",
+        click_action="/app/notifications",
+    )
+    await _audit("push.send_to_user", user, {
+        "target_user_id": payload.user_id,
+        "title": payload.title,
+    })
+    return {**r, "target_name": target.get("name")}
+
+
+class PushBroadcastRequest(BaseModel):
+    title: str
+    body: str
+    role: Optional[Literal["citizen", "karyakarta", "admin", "pa"]] = None
+    ward_id: Optional[str] = None
+    village_id: Optional[str] = None
+    click_action: Optional[str] = None
+
+
+@api.post("/push/broadcast")
+async def push_broadcast(payload: PushBroadcastRequest,
+                        user: dict = Depends(require_roles("admin", "super_admin"))):
+    """Send a push notification to all users matching the given filter within
+    the admin's tenant. Persists an inbox row per user."""
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    q: dict = {}
+    if tid:
+        q["tenant_id"] = tid
+    if payload.role:
+        q["role"] = payload.role
+    if payload.ward_id:
+        q["ward_id"] = payload.ward_id
+    if payload.village_id:
+        q["village_id"] = payload.village_id
+    users = await db.users.find(q, {"_id": 0, "id": 1}).to_list(10000)
+    delivered = 0
+    for u in users:
+        r = await _push_to_user(u["id"], payload.title, payload.body,
+                              kind="broadcast", click_action=payload.click_action)
+        delivered += r.get("delivered_to", 0)
+    await _audit("push.broadcast", user,
+                 {"tenant_id": tid, "matched_users": len(users),
+                  "delivered": delivered, "title": payload.title})
+    return {"matched_users": len(users), "delivered": delivered,
+            "mode": push_service.current_mode()}
+
+
+# ----------------- DEV WORKS -----------------
+@api.post("/devworks")
+async def create_dev(payload: DevWorkCreate, user: dict = Depends(require_roles("pa", "admin"))):
+    tid = get_tenant_id_for_write(user)
+    d = DevWork(**payload.model_dump(), tenant_id=tid, created_by=user["id"])
+    if user["role"] == "admin":
+        d.approved = True
+        d.approved_by = user["id"]
+        d.approved_at = now_iso()
+    await db.devworks.insert_one(d.model_dump())
+    try:
+        await v2dw.sync_devwork_to_v2(db, devwork=d.model_dump(), actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for devwork creation")
+    return await db.devworks.find_one({"id": d.id}, {"_id": 0}) or d.model_dump()
+
+
+@api.post("/devworks/{dev_id}/approve")
+async def approve_dev(dev_id: str, user: dict = Depends(require_roles("politician", "admin"))):
+    res = await db.devworks.update_one(tenant_filter(user, {"id": dev_id}), {"$set": {"approved": True, "approved_by": user["id"], "approved_at": now_iso()}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Not found")
+    return await db.devworks.find_one(tenant_filter(user, {"id": dev_id}), {"_id": 0})
+
+
+@api.delete("/devworks/{dev_id}")
+async def delete_dev(dev_id: str, user: dict = Depends(require_roles("admin"))):
+    await db.devworks.delete_one(tenant_filter(user, {"id": dev_id}))
+    return {"ok": True}
+
+
+@api.post("/devworks/{dev_id}/progress")
+async def add_dev_progress(dev_id: str, note: str = Query(...), user: dict = Depends(require_roles("pa", "admin"))):
+    entry = {"at": now_iso(), "by": user["name"], "note": note}
+    res = await db.devworks.update_one(tenant_filter(user, {"id": dev_id}), {"$push": {"progress_updates": entry}, "$set": {"updated_at": now_iso()}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Not found")
+    return await db.devworks.find_one(tenant_filter(user, {"id": dev_id}), {"_id": 0})
+
+
+@api.get("/devworks")
+async def list_devs(status: Optional[str] = None, ward_id: Optional[str] = None, village_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = tenant_filter(user)
+    if status:
+        q["status"] = status
+    if ward_id:
+        q["ward_id"] = ward_id
+    if village_id:
+        q["village_id"] = village_id
+    # citizens only see approved
+    if user["role"] == "citizen":
+        q["approved"] = True
+    return await db.devworks.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+
+
+@api.post("/devworks/{dev_id}/status")
+async def update_dev(dev_id: str, status: str = Query(...), user: dict = Depends(require_roles("pa", "admin"))):
+    if status not in DEV_STATUSES:
+        raise HTTPException(400, "Invalid status")
+    res = await db.devworks.update_one(tenant_filter(user, {"id": dev_id}), {"$set": {"status": status, "updated_at": now_iso()}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Not found")
+    doc = await db.devworks.find_one(tenant_filter(user, {"id": dev_id}), {"_id": 0})
+    try:
+        await v2dw.sync_devwork_status(db, devwork=doc, status=status, actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for devwork status")
+    return doc
+
+
+# ----------------- WORKER actions -----------------
+@api.post("/issues/{issue_id}/request-reassign")
+async def request_reassign(issue_id: str, reason: str = Query(""), user: dict = Depends(require_roles("worker"))):
+    issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
+    if not issue or issue.get("assigned_to") != user["id"]:
+        raise HTTPException(403, "Not your assignment")
+    if issue.get("status") == "Reassignment Requested":
+        raise HTTPException(400, "Reassignment already pending")
+    reassignment = {
+        "requested_by": user["id"],
+        "requested_by_name": user["name"],
+        "reason": reason or "",
+        "at": now_iso(),
+        "status": "Pending",
+    }
+    await db.issues.update_one(
+        tenant_filter(user, {"id": issue_id}),
+        {
+            "$set": {"status": "Reassignment Requested", "updated_at": now_iso(), "reassignment_request": reassignment},
+            "$push": {"timeline": {"status": "Reassignment Requested", "at": now_iso(), "by": user["name"], "note": reason or "Worker requested reassignment"}},
+        },
+    )
+    return {"ok": True}
+
+
+@api.post("/issues/{issue_id}/approve-reassign")
+async def approve_reassign(issue_id: str, new_worker_id: str = Query(...), user: dict = Depends(require_roles("pa", "admin"))):
+    worker = await db.users.find_one(tenant_filter(user, {"id": new_worker_id, "role": "worker"}))
+    if not worker:
+        raise HTTPException(404, "Worker not found")
+    issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
+    if not issue:
+        raise HTTPException(404, "Issue not found")
+    # Preserve workflow context: if work was already in progress, the new worker
+    # takes over without resetting the status. Otherwise, mark as Assigned.
+    prev_timeline = issue.get("timeline", []) or []
+    prev_had_progress = any(
+        (t or {}).get("status") == "In Progress" for t in prev_timeline
+    )
+    new_status = "In Progress" if prev_had_progress else "Assigned"
+    mobile_part = f" · Mobile: {worker.get('mobile')}" if worker.get("mobile") else ""
+    await db.issues.update_one(
+        tenant_filter(user, {"id": issue_id}),
+        {
+            "$set": {
+                "assigned_to": worker["id"],
+                "assigned_to_name": worker["name"],
+                "status": new_status,
+                "updated_at": now_iso(),
+                "reassignment_request": None,
+            },
+            "$push": {"timeline": {"status": "Reassigned", "at": now_iso(), "by": user["name"], "note": f"Reassigned to {worker['name']}{mobile_part}"}},
+        },
+    )
+    try:
+        await v2dw.sync_issue_event(
+            db, issue_id=issue_id, event_label="Reassigned",
+            note=f"Reassigned to {worker['name']}", actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for issue reassign")
+    return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
+
+
+@api.post("/issues/{issue_id}/reject-reassign")
+async def reject_reassign(issue_id: str, note: str = Query(""), user: dict = Depends(require_roles("pa", "admin"))):
+    issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
+    if not issue:
+        raise HTTPException(404, "Issue not found")
+    # revert to In Progress (issue stays with the original worker)
+    await db.issues.update_one(
+        tenant_filter(user, {"id": issue_id}),
+        {
+            "$set": {"status": "In Progress", "updated_at": now_iso(), "reassignment_request": None},
+            "$push": {"timeline": {"status": "Reassignment Rejected", "at": now_iso(), "by": user["name"], "note": note or "Continue with original worker"}},
+        },
+    )
+    return await db.issues.find_one(tenant_filter(user, {"id": issue_id}), {"_id": 0})
+
+
+# ----------------- DASHBOARD -----------------
+@api.get("/dashboard/stats")
+async def dashboard_stats(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    tf = tenant_filter(user)
+    total_citizens = await db.users.count_documents({**tf, "role": "citizen"})
+    total_households = await db.households.count_documents(tf)
+    total_issues = await db.issues.count_documents(tf)
+    resolved = await db.issues.count_documents({**tf, "status": {"$in": ["Resolved", "Verified"]}})
+    pending = await db.issues.count_documents({**tf, "status": {"$in": ["New", "Under Review", "Assigned", "In Progress", "Reopened"]}})
+    total_workers = await db.users.count_documents({**tf, "role": "worker"})
+    total_visits = await db.visits.count_documents(tf)
+    total_devworks = await db.devworks.count_documents(tf)
+
+    # category breakdown (tenant-scoped via $match before $group)
+    cat_pipeline = [{"$match": tf}, {"$group": {"_id": "$category", "count": {"$sum": 1}}}]
+    cats = [{"category": c["_id"], "count": c["count"]} async for c in db.issues.aggregate(cat_pipeline)]
+
+    # status breakdown
+    status_pipeline = [{"$match": tf}, {"$group": {"_id": "$status", "count": {"$sum": 1}}}]
+    statuses = [{"status": s["_id"], "count": s["count"]} async for s in db.issues.aggregate(status_pipeline)]
+
+    # ward performance
+    ward_pipeline = [{"$match": tf}, {"$group": {"_id": "$ward_id", "total": {"$sum": 1}, "resolved": {"$sum": {"$cond": [{"$in": ["$status", ["Resolved", "Verified"]]}, 1, 0]}}}}]
+    wards = [{"ward_id": w["_id"], "total": w["total"], "resolved": w["resolved"]} async for w in db.issues.aggregate(ward_pipeline)]
+
+    return {
+        "total_citizens": total_citizens,
+        "total_households": total_households,
+        "total_issues": total_issues,
+        "resolved_issues": resolved,
+        "pending_issues": pending,
+        "total_workers": total_workers,
+        "total_visits": total_visits,
+        "total_devworks": total_devworks,
+        "by_category": cats,
+        "by_status": statuses,
+        "by_ward": wards,
+    }
+
+
+@api.get("/dashboard/citizen-stats")
+async def citizen_stats(user: dict = Depends(get_current_user)):
+    if user["role"] != "citizen":
+        raise HTTPException(403, "Citizens only")
+    total = await db.issues.count_documents(tenant_filter(user, {"citizen_id": user["id"]}))
+    resolved = await db.issues.count_documents(tenant_filter(user, {"citizen_id": user["id"], "status": {"$in": ["Resolved", "Verified"]}}))
+    pending = total - resolved
+    return {"total": total, "resolved": resolved, "pending": pending}
+
+
+# ----------------- FILES -----------------
+MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}
+
+
+@api.post("/files/upload")
+async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    ext = (file.filename or "bin").split(".")[-1].lower()
+    ctype = MIME.get(ext, file.content_type or "application/octet-stream")
+    data = await file.read()
+    file_id = new_id()
+    path = f"{APP_NAME}/uploads/{user['id']}/{file_id}.{ext}"
+    storage_ok = False
+    try:
+        result = put_object(path, data, ctype)
+        path = result["path"]
+        storage_ok = True
+    except Exception as e:
+        logger.warning(f"Object storage upload failed, falling back to DB: {e}")
+    rec = {
+        "id": file_id,
+        "tenant_id": user.get("tenant_id"),
+        "storage_path": path,
+        "original_filename": file.filename,
+        "content_type": ctype,
+        "size": len(data),
+        "is_deleted": False,
+        "in_db": not storage_ok,
+        "created_at": now_iso(),
+        "uploaded_by": user["id"],
+    }
+    if not storage_ok:
+        # store bytes directly in DB as fallback
+        import base64
+        rec["data_b64"] = base64.b64encode(data).decode("ascii")
+    await db.files.insert_one(rec)
+    return {"path": path, "url": f"/api/files/{path}"}
+
+
+@api.get("/files/{path:path}")
+async def serve_file(path: str, user: dict = Depends(get_current_user_flexible)):
+    if not await can_access_file(user, path):
+        raise HTTPException(403, "Forbidden")
+    rec = await db.files.find_one({"storage_path": path, "is_deleted": False})
+    if rec and rec.get("in_db") and rec.get("data_b64"):
+        import base64
+        return Response(content=base64.b64decode(rec["data_b64"]), media_type=rec.get("content_type", "application/octet-stream"))
+    try:
+        data, ctype = get_object(path)
+    except Exception:
+        raise HTTPException(404, "Not found")
+    return Response(content=data, media_type=ctype)
+
+
+@api.get("/portal-asset/{path:path}")
+async def serve_portal_asset(path: str):
+    """PUBLIC endpoint serving portal branding assets (logo / hero / favicon).
+
+    The image bug: earlier all files were behind auth so citizens visiting the
+    branded portal (before login) could not see logos. Portal branding is
+    inherently public — we scope this endpoint to only paths that are actually
+    referenced from portal_configs (logo_path, hero_image_path, favicon_path).
+    """
+    referenced = await db.portal_configs.find_one(
+        {"$or": [
+            {"logo_path": path},
+            {"hero_image_path": path},
+            {"favicon_path": path},
+        ]},
+        {"id": 1},
+    )
+    if not referenced:
+        raise HTTPException(404, "Not a portal asset")
+    rec = await db.files.find_one({"storage_path": path, "is_deleted": False})
+    if rec and rec.get("in_db") and rec.get("data_b64"):
+        import base64
+        return Response(
+            content=base64.b64decode(rec["data_b64"]),
+            media_type=rec.get("content_type", "application/octet-stream"),
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    try:
+        data, ctype = get_object(path)
+    except Exception:
+        raise HTTPException(404, "Not found")
+    return Response(content=data, media_type=ctype,
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+# ----------------- REPORTS -----------------
+def _csv_response(filename: str, rows: list[dict], cols: list[str]) -> Response:
+    lines = [",".join(cols)]
+    for r in rows:
+        vals = []
+        for c in cols:
+            v = r.get(c, "")
+            v = "" if v is None else str(v).replace(",", " ").replace("\n", " ")
+            vals.append(v)
+        lines.append(",".join(vals))
+    return Response(
+        "\n".join(lines),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@api.get("/reports/issues.csv")
+async def report_issues_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    issues = await db.issues.find(tenant_filter(user), {"_id": 0}).to_list(20000)
+    cols = ["issue_code", "category", "title", "status", "assigned_to_name", "rating", "created_at"]
+    return _csv_response("issues.csv", issues, cols)
+
+
+@api.get("/reports/households.csv")
+async def report_households_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    hh = await db.households.find(tenant_filter(user), {"_id": 0}).to_list(20000)
+    cols = ["household_code", "family_head_name", "house_number", "region_type",
+            "address", "members_count", "created_at"]
+    return _csv_response("households.csv", hh, cols)
+
+
+@api.get("/reports/citizens.csv")
+async def report_citizens_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    rows = await db.users.find(
+        tenant_filter(user, {"role": "citizen"}),
+        {"_id": 0, "id": 1, "name": 1, "mobile": 1, "gender": 1, "dob": 1,
+         "address": 1, "house_number": 1, "region_type": 1, "status": 1,
+         "is_active": 1, "created_at": 1},
+    ).to_list(50000)
+    cols = ["id", "name", "mobile", "gender", "dob", "house_number", "region_type",
+            "address", "status", "is_active", "created_at"]
+    return _csv_response("citizens.csv", rows, cols)
+
+
+@api.get("/reports/devworks.csv")
+async def report_devworks_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    rows = await db.devworks.find(tenant_filter(user), {"_id": 0}).to_list(20000)
+    cols = ["title", "category", "status", "approved", "budget", "location", "created_at"]
+    return _csv_response("devworks.csv", rows, cols)
+
+
+@api.get("/reports/visits.csv")
+async def report_visits_csv(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    rows = await db.visits.find(tenant_filter(user), {"_id": 0}).to_list(20000)
+    cols = ["title", "visit_type", "date", "time", "location", "status",
+            "target_audience", "created_at"]
+    return _csv_response("visits.csv", rows, cols)
+
+
+@api.get("/reports/summary")
+async def report_summary(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    """Lightweight numbers report for the Reports page header."""
+    base = tenant_filter(user)
+    citizens = await db.users.count_documents({**base, "role": "citizen"})
+    households = await db.households.count_documents(base)
+    issues = await db.issues.count_documents(base)
+    resolved = await db.issues.count_documents({**base, "status": {"$in": ["Resolved", "Verified"]}})
+    devworks = await db.devworks.count_documents(base)
+    visits = await db.visits.count_documents(base)
+    return {
+        "citizens": citizens, "households": households,
+        "issues": issues, "issues_resolved": resolved,
+        "devworks": devworks, "visits": visits,
+    }
+
+
+
+# ----------------- PERSON MASTER / FAMILY GRAPH / SERVICE HISTORY (long-term vision foundation) -----------------
+@api.get("/meta/relation-types")
+async def relation_types():
+    return {"relation_types": RELATION_TYPES}
+
+
+@api.get("/persons/{person_id}")
+async def person_profile(person_id: str, user: dict = Depends(get_current_user)):
+    # Citizens may only view their own person profile; staff may view any (within their tenant).
+    if not is_staff(user) and user["id"] != person_id:
+        raise HTTPException(403, "Forbidden")
+    person = await db.users.find_one(tenant_filter(user, {"id": person_id}), {"_id": 0, "password_hash": 0})
+    if not person:
+        raise HTTPException(404, "Person not found")
+    rels = await db.relationships.find(tenant_filter(user, {"$or": [{"person_a": person_id}, {"person_b": person_id}]}), {"_id": 0}).to_list(500)
+    other_ids = [r["person_b"] if r["person_a"] == person_id else r["person_a"] for r in rels]
+    others = {u["id"]: u async for u in db.users.find(tenant_filter(user, {"id": {"$in": other_ids}}), {"_id": 0, "password_hash": 0})}
+    for r in rels:
+        is_a = r["person_a"] == person_id
+        other_id = r["person_b"] if is_a else r["person_a"]
+        other = others.get(other_id)
+        r["other"] = other
+        if not is_a:
+            r["display_type"] = r["type"]
+        else:
+            r["display_type"] = inverse_relation(r["type"], (other or {}).get("gender"))
+    interactions = await db.interactions.find(tenant_filter(user, {"person_id": person_id}), {"_id": 0}).sort("occurred_at", -1).to_list(500)
+    issues = await db.issues.find(tenant_filter(user, {"citizen_id": person_id}), {"_id": 0}).sort("created_at", -1).to_list(500)
+    # Transfer banner: if the V1 user row was transferred OUT we surface the
+    # archived membership row in their tenant so the staff UI can render
+    # "Transferred to <Org>" with date + new org details.
+    transfer_banner = None
+    if person.get("is_active") is False and person.get("_transferred_out_to_user_id"):
+        pid_v2 = person.get("person_id")
+        archived_mem = await db.memberships.find_one(
+            {"person_id": pid_v2, "organisation_id": person.get("tenant_id"),
+             "status": "archived"},
+            {"_id": 0}, sort=[("end_date", -1)],
+        ) if pid_v2 else None
+        to_org = None
+        if archived_mem and archived_mem.get("transferred_to_organisation_id"):
+            to_org = await db.portal_configs.find_one(
+                {"id": archived_mem["transferred_to_organisation_id"]},
+                {"_id": 0, "id": 1, "slug": 1, "politician_name": 1,
+                 "tenant_name": 1, "constituency_name": 1},
+            )
+        transfer_banner = {
+            "kind": "transferred_out",
+            "archived_membership": archived_mem,
+            "to_organisation": to_org,
+            "transferred_at": (archived_mem or {}).get("end_date"),
+            "reason": (archived_mem or {}).get("transfer_reason"),
+            "read_only": True,
+        }
+    return {"person": person, "relationships": rels, "interactions": interactions,
+            "issues": issues, "transfer_banner": transfer_banner}
+
+
+@api.put("/persons/{person_id}")
+async def update_person(person_id: str, payload: dict, user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    allowed = {"anniversary", "occupation", "profile_photo", "notes", "status", "date_of_death",
+               "supporter_since", "political_role", "influence_level", "political_notes", "family_lineage"}
+    update = {k: v for k, v in payload.items() if k in allowed}
+    if not update:
+        raise HTTPException(400, "No allowed fields")
+    res = await db.users.update_one(tenant_filter(user, {"id": person_id}), {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Person not found")
+    try:
+        await v2dw.sync_person_profile_update(
+            db, user_id=person_id, updates=update, actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for profile update")
+    return await db.users.find_one(tenant_filter(user, {"id": person_id}), {"_id": 0, "password_hash": 0})
+
+
+@api.post("/relationships")
+async def create_relationship(payload: RelationshipCreate, user: dict = Depends(require_roles("pa", "admin"))):
+    if payload.type not in RELATION_TYPES:
+        raise HTTPException(400, "Invalid relation type")
+    if payload.person_a == payload.person_b:
+        raise HTTPException(400, "Cannot create a relationship with the same person")
+    # Both persons must exist AND be in the same tenant as the user creating the edge.
+    pa = await db.users.find_one(tenant_filter(user, {"id": payload.person_a}))
+    pb = await db.users.find_one(tenant_filter(user, {"id": payload.person_b}))
+    if not pa or not pb:
+        raise HTTPException(404, "Person not found")
+    # Prevent exact duplicate edge (same direction + same type) within tenant
+    existing = await db.relationships.find_one(tenant_filter(user, {
+        "person_a": payload.person_a,
+        "person_b": payload.person_b,
+        "type": payload.type,
+    }))
+    if existing:
+        raise HTTPException(409, "This relationship already exists")
+    r = Relationship(**payload.model_dump(), tenant_id=get_tenant_id_for_write(user))
+    await db.relationships.insert_one(r.model_dump())
+    try:
+        await v2dw.sync_relationship_to_v2(db, rel=r.model_dump(), actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for relationship creation")
+    return await db.relationships.find_one({"id": r.id}, {"_id": 0}) or r.model_dump()
+
+
+@api.delete("/relationships/{rel_id}")
+async def delete_relationship(rel_id: str, user: dict = Depends(require_roles("pa", "admin"))):
+    await db.relationships.delete_one(tenant_filter(user, {"id": rel_id}))
+    try:
+        await v2dw.revoke_relationship_v2(db, rel_id=rel_id, actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for relationship delete")
+    return {"ok": True}
+
+
+@api.post("/interactions")
+async def create_interaction(payload: ServiceInteractionCreate, user: dict = Depends(require_roles("worker", "pa", "admin"))):
+    data = payload.model_dump()
+    if not data.get("occurred_at"):
+        data["occurred_at"] = now_iso()
+    if data.get("worker_id"):
+        w = await db.users.find_one(tenant_filter(user, {"id": data["worker_id"]}))
+        if w:
+            data["worker_name"] = w["name"]
+    elif user["role"] == "worker":
+        data["worker_id"] = user["id"]
+        data["worker_name"] = user["name"]
+    interaction = ServiceInteraction(**data, tenant_id=get_tenant_id_for_write(user))
+    await db.interactions.insert_one(interaction.model_dump())
+    # M3 dual-write — fetch subject user for lazy person-mirror.
+    try:
+        subject = await db.users.find_one({"id": interaction.person_id})
+        await v2dw.sync_interaction_to_v2(
+            db, interaction=interaction.model_dump(),
+            subject_user=subject, actor_user=user)
+    except Exception:
+        logger.exception("V2 dualwrite skipped for interaction creation")
+    return await db.interactions.find_one({"id": interaction.id}, {"_id": 0}) or interaction.model_dump()
+
+
+@api.get("/dashboard/celebrations")
+async def celebrations(days: int = 7, user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    from datetime import date
+    today = date.today()
+    # Projection: load only the fields the bucketing logic actually uses
+    # (avoid pulling full 5000-doc user records each call).
+    projection = {
+        "_id": 0, "id": 1, "name": 1, "mobile": 1, "ward_id": 1, "village_id": 1,
+        "household_id": 1, "dob": 1, "anniversary": 1, "date_of_death": 1,
+        "status": 1, "gender": 1, "profile_photo": 1,
+    }
+    citizens_alive = await db.users.find(
+        tenant_filter(user, {"role": "citizen", "status": {"$ne": "deceased"}}),
+        projection,
+    ).to_list(5000)
+    citizens_dead = await db.users.find(
+        tenant_filter(user, {"role": "citizen", "status": "deceased"}),
+        projection,
+    ).to_list(5000)
+
+    def _bucket(field, deceased_only=False):
+        out = {"today": [], "upcoming": []}
+        pool = citizens_dead if deceased_only else citizens_alive
+        for c in pool:
+            s = c.get(field)
+            if not s or len(s) < 10:
+                continue
+            md = s[5:10]
+            tmd = today.strftime("%m-%d")
+            if md == tmd:
+                out["today"].append(c)
+            else:
+                try:
+                    this_year_dt = datetime.strptime(f"{today.year}-{md}", "%Y-%m-%d").date()
+                    diff = (this_year_dt - today).days
+                    if 0 < diff <= days:
+                        out["upcoming"].append({**c, "in_days": diff})
+                except Exception:
+                    pass
+        return out
+
+    return {"birthdays": _bucket("dob"), "anniversaries": _bucket("anniversary"), "remembrance": _bucket("date_of_death", deceased_only=True)}
+
+
+
+# ----------------- WHITE-LABEL PORTAL -----------------
+
+
+def _normalize_slug(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s
+
+
+def _public_portal(p: dict) -> dict:
+    """Strip internal fields for public consumption.
+
+    IMPORTANT: `otp_config` holds the tenant's SMS provider secret (Fast2SMS
+    API key). Never expose it on public endpoints. We keep the mode flag
+    (`communication_mode`) so the UI can show a "Development mode" badge
+    without leaking credentials."""
+    if not p:
+        return p
+    out = {k: v for k, v in p.items() if k != "_id"}
+    out.pop("otp_config", None)
+    # Legacy channel-secret buckets — never leak.
+    out.pop("sms_config", None)
+    out.pop("whatsapp_config", None)
+    return out
+
+
+@api.get("/portals")
+async def list_portals_public():
+    """Public list of active portals (compact)."""
+    docs = await db.portal_configs.find({"is_active": True}, {"_id": 0}).to_list(200)
+    fields = {"id", "slug", "politician_name", "designation", "constituency_name", "logo_path", "theme_color", "is_default"}
+    return [{k: d.get(k) for k in fields} for d in docs]
+
+
+@api.get("/portals/{slug}")
+async def get_portal_public(slug: str):
+    """Public portal metadata. Archived portals still return a valid response
+    (so the frontend can render an 'Archived' banner) but with is_active=False
+    and portal_status='archived'. The rest of the payload is preserved so the
+    landing page can show the previous branding while informing visitors."""
+    p = await db.portal_configs.find_one({"slug": slug}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    # Suspended portals: not visible publicly (unchanged behaviour).
+    if p.get("portal_status") == "suspended" and not p.get("is_active"):
+        raise HTTPException(404, "Portal not found")
+    return _public_portal(p)
+
+
+@api.get("/portals/{slug}/devworks")
+async def portal_devworks(slug: str, limit: int = 6):
+    p = await db.portal_configs.find_one({"slug": slug, "is_active": True}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    # Strict tenant isolation — devworks belong to a specific tenant/portal.
+    q = {"approved": True, "tenant_id": p["id"]}
+    if p.get("constituency_id"):
+        # Optional secondary filter by ward/village that belongs to this constituency.
+        # Absence of areas means "no records yet" — that's the correct clean state.
+        areas = await db.areas.find({"constituency_id": p["constituency_id"]}, {"id": 1}).to_list(500)
+        area_ids = [a["id"] for a in areas]
+        if area_ids:
+            q["$or"] = [{"ward_id": {"$in": area_ids}}, {"village_id": {"$in": area_ids}}]
+    docs = await db.devworks.find(q, {"_id": 0}).sort("created_at", -1).limit(max(1, min(limit, 50))).to_list(50)
+    return docs
+
+
+@api.get("/portals/{slug}/visits")
+async def portal_visits(slug: str, limit: int = 5):
+    p = await db.portal_configs.find_one({"slug": slug, "is_active": True}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Strict tenant isolation + hide internal-only visits from public feed.
+    q = {
+        "tenant_id": p["id"],
+        "status": {"$in": ["Approved", "Published"]},
+        "date": {"$gte": today},
+        "visibility": {"$ne": "internal"},
+    }
+    if p.get("constituency_id"):
+        areas = await db.areas.find({"constituency_id": p["constituency_id"]}, {"id": 1}).to_list(500)
+        area_ids = [a["id"] for a in areas]
+        if area_ids:
+            q["$or"] = [
+                {"ward_ids": {"$in": area_ids}},
+                {"village_ids": {"$in": area_ids}},
+                {"$and": [{"ward_ids": {"$size": 0}}, {"village_ids": {"$size": 0}}]},
+            ]
+    docs = await db.visits.find(q, {"_id": 0}).sort("date", 1).limit(max(1, min(limit, 20))).to_list(20)
+    return docs
+
+
+@api.get("/portals/{slug}/notifications")
+async def portal_notifications(slug: str, limit: int = 5):
+    p = await db.portal_configs.find_one({"slug": slug, "is_active": True}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    # Only broadcast / public notifications — scoped to THIS tenant.
+    # `scope=user` (personal escalation reminders etc.) are never public.
+    q = {"scope": "all", "tenant_id": p["id"]}
+    docs = await db.notifications.find(q, {"_id": 0}).sort("created_at", -1).limit(max(1, min(limit, 20))).to_list(20)
+    return docs
+
+
+# --- Admin write endpoints ---
+@api.get("/admin/portals")
+async def list_portals_admin(user: dict = Depends(get_current_user),
+                             include_archived: bool = False):
+    if user.get("role") not in ("super_admin", "admin"):
+        raise HTTPException(403, "Forbidden")
+    # Tenant admin sees only their own portal; super_admin sees all.
+    q: dict = {} if user.get("role") == "super_admin" else {"id": user.get("tenant_id")}
+    if not include_archived:
+        q["portal_status"] = {"$ne": "archived"}
+    return await db.portal_configs.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+
+def _generate_password(n: int = 12) -> str:
+    import secrets
+    import string
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(n))
+
+
+_OFFICE_CODE_PREFIX = "JS"
+_OFFICE_CODE_START = 1000
+
+
+def _is_valid_office_code(code: str) -> bool:
+    """Office Code format: JS + 4 or more digits, uppercase."""
+    if not code or not isinstance(code, str):
+        return False
+    c = code.strip().upper()
+    if not c.startswith(_OFFICE_CODE_PREFIX):
+        return False
+    tail = c[len(_OFFICE_CODE_PREFIX):]
+    return tail.isdigit() and len(tail) >= 4
+
+
+async def _office_code_taken(code: str) -> bool:
+    return bool(await db.portal_configs.find_one({"office_code": code}, {"_id": 1}))
+
+
+async def _next_office_code() -> str:
+    """Return the next unused office code — JS + (max_existing+1), no less
+    than 1000. Race-safe via double-check on insert."""
+    # Find the highest existing numeric tail across portal_configs.
+    highest = _OFFICE_CODE_START - 1
+    async for doc in db.portal_configs.find(
+        {"office_code": {"$regex": f"^{_OFFICE_CODE_PREFIX}\\d+$"}},
+        {"office_code": 1, "_id": 0},
+    ):
+        try:
+            n = int(doc["office_code"][len(_OFFICE_CODE_PREFIX):])
+            if n > highest:
+                highest = n
+        except (ValueError, TypeError):
+            continue
+    # First code should be JS1000.
+    candidate_num = max(_OFFICE_CODE_START, highest + 1)
+    for _ in range(20):  # unrealistic safety loop
+        candidate = f"{_OFFICE_CODE_PREFIX}{candidate_num}"
+        if not await _office_code_taken(candidate):
+            return candidate
+        candidate_num += 1
+    raise HTTPException(500, "Could not allocate a fresh office code")
+
+
+@api.post("/admin/office-code/generate")
+async def generate_office_code(_: dict = Depends(require_roles("super_admin"))):
+    """Return a fresh unused Office Code. Does NOT persist — the caller sends
+    it back in the create-portal payload."""
+    code = await _next_office_code()
+    return {"office_code": code}
+
+
+@api.get("/admin/office-code/{code}/available")
+async def check_office_code_available(code: str, _: dict = Depends(require_roles("super_admin"))):
+    code = (code or "").strip().upper()
+    if not _is_valid_office_code(code):
+        return {"office_code": code, "available": False, "reason": "Invalid format (expected JS + digits, e.g. JS1045)"}
+    taken = await _office_code_taken(code)
+    return {"office_code": code, "available": not taken, "reason": "Already in use" if taken else None}
+
+
+@api.get("/admin/office-code/{code}/qr")
+async def office_code_qr(code: str, _: dict = Depends(get_current_user_flexible), size: int = 240):
+    """PNG QR code encoding the Office Code. The scanned string is exactly the
+    Office Code (e.g. "JS1045"); the citizen app resolves it via
+    /api/portals/office/{code}. Returns image/png."""
+    code = (code or "").strip().upper()
+    if not _is_valid_office_code(code):
+        raise HTTPException(400, "Invalid office code")
+    try:
+        import qrcode
+        img = qrcode.make(code)
+    except ImportError:
+        raise HTTPException(500, "qrcode library not installed")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+async def _office_has_citizens(portal_id: str) -> bool:
+    """Once any citizen has registered under this office, office_code freezes."""
+    return bool(await db.users.find_one(
+        {"tenant_id": portal_id, "role": "citizen"},
+        {"_id": 1},
+    ))
+
+
+@api.get("/portals/office/{code}")
+async def get_portal_by_office_code(code: str):
+    """Public lookup of a portal by Office Code — used by the citizen app
+    before login to render the "You are joining this office" preview. Returns
+    the same shape as GET /api/portals/{slug} for compatibility."""
+    code = (code or "").strip().upper()
+    if not _is_valid_office_code(code):
+        raise HTTPException(400, "Invalid office code")
+    p = await db.portal_configs.find_one({"office_code": code}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Office not found")
+    if p.get("portal_status") == "suspended" and not p.get("is_active"):
+        raise HTTPException(404, "Office not found")
+    return _public_portal(p)
+
+
+
+@api.post("/admin/portals")
+async def create_portal(payload: PortalConfigCreate, user: dict = Depends(require_roles("super_admin"))):
+    # ---- Office Code resolution ----
+    # Preferred (v1.1+) — Super Admin supplies an auto-generated / manually
+    # edited Office Code from the New Portal form. Legacy slug is derived
+    # from the code so old URL patterns keep working.
+    office_code = (payload.office_code or "").strip().upper()
+    if office_code:
+        if not _is_valid_office_code(office_code):
+            raise HTTPException(400, "Invalid office_code — expected JS + 4+ digits (e.g. JS1045)")
+        if await _office_code_taken(office_code):
+            raise HTTPException(409, "office_code already in use")
+    else:
+        office_code = await _next_office_code()
+
+    # Derive slug from office_code if not provided (legacy compat).
+    raw_slug = payload.slug or office_code.lower()
+    slug = _normalize_slug(raw_slug)
+    if not slug:
+        raise HTTPException(400, "Invalid slug")
+    if await db.portal_configs.find_one({"slug": slug}):
+        raise HTTPException(409, "Slug already exists")
+
+    data = payload.model_dump()
+    data["slug"] = slug
+    data["office_code"] = office_code
+    # Default trial: 14-day trial, on trial plan, active.
+    from datetime import date, timedelta
+    today = date.today()
+    if not data.get("subscription_start"):
+        data["subscription_start"] = today.isoformat()
+    if not data.get("trial_expiry"):
+        data["trial_expiry"] = (today + timedelta(days=14)).isoformat()
+    cfg = PortalConfig(**data)
+    if cfg.is_default:
+        await db.portal_configs.update_many({}, {"$set": {"is_default": False}})
+    await db.portal_configs.insert_one(cfg.model_dump())
+
+    # Auto-provision tenant admin user with a temp password.
+    admin_email = (payload.primary_admin_email or f"admin@{slug}.jansetu.in").strip().lower()
+    admin_name = payload.primary_admin_name or f"Admin - {cfg.constituency_name}"
+    temp_password = _generate_password(12)
+    admin_user = User(
+        role="admin",
+        tenant_id=cfg.id,
+        name=admin_name,
+        email=admin_email,
+        password_hash=hash_password(temp_password),
+        must_change_password=True,
+    )
+    await db.users.insert_one(admin_user.model_dump())
+    await db.portal_configs.update_one(
+        {"id": cfg.id},
+        {"$set": {"primary_admin_email": admin_email, "primary_admin_user_id": admin_user.id, "updated_at": now_iso()}},
+    )
+    # Return creds in the response ONCE — UI must show them in a copy/print modal and never persist them.
+    return {
+        "portal": {**cfg.model_dump(), "primary_admin_email": admin_email, "primary_admin_user_id": admin_user.id},
+        "credentials": {
+            "tenant_admin_email": admin_email,
+            "tenant_admin_name": admin_name,
+            "temp_password": temp_password,
+            "must_change_password": True,
+        },
+        "urls": {
+            # Canonical Office-Code URL (v1.1+).
+            "portal_url": f"/o/{cfg.office_code}",
+            "office_url": f"/o/{cfg.office_code}",
+            "staff_login_url": f"/staff/login?office={cfg.office_code}",
+            "citizen_portal_url": f"/o/{cfg.office_code}",
+            # Legacy slug URLs — kept for anything already deployed.
+            "legacy_portal_url": f"/portal/{slug}",
+        },
+    }
+
+
+@api.post("/admin/portals/{portal_id}/reset-admin-password")
+async def reset_admin_password(portal_id: str, user: dict = Depends(require_roles("super_admin"))):
+    portal = await db.portal_configs.find_one({"id": portal_id})
+    if not portal:
+        raise HTTPException(404, "Portal not found")
+    admin_id = portal.get("primary_admin_user_id")
+    if not admin_id:
+        raise HTTPException(404, "Tenant admin not configured for this portal")
+    temp_password = _generate_password(12)
+    await db.users.update_one(
+        {"id": admin_id},
+        {"$set": {"password_hash": hash_password(temp_password), "must_change_password": True}},
+    )
+    return {"tenant_admin_email": portal.get("primary_admin_email"), "temp_password": temp_password}
+
+
+@api.put("/admin/portals/{portal_id}")
+async def update_portal(portal_id: str, payload: dict, _: dict = Depends(require_roles("admin"))):
+    allowed = {
+        "politician_name", "designation", "constituency_name", "constituency_id",
+        "office_name", "office_type", "district", "state",
+        "welcome_message", "tagline",
+        "logo_path", "hero_image_path", "theme_color", "accent_color",
+        "contact_phone", "contact_email", "contact_address", "office_hours", "social_links",
+        "is_active", "slug", "office_code",
+        # OTP / communication (per-tenant, isolated).
+        "communication_mode", "otp_config",
+    }
+    update = {k: v for k, v in payload.items() if k in allowed}
+    if "office_code" in update:
+        code = (update["office_code"] or "").strip().upper()
+        if not _is_valid_office_code(code):
+            raise HTTPException(400, "Invalid office_code (expected JS + 4+ digits)")
+        current = await db.portal_configs.find_one({"id": portal_id}, {"office_code": 1})
+        if current and current.get("office_code") != code:
+            # Immutability: once any citizen has registered under this office,
+            # the office_code is frozen.
+            if await _office_has_citizens(portal_id):
+                raise HTTPException(409, "Office Code cannot be changed after the first citizen has registered under this office.")
+            if await db.portal_configs.find_one({"office_code": code, "id": {"$ne": portal_id}}):
+                raise HTTPException(409, "office_code already in use")
+        update["office_code"] = code
+    if "communication_mode" in update and update["communication_mode"] not in ("development", "production"):
+        raise HTTPException(400, "communication_mode must be 'development' or 'production'")
+    if "otp_config" in update and update["otp_config"] is not None:
+        cfg = update["otp_config"] or {}
+        if not isinstance(cfg, dict):
+            raise HTTPException(400, "otp_config must be an object")
+        # Only supported provider in v1.
+        provider = (cfg.get("provider") or "").strip().lower()
+        if provider and provider != "fast2sms":
+            raise HTTPException(400, "Only 'fast2sms' provider is supported in v1")
+        # Trim strings to avoid surprising whitespace bugs when calling upstream.
+        cleaned = {k: (v.strip() if isinstance(v, str) else v) for k, v in cfg.items()}
+        cleaned.setdefault("route", otp_service.DEFAULT_ROUTE)
+        update["otp_config"] = cleaned
+    if "slug" in update:
+        update["slug"] = _normalize_slug(update["slug"])
+        if not update["slug"]:
+            raise HTTPException(400, "Invalid slug")
+        clash = await db.portal_configs.find_one({"slug": update["slug"], "id": {"$ne": portal_id}})
+        if clash:
+            raise HTTPException(409, "Slug already exists")
+    if not update:
+        raise HTTPException(400, "No allowed fields")
+    update["updated_at"] = now_iso()
+    res = await db.portal_configs.update_one({"id": portal_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Portal not found")
+    return await db.portal_configs.find_one({"id": portal_id}, {"_id": 0})
+
+
+@api.post("/admin/portals/{portal_id}/set-default")
+async def set_default_portal(portal_id: str, _: dict = Depends(require_roles("admin"))):
+    target = await db.portal_configs.find_one({"id": portal_id})
+    if not target:
+        raise HTTPException(404, "Portal not found")
+    await db.portal_configs.update_many({}, {"$set": {"is_default": False}})
+    await db.portal_configs.update_one({"id": portal_id}, {"$set": {"is_default": True, "is_active": True, "updated_at": now_iso()}})
+    return await db.portal_configs.find_one({"id": portal_id}, {"_id": 0})
+
+
+@api.post("/admin/portals/{portal_id}/suspend")
+async def suspend_portal(portal_id: str, _: dict = Depends(require_roles("admin"))):
+    res = await db.portal_configs.update_one(
+        {"id": portal_id},
+        {"$set": {"portal_status": "suspended", "updated_at": now_iso()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Portal not found")
+    return await db.portal_configs.find_one({"id": portal_id}, {"_id": 0})
+
+
+@api.post("/admin/portals/{portal_id}/activate")
+async def activate_portal(portal_id: str, _: dict = Depends(require_roles("admin"))):
+    res = await db.portal_configs.update_one(
+        {"id": portal_id},
+        {"$set": {"portal_status": "active", "is_active": True, "updated_at": now_iso()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Portal not found")
+    return await db.portal_configs.find_one({"id": portal_id}, {"_id": 0})
+
+
+# ----------------- PLATFORM (Super Admin) -----------------
+@api.get("/admin/v2/parity")
+async def v2_parity(user: dict = Depends(get_current_user)):
+    """M3 — Parity report between V1 (authoritative) and V2 (shadow) collections.
+
+    Super-admin only. Returns a structured report; each check has `ok: bool`
+    and `delta: int`. Use as input to the nightly alerting job during the
+    dual-write window.
+    """
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    return await v2dw.parity_report(db)
+
+
+@api.get("/admin/v2/integrity")
+async def v2_integrity(user: dict = Depends(get_current_user)):
+    """Full DB integrity audit — orphaned records, broken FKs, duplicates.
+    Read-only. Super-admin only."""
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    from migrations.integrity_audit import run
+    return await run(db)
+
+
+@api.post("/admin/v2/integrity/cleanup")
+async def v2_integrity_cleanup(
+    dry_run: bool = True,
+    user: dict = Depends(get_current_user),
+):
+    """Cleanup orphaned rows. Defaults to dry_run=true. Super-admin only.
+    Call with `?dry_run=false` to actually apply."""
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    from migrations.integrity_cleanup import cleanup
+    return await cleanup(db, apply=not dry_run)
+
+
+
+@api.post("/admin/v2/parity/backfill-missing")
+async def v2_parity_backfill(user: dict = Depends(get_current_user)):
+    """M3 — Best-effort: lazy-create Persons for any V1 users missing a V2
+    mirror, and re-stamp operational records whose person_id/origin_membership_id
+    are NULL. Super-admin only. Returns counts.
+    """
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    minted = 0
+    stamped = {"issues": 0, "interactions": 0}
+    # 1) Lazy mirror users (creates Persons + missing memberships). Idempotent.
+    async for u in db.users.find({}, {"_id": 0, "password_hash": 0}):
+        existed = await db["_v2_user_to_person"].find_one({"_id": u["id"]})
+        pid = await v2dw.ensure_person_for_user(db, u)
+        if pid and not existed:
+            minted += 1
+    # 2) Re-stamp issues that have no person_id OR no origin_membership_id.
+    async for i in db.issues.find(
+        {"$or": [
+            {"person_id": None}, {"person_id": {"$exists": False}},
+            {"origin_membership_id": None}, {"origin_membership_id": {"$exists": False}},
+        ]},
+        {"_id": 0},
+    ):
+        cu = await db.users.find_one({"id": i.get("citizen_id")})
+        await v2dw.sync_issue_to_v2(db, i, citizen_user=cu)
+        stamped["issues"] += 1
+    # 3) Re-stamp interactions that have no person_id (or whose subject not mirrored).
+    async for it in db.interactions.find({"$or": [{"origin_membership_id": None}, {"origin_membership_id": {"$exists": False}}]}, {"_id": 0}):
+        cu = await db.users.find_one({"id": it.get("person_id")})
+        await v2dw.sync_interaction_to_v2(db, interaction=it, subject_user=cu, actor_user=user)
+        stamped["interactions"] += 1
+    # 4) Re-stamp staff-owned records (visits / notifications / devworks).
+    for col, helper in (
+        ("visits", v2dw.sync_visit_to_v2),
+        ("notifications", v2dw.sync_notification_to_v2),
+        ("devworks", v2dw.sync_devwork_to_v2),
+    ):
+        stamped[col] = 0
+        async for d in db[col].find(
+            {"$or": [{"origin_membership_id": None},
+                     {"origin_membership_id": {"$exists": False}}]},
+            {"_id": 0},
+        ):
+            creator_id = d.get("created_by")
+            actor = await db.users.find_one({"id": creator_id}) if creator_id else None
+            if not actor:
+                continue
+            kw = {col[:-1]: d, "actor_user": actor}  # visit=..., notification=..., devwork=...
+            await helper(db, **kw)
+            stamped[col] += 1
+    return {"persons_minted": minted, "records_stamped": stamped}
+
+
+@api.get("/platform/stats")
+async def platform_stats(user: dict = Depends(get_current_user)):
+    """Platform-wide aggregate counts. Super-admin only.
+    Returns only counts; never per-tenant data.
+    """
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+
+    total_portals = await db.portal_configs.count_documents({})
+    active_portals = await db.portal_configs.count_documents({"is_active": True, "portal_status": {"$ne": "suspended"}})
+    suspended_portals = await db.portal_configs.count_documents({"portal_status": "suspended"})
+    trial_portals = await db.portal_configs.count_documents({"is_trial": True, "is_active": True})
+
+    # Platform-wide entity counts (across all tenants).
+    total_citizens = await db.users.count_documents({"role": "citizen"})
+    total_staff = await db.users.count_documents({"role": {"$in": ["worker", "pa", "politician", "admin"]}})
+    total_issues = await db.issues.count_documents({})
+    total_visits = await db.visits.count_documents({})
+    total_notifications = await db.notifications.count_documents({})
+    total_devworks = await db.devworks.count_documents({})
+
+    return {
+        "portals": {
+            "total": total_portals,
+            "active": active_portals,
+            "suspended": suspended_portals,
+            "trial": trial_portals,
+        },
+        "entities": {
+            "citizens": total_citizens,
+            "staff": total_staff,
+            "issues": total_issues,
+            "visits": total_visits,
+            "notifications": total_notifications,
+            "devworks": total_devworks,
+        },
+    }
+
+
+# ----------------- SEED -----------------
+async def seed_demo_data():
+    logger.info("Seeding demo data...")
+
+    # Constituency
+    constituency = Constituency(name="Pune Cantonment", state="Maharashtra", type="mixed", politician_name="Hon. Rajesh Patil")
+    await db.constituencies.insert_one(constituency.model_dump())
+
+    # Wards (urban)
+    wards = []
+    for i, name in enumerate(["Ward 1 - Camp", "Ward 2 - Wanowrie", "Ward 3 - Ghorpadi", "Ward 4 - Lullanagar"]):
+        a = Area(constituency_id=constituency.id, name=name, kind="ward", region_type="urban")
+        await db.areas.insert_one(a.model_dump())
+        wards.append(a)
+
+    # Villages (rural)
+    villages = []
+    for name in ["Hadapsar Gaon", "Mundhwa", "Kondhwa Khurd"]:
+        a = Area(constituency_id=constituency.id, name=name, kind="village", region_type="rural")
+        await db.areas.insert_one(a.model_dump())
+        villages.append(a)
+
+    # Users
+    admin = User(role="admin", name="Super Admin", email="admin@jansetu.in", password_hash=hash_password("admin123"))
+    politician = User(role="politician", name="Hon. Rajesh Patil", email="mla@jansetu.in", password_hash=hash_password("mla123"), designation="MLA, Pune Cantonment")
+    pa = User(role="pa", name="Priya Deshmukh", email="pa@jansetu.in", password_hash=hash_password("pa123"), designation="Personal Assistant")
+    worker1 = User(role="worker", name="Suresh Kale", email="worker1@jansetu.in", password_hash=hash_password("worker123"), designation="Field Coordinator")
+    worker2 = User(role="worker", name="Anita Joshi", email="worker2@jansetu.in", password_hash=hash_password("worker123"), designation="Engineer")
+
+    await db.users.insert_many([admin.model_dump(), politician.model_dump(), pa.model_dump(), worker1.model_dump(), worker2.model_dump()])
+
+    # Demo citizen + household
+    hh_seq = await next_seq("household")
+    hh = Household(
+        household_code=f"H-{10000 + hh_seq}",
+        family_head_name="Ramesh Sharma",
+        address="Plot 22, MG Road, Camp",
+        house_number="22",
+        region_type="urban",
+        ward_id=wards[0].id,
+        members_count=4,
+    )
+    await db.households.insert_one(hh.model_dump())
+
+    citizen = User(
+        role="citizen",
+        name="Ramesh Sharma",
+        mobile="9999900001",
+        gender="Male",
+        household_id=hh.id,
+        region_type="urban",
+        ward_id=wards[0].id,
+        house_number="22",
+        address="Plot 22, MG Road, Camp",
+    )
+    await db.users.insert_one(citizen.model_dump())
+
+    # Sample issues
+    samples = [
+        ("Road", "Large pothole near MG Road", "Pothole causing accidents near junction.", "Resolved"),
+        ("Water Supply", "No water for 3 days", "Tanker has not arrived.", "In Progress"),
+        ("Street Light", "Street light broken", "Dark stretch on side lane.", "Assigned"),
+        ("Garbage", "Garbage not collected", "Garbage piling near Plot 30.", "New"),
+    ]
+    for cat, title, desc, status in samples:
+        seq = await next_seq("issue")
+        i = Issue(
+            issue_code=f"ISS-{10000 + seq}",
+            citizen_id=citizen.id,
+            household_id=hh.id,
+            category=cat,
+            title=title,
+            description=desc,
+            ward_id=wards[0].id,
+            status=status,
+            assigned_to=worker1.id if status != "New" else None,
+            assigned_to_name=worker1.name if status != "New" else None,
+            timeline=[{"status": "New", "at": now_iso(), "by": citizen.name, "note": "Issue raised"}],
+        )
+        await db.issues.insert_one(i.model_dump())
+
+    # Visits
+    v = Visit(
+        title="Janata Darbar - Camp Ward",
+        description="Open meeting with citizens",
+        date=(datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y-%m-%d"),
+        time="10:00",
+        location="Ward 1 Community Hall",
+        visit_type="Janata Darbar",
+        target_audience="All residents",
+        ward_ids=[wards[0].id],
+        status="Approved",
+        approved_by=politician.id,
+        approved_at=now_iso(),
+        created_by=pa.id,
+    )
+    await db.visits.insert_one(v.model_dump())
+
+    # Notifications
+    n = Notification(
+        title="Free Health Camp this Sunday",
+        body="A free health camp will be organized at Ward 2 Community Center, 9 AM - 5 PM.",
+        notif_type="Health Camp",
+        scope="all",
+        created_by=pa.id,
+    )
+    await db.notifications.insert_one(n.model_dump())
+
+    # Dev works
+    for title, cat, status, approved in [
+        ("Road Resurfacing - MG Road", "Road Construction", "Work Started", True),
+        ("New Water Tank - Wanowrie", "Water Tank", "Approved", True),
+        ("Drainage Project Phase 2", "Drainage Project", "Tender Issued", True),
+        ("Street Light Installation", "Street Light Installation", "Completed", True),
+    ]:
+        d = DevWork(
+            title=title,
+            description=f"{title} - public infrastructure project.",
+            category=cat,
+            location="Pune Cantonment",
+            ward_id=wards[0].id,
+            status=status,
+            budget=2500000,
+            approved=approved,
+            approved_by=politician.id if approved else None,
+            approved_at=now_iso() if approved else None,
+            created_by=politician.id,
+        )
+        await db.devworks.insert_one(d.model_dump())
+
+    # White-label portal config for this constituency
+    portal = PortalConfig(
+        slug="pune-cantonment",
+        is_active=True,
+        is_default=True,
+        politician_name="Hon. Rajesh Patil",
+        designation="MLA, Pune Cantonment",
+        constituency_name="Pune Cantonment",
+        constituency_id=constituency.id,
+        welcome_message="Welcome to our digital constituency. Together, we build a stronger, cleaner, more accountable Pune Cantonment.",
+        tagline="Sewa. Suvidha. Sashaktikaran.",
+        theme_color="#0A1128",
+        contact_phone="+91 20 2612 0000",
+        contact_email="office@pune-cantonment.in",
+        contact_address="MLA Office, Camp, Pune - 411001",
+        office_hours="Mon - Sat, 10:00 AM to 6:00 PM",
+        social_links={
+            "facebook": "https://facebook.com/rajeshpatil.mla",
+            "twitter": "https://twitter.com/rajeshpatil",
+            "whatsapp": "https://wa.me/912026120000",
+        },
+    )
+    await db.portal_configs.insert_one(portal.model_dump())
+
+    logger.info("Seed complete.")
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+
+# ============================================================================
+# CASTE / RELIGION (Tenant-scoped taxonomy)
+# ============================================================================
+@api.get("/castes")
+async def list_castes(user: dict = Depends(get_current_user)):
+    return await db.castes.find(tenant_filter(user), {"_id": 0}).sort("name", 1).to_list(500)
+
+
+@api.post("/castes")
+async def create_caste(payload: TaxonomyCreate, user: dict = Depends(require_roles("pa", "admin"))):
+    tid = get_tenant_id_for_write(user)
+    doc = Caste(tenant_id=tid, **payload.model_dump()).model_dump()
+    await db.castes.insert_one(dict(doc))
+    return doc
+
+
+@api.delete("/castes/{cid}")
+async def delete_caste(cid: str, user: dict = Depends(require_roles("admin"))):
+    await db.castes.delete_one(tenant_filter(user, {"id": cid}))
+    return {"ok": True}
+
+
+@api.get("/religions")
+async def list_religions(user: dict = Depends(get_current_user)):
+    return await db.religions.find(tenant_filter(user), {"_id": 0}).sort("name", 1).to_list(500)
+
+
+@api.post("/religions")
+async def create_religion(payload: TaxonomyCreate, user: dict = Depends(require_roles("pa", "admin"))):
+    tid = get_tenant_id_for_write(user)
+    doc = Religion(tenant_id=tid, **payload.model_dump()).model_dump()
+    await db.religions.insert_one(dict(doc))
+    return doc
+
+
+@api.delete("/religions/{rid}")
+async def delete_religion(rid: str, user: dict = Depends(require_roles("admin"))):
+    await db.religions.delete_one(tenant_filter(user, {"id": rid}))
+    return {"ok": True}
+
+
+# ============================================================================
+# FAMILY LINKING (Citizen self-service) — creates relationship if target exists,
+# else creates a Pending Family Invitation.
+# ============================================================================
+def _inverse_relation(rel: str, target_gender: Optional[str]) -> str:
+    """Returns the reciprocal relation label for the target person."""
+    from models import INVERSE_RELATION
+    pair = INVERSE_RELATION.get(rel, ("Other", "Other"))
+    g = (target_gender or "").lower()
+    return pair[1] if g in ("female", "f") else pair[0]
+
+
+@api.post("/family/link")
+async def family_link(payload: FamilyLinkRequest, user: dict = Depends(get_current_user)):
+    """Citizen initiates a family link by mobile.
+    - If mobile is registered in same tenant → create Relationship immediately.
+    - Else → create Pending FamilyInvitation, do NOT create a citizen account.
+    """
+    if user.get("role") != "citizen":
+        raise HTTPException(403, "Only citizens can link family members")
+    tid = user.get("tenant_id")
+    target = await db.users.find_one({
+        "mobile": payload.mobile.strip(), "role": "citizen",
+        "tenant_id": tid, "is_active": True,
+    }, {"_id": 0, "password_hash": 0})
+    if target:
+        # Create V1 relationship
+        rel_doc = {
+            "id": str(uuid.uuid4()),
+            "tenant_id": tid,
+            "person_a": user["id"],
+            "person_b": target["id"],
+            "type": payload.relation_type,
+            "created_at": now_iso(),
+        }
+        await db.relationships.insert_one(rel_doc)
+        # V2 mirror
+        try:
+            await v2dw.sync_relationship_to_v2(db, rel=rel_doc, actor_user=user)
+        except Exception:
+            logger.exception("family_link dualwrite")
+        # For Husband/Wife: capture anniversary on both users
+        if payload.relation_type in ("Husband", "Wife") and payload.marriage_anniversary:
+            await db.users.update_many(
+                {"id": {"$in": [user["id"], target["id"]]}},
+                {"$set": {"marriage_anniversary": payload.marriage_anniversary}},
+            )
+        return {"linked": True, "target": target, "relationship_id": rel_doc["id"]}
+
+    # Not registered → pending invitation
+    inv = FamilyInvitation(
+        tenant_id=tid,
+        from_user_id=user["id"],
+        from_person_id=user.get("person_id") or "",
+        target_mobile=payload.mobile.strip(),
+        target_name=payload.target_name,
+        relation_type=payload.relation_type,
+        marriage_anniversary=payload.marriage_anniversary,
+    ).model_dump()
+    await db.family_invitations.insert_one(inv)
+    return {"linked": False, "invitation_id": inv["id"], "pending": True}
+
+
+@api.get("/family/members")
+async def list_family_members(user: dict = Depends(get_current_user)):
+    """Return all resolved family members of the current citizen — both
+    directions of `relationships` (person_a→person_b and person_b→person_a).
+    Each item includes the OTHER person's name + mobile + the relation label
+    from the CURRENT user's perspective (uses gender-aware `inverse_relation`
+    when we're on the `person_b` side of the edge)."""
+    if user.get("role") != "citizen":
+        raise HTTPException(403, "Citizens only")
+    uid = user["id"]
+    tid = user.get("tenant_id")
+    rels = await db.relationships.find(
+        {"tenant_id": tid, "$or": [{"person_a": uid}, {"person_b": uid}]},
+        {"_id": 0},
+    ).to_list(500)
+    other_ids = list({(r["person_b"] if r["person_a"] == uid else r["person_a"]) for r in rels})
+    users_by_id = {}
+    if other_ids:
+        for u in await db.users.find(
+            {"id": {"$in": other_ids}},
+            {"_id": 0, "id": 1, "name": 1, "mobile": 1, "gender": 1, "person_id": 1},
+        ).to_list(len(other_ids)):
+            users_by_id[u["id"]] = u
+    my_gender = user.get("gender")
+    out = []
+    for r in rels:
+        i_am_a = r["person_a"] == uid
+        other_id = r["person_b"] if i_am_a else r["person_a"]
+        other = users_by_id.get(other_id) or {}
+        # Relation FROM me TO other:
+        #   edge stores "person_a is <type> of person_b"
+        #   if I'm person_a → other is my `<type>` (label matches my perspective)
+        #   if I'm person_b → other is the inverse based on MY gender
+        rel_label = r["type"] if i_am_a else inverse_relation(r["type"], my_gender)
+        out.append({
+            "id": r["id"],
+            "other_user_id": other_id,
+            "other_person_id": other.get("person_id"),
+            "other_name": other.get("name"),
+            "other_mobile": other.get("mobile"),
+            "relation": rel_label,
+            "created_at": r.get("created_at"),
+        })
+    # Sort by relation then name for stable UI.
+    out.sort(key=lambda x: ((x.get("relation") or ""), (x.get("other_name") or "")))
+    return out
+
+
+@api.get("/family/invitations")
+async def list_family_invitations(user: dict = Depends(get_current_user)):
+    """Citizen sees invitations they SENT (pending) and any they can accept
+    (target_mobile matches theirs, status=pending). Incoming invitations are
+    enriched with the SENDER's name so the invitee sees "<Sender> wants to add
+    you as their <Relation>" (not their own name)."""
+    outgoing = await db.family_invitations.find(
+        {"from_user_id": user["id"], "status": "pending"}, {"_id": 0}
+    ).to_list(200)
+    incoming = []
+    if user.get("mobile"):
+        incoming = await db.family_invitations.find(
+            {"target_mobile": user["mobile"], "status": "pending"}, {"_id": 0}
+        ).to_list(200)
+        # Resolve each sender's name (single batched lookup).
+        sender_ids = list({i["from_user_id"] for i in incoming if i.get("from_user_id")})
+        if sender_ids:
+            senders = await db.users.find(
+                {"id": {"$in": sender_ids}}, {"_id": 0, "id": 1, "name": 1, "mobile": 1},
+            ).to_list(len(sender_ids))
+            name_by_id = {s["id"]: s.get("name") for s in senders}
+            mobile_by_id = {s["id"]: s.get("mobile") for s in senders}
+            for inv in incoming:
+                inv["from_user_name"] = name_by_id.get(inv.get("from_user_id"))
+                inv["from_user_mobile"] = mobile_by_id.get(inv.get("from_user_id"))
+    return {"outgoing": outgoing, "incoming": incoming}
+
+
+@api.post("/family/invitations/{inv_id}/accept")
+async def accept_family_invitation(inv_id: str, user: dict = Depends(get_current_user)):
+    inv = await db.family_invitations.find_one({"id": inv_id, "status": "pending"})
+    if not inv:
+        raise HTTPException(404, "Invitation not found or already resolved")
+    if (user.get("mobile") or "") != inv["target_mobile"]:
+        raise HTTPException(403, "This invitation is for a different mobile")
+    # Create reciprocal relationship
+    rel_doc = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": inv["tenant_id"],
+        "person_a": inv["from_user_id"],
+        "person_b": user["id"],
+        "type": inv["relation_type"],
+        "created_at": now_iso(),
+    }
+    await db.relationships.insert_one(rel_doc)
+    try:
+        actor = await db.users.find_one({"id": inv["from_user_id"]})
+        await v2dw.sync_relationship_to_v2(db, rel=rel_doc, actor_user=actor or user)
+    except Exception:
+        pass
+    if inv["relation_type"] in ("Husband", "Wife") and inv.get("marriage_anniversary"):
+        await db.users.update_many(
+            {"id": {"$in": [inv["from_user_id"], user["id"]]}},
+            {"$set": {"marriage_anniversary": inv["marriage_anniversary"]}},
+        )
+    await db.family_invitations.update_one(
+        {"id": inv_id},
+        {"$set": {"status": "linked", "resolved_user_id": user["id"],
+                  "resolved_at": now_iso()}},
+    )
+    return {"ok": True, "relationship_id": rel_doc["id"]}
+
+
+@api.post("/family/invitations/{inv_id}/decline")
+async def decline_family_invitation(inv_id: str, user: dict = Depends(get_current_user)):
+    await db.family_invitations.update_one(
+        {"id": inv_id, "target_mobile": user.get("mobile") or ""},
+        {"$set": {"status": "declined", "resolved_at": now_iso()}},
+    )
+    return {"ok": True}
+
+
+@api.post("/family/invitations/{inv_id}/cancel")
+async def cancel_family_invitation(inv_id: str, user: dict = Depends(get_current_user)):
+    await db.family_invitations.update_one(
+        {"id": inv_id, "from_user_id": user["id"]},
+        {"$set": {"status": "cancelled", "resolved_at": now_iso()}},
+    )
+    return {"ok": True}
+
+
+# ============================================================================
+# KARYAKARTA MODULE
+# ============================================================================
+@api.get("/karyakartas")
+async def list_karyakartas(user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    linked = await db.karyakartas.find(tenant_filter(user, {"is_active": True}), {"_id": 0}).sort("name", 1).to_list(5000)
+    pending = await db.pending_karyakartas.find(tenant_filter(user, {"status": "pending"}), {"_id": 0}).sort("name", 1).to_list(5000)
+    return {"linked": linked, "pending": pending}
+
+
+async def _create_or_link_karyakarta(*, tid: str, name: str, mobile: str,
+                                     designation: Optional[str], actor_id: str,
+                                     ward_id: Optional[str] = None,
+                                     village_id: Optional[str] = None,
+                                     dob: Optional[str] = None,
+                                     anniversary: Optional[str] = None,
+                                     notes: Optional[str] = None) -> dict:
+    mobile = (mobile or "").strip()
+    if not mobile or not name:
+        raise HTTPException(400, "name and mobile required")
+    # If already a citizen in this tenant, attach karyakarta role.
+    existing = await db.users.find_one(
+        {"mobile": mobile, "tenant_id": tid, "role": "citizen", "is_active": True},
+        {"_id": 0, "id": 1, "person_id": 1, "name": 1},
+    )
+    if existing:
+        pid = existing.get("person_id")
+        # Ensure Person exists (safety); attach karyakarta type + designation.
+        if pid:
+            await db.persons.update_one(
+                {"id": pid},
+                {"$addToSet": {"types": "karyakarta"}, "$set": {"updated_at": now_iso()}},
+            )
+        # Attach karyakarta role on V1 user extra_roles.
+        await db.users.update_one(
+            {"id": existing["id"]},
+            {"$addToSet": {"extra_roles": "karyakarta"},
+             "$set": {"karyakarta_designation": designation}},
+        )
+        doc = Karyakarta(
+            tenant_id=tid, person_id=pid or "", user_id=existing["id"],
+            name=existing["name"] or name, mobile=mobile, designation=designation,
+            ward_id=ward_id, village_id=village_id,
+            dob=dob, anniversary=anniversary, notes=notes,
+        ).model_dump()
+        await db.karyakartas.insert_one(dict(doc))
+        return {"linked": True, "karyakarta": doc, "user_id": existing["id"]}
+    # Else pending karyakarta.
+    doc = PendingKaryakarta(
+        tenant_id=tid, name=name, mobile=mobile, designation=designation,
+        ward_id=ward_id, village_id=village_id,
+        dob=dob, anniversary=anniversary, notes=notes,
+        imported_by=actor_id,
+    ).model_dump()
+    await db.pending_karyakartas.insert_one(dict(doc))
+    return {"linked": False, "pending_karyakarta": doc}
+
+
+@api.post("/karyakartas")
+async def create_karyakarta(payload: KaryakartaCreate, user: dict = Depends(require_roles("pa", "admin"))):
+    tid = get_tenant_id_for_write(user)
+    return await _create_or_link_karyakarta(
+        tid=tid, name=payload.name, mobile=payload.mobile,
+        designation=payload.designation, actor_id=user["id"],
+        ward_id=payload.ward_id, village_id=payload.village_id,
+        dob=payload.dob, anniversary=payload.anniversary, notes=payload.notes,
+    )
+
+
+@api.post("/karyakartas/bulk-import")
+async def bulk_import_karyakartas(rows: List[KaryakartaCreate], user: dict = Depends(require_roles("pa", "admin"))):
+    """Bulk import (frontend parses CSV → posts as JSON array)."""
+    tid = get_tenant_id_for_write(user)
+    linked, pending = 0, 0
+    errors: list[dict] = []
+    for row in rows:
+        try:
+            r = await _create_or_link_karyakarta(
+                tid=tid, name=row.name, mobile=row.mobile,
+                designation=row.designation, actor_id=user["id"],
+                ward_id=row.ward_id, village_id=row.village_id,
+                dob=row.dob, anniversary=row.anniversary, notes=row.notes,
+            )
+            if r.get("linked"):
+                linked += 1
+            else:
+                pending += 1
+        except HTTPException as e:
+            errors.append({"row": row.model_dump(), "error": e.detail})
+        except Exception as e:
+            errors.append({"row": row.model_dump(), "error": str(e)})
+    return {"linked": linked, "pending": pending, "errors": errors, "total": len(rows)}
+
+
+@api.delete("/karyakartas/{kid}")
+async def delete_karyakarta(kid: str, user: dict = Depends(require_roles("pa", "admin"))):
+    doc = await db.karyakartas.find_one(tenant_filter(user, {"id": kid}))
+    if doc:
+        await db.karyakartas.delete_one({"id": kid})
+        # Remove karyakarta role from user + person
+        if doc.get("user_id"):
+            await db.users.update_one({"id": doc["user_id"]}, {"$pull": {"extra_roles": "karyakarta"}, "$set": {"karyakarta_designation": None}})
+        if doc.get("person_id"):
+            await db.persons.update_one({"id": doc["person_id"]}, {"$pull": {"types": "karyakarta"}})
+        return {"ok": True}
+    # try pending
+    await db.pending_karyakartas.delete_one(tenant_filter(user, {"id": kid}))
+    return {"ok": True}
+
+
+# ============================================================================
+# KARYAKARTA CELEBRATIONS (dashboard widget) — birthdays & anniversaries
+# for karyakartas ONLY (not all citizens).
+# ============================================================================
+@api.get("/dashboard/karyakarta-celebrations")
+async def karyakarta_celebrations(days: int = 7,
+                                  user: dict = Depends(require_roles("pa", "politician", "admin"))):
+    from datetime import date
+    today = date.today()
+    def _bucket(d_str: str) -> Optional[int]:
+        if not d_str:
+            return None
+        try:
+            dt = datetime.fromisoformat(d_str.split("T")[0]).date()
+        except Exception:
+            return None
+        try:
+            this_year = dt.replace(year=today.year)
+        except ValueError:
+            this_year = dt.replace(year=today.year, day=28)
+        delta = (this_year - today).days
+        if delta < 0:
+            try:
+                next_year = dt.replace(year=today.year + 1)
+            except ValueError:
+                next_year = dt.replace(year=today.year + 1, day=28)
+            delta = (next_year - today).days
+        return delta
+
+    ks = await db.karyakartas.find(tenant_filter(user, {"is_active": True}), {"_id": 0}).to_list(5000)
+    # Also pull dob/anniversary from the underlying V1 user rows if karyakarta row doesn't carry it.
+    user_ids = [k["user_id"] for k in ks if k.get("user_id")]
+    users_by_id = {}
+    if user_ids:
+        async for u in db.users.find({"id": {"$in": user_ids}}, {"_id": 0, "id": 1, "dob": 1, "marriage_anniversary": 1, "anniversary": 1, "name": 1, "profile_photo": 1}):
+            users_by_id[u["id"]] = u
+
+    bday_today, bday_soon, ann_today, ann_soon = [], [], [], []
+    for k in ks:
+        u = users_by_id.get(k.get("user_id") or "", {})
+        dob = k.get("dob") or u.get("dob")
+        ann = k.get("anniversary") or u.get("marriage_anniversary") or u.get("anniversary")
+        info = {"id": k["id"], "name": k.get("name") or u.get("name"),
+                "mobile": k.get("mobile"), "designation": k.get("designation"),
+                "user_id": k.get("user_id"), "photo": u.get("profile_photo")}
+        if dob:
+            d = _bucket(dob)
+            if d == 0:
+                bday_today.append({**info, "dob": dob})
+            elif d is not None and d <= days:
+                bday_soon.append({**info, "dob": dob, "in_days": d})
+        if ann:
+            d = _bucket(ann)
+            if d == 0:
+                ann_today.append({**info, "anniversary": ann})
+            elif d is not None and d <= days:
+                ann_soon.append({**info, "anniversary": ann, "in_days": d})
+
+    bday_soon.sort(key=lambda x: x["in_days"])
+    ann_soon.sort(key=lambda x: x["in_days"])
+    return {
+        "birthdays": {"today": bday_today, "upcoming": bday_soon},
+        "anniversaries": {"today": ann_today, "upcoming": ann_soon},
+    }
+
+
+# ============================================================================
+# SUBSCRIPTION MANAGEMENT (Super Admin)
+# ============================================================================
+class SubscriptionUpdate(BaseModel):
+    service_start_date: Optional[str] = None
+    billing_cycle: Optional[Literal["monthly", "quarterly", "half_yearly", "yearly"]] = None
+    agreed_amount: Optional[float] = None
+    next_renewal_date: Optional[str] = None
+    billing_notes: Optional[str] = None
+
+
+@api.get("/admin/subscriptions")
+async def list_subscriptions(user: dict = Depends(get_current_user), include_archived: bool = False):
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    q: dict = {} if include_archived else {"portal_status": {"$ne": "archived"}}
+    rows = await db.portal_configs.find(q, {
+        "_id": 0, "id": 1, "slug": 1, "constituency_name": 1, "politician_name": 1,
+        "tenant_name": 1, "is_active": 1, "portal_status": 1,
+        "service_start_date": 1, "billing_cycle": 1, "agreed_amount": 1,
+        "next_renewal_date": 1, "billing_notes": 1, "created_at": 1,
+    }).sort("created_at", -1).to_list(1000)
+    return rows
+
+
+@api.put("/admin/subscriptions/{portal_id}")
+async def update_subscription(portal_id: str, payload: SubscriptionUpdate,
+                              user: dict = Depends(get_current_user)):
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Super admin only")
+    update = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(400, "No fields to update")
+    update["updated_at"] = now_iso()
+    res = await db.portal_configs.update_one({"id": portal_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Portal not found")
+    return await db.portal_configs.find_one({"id": portal_id}, {"_id": 0})
+
+
+# ============================================================================
+# AUDIT LOG (lightweight, single collection)
+# ============================================================================
+async def _audit(event: str, actor: Optional[dict], meta: Optional[dict] = None) -> None:
+    """Append a row to `audit_logs`. Non-blocking on failure — audit must never
+    take a caller's request down."""
+    try:
+        doc = {
+            "id": new_id(),
+            "event": event,
+            "actor_id": (actor or {}).get("id"),
+            "actor_role": (actor or {}).get("role"),
+            "actor_tenant_id": (actor or {}).get("tenant_id"),
+            "actor_name": (actor or {}).get("name"),
+            "meta": meta or {},
+            "created_at": now_iso(),
+        }
+        await db.audit_logs.insert_one(doc)
+    except Exception:
+        logger.exception("audit_log write failed for %s", event)
+
+
+@api.get("/admin/audit-logs")
+async def list_audit_logs(user: dict = Depends(require_roles("super_admin")),
+                          limit: int = 200, event_prefix: Optional[str] = None):
+    q: dict = {}
+    if event_prefix:
+        q["event"] = {"$regex": f"^{event_prefix}"}
+    return await db.audit_logs.find(q, {"_id": 0}).sort("created_at", -1).limit(max(1, min(limit, 1000))).to_list(1000)
+
+
+# ============================================================================
+# ESCALATION REMINDERS — 3d Worker → 7d PA → 15d MLA (once per level)
+# ============================================================================
+_ESCALATION_THRESHOLDS_DAYS = [3, 7, 15]
+# Active = eligible for escalation. Terminal statuses (Resolved / Closed /
+# Cancelled) stop escalation immediately.
+_ACTIVE_ISSUE_STATUSES = ("New", "Assigned", "In Progress")
+_TERMINAL_ISSUE_STATUSES = ("Resolved", "Closed", "Cancelled")
+
+
+def _next_escalation_dt(anchor_iso: Optional[str], current_level: int) -> Optional[datetime]:
+    """Return the UTC datetime when the NEXT escalation level would fire.
+    Returns None if the issue is already at the highest level or has no anchor."""
+    if not anchor_iso:
+        return None
+    if current_level >= len(_ESCALATION_THRESHOLDS_DAYS):
+        return None
+    try:
+        anchor = datetime.fromisoformat(anchor_iso.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    return anchor + timedelta(days=_ESCALATION_THRESHOLDS_DAYS[current_level])
+
+
+async def _create_user_notification(*, tenant_id: str, title: str, body: str,
+                                    user_ids: List[str], actor_id: str) -> None:
+    """Insert a user-scoped notification visible only to `user_ids`."""
+    if not user_ids:
+        return
+    doc = Notification(
+        tenant_id=tenant_id, title=title, body=body,
+        notif_type="Escalation Reminder", scope="user", user_ids=user_ids,
+        created_by=actor_id, created_by_name="System",
+        recipients_count=len(user_ids),
+    ).model_dump()
+    await db.notifications.insert_one(dict(doc))
+
+
+async def _escalate_one_issue(issue: dict) -> Optional[dict]:
+    """Compute the next escalation level for a single issue and, if the age
+    threshold from the anchor timestamp has been crossed, fanout a personal
+    notification to the correct recipient(s). Returns audit meta if an
+    escalation occurred, else None."""
+    # Anchor is the reassignment timestamp when set, else the creation time.
+    anchor_iso = issue.get("escalation_anchor_at") or issue.get("created_at")
+    try:
+        anchor = datetime.fromisoformat((anchor_iso or "").replace("Z", "+00:00"))
+    except Exception:
+        return None
+    age_days = (datetime.now(timezone.utc) - anchor).days
+    current_level = int(issue.get("escalation_level") or 0)
+    # Determine the highest level whose threshold this issue has crossed.
+    target_level = 0
+    for lvl, days in enumerate(_ESCALATION_THRESHOLDS_DAYS, start=1):
+        if age_days >= days:
+            target_level = lvl
+    if target_level <= current_level:
+        return None
+    tid = issue.get("tenant_id")
+    if not tid:
+        return None
+    recipient_ids: List[str] = []
+    recipient_role_label = ""
+    if target_level == 1:
+        # Assigned worker
+        if issue.get("assigned_to"):
+            recipient_ids = [issue["assigned_to"]]
+            recipient_role_label = "worker"
+    elif target_level == 2:
+        # All active PAs in the tenant
+        pas = await db.users.find(
+            {"tenant_id": tid, "role": "pa", "is_active": True}, {"id": 1, "_id": 0},
+        ).to_list(50)
+        recipient_ids = [p["id"] for p in pas]
+        recipient_role_label = "pa"
+    elif target_level == 3:
+        # Politician (MLA/MP) in the tenant + admin as fallback
+        mlas = await db.users.find(
+            {"tenant_id": tid, "role": {"$in": ["politician", "admin"]}, "is_active": True},
+            {"id": 1, "_id": 0},
+        ).to_list(20)
+        recipient_ids = [m["id"] for m in mlas]
+        recipient_role_label = "politician"
+    if not recipient_ids:
+        # No eligible recipient — bump the level anyway so we don't retry every hour.
+        await db.issues.update_one(
+            {"id": issue["id"]},
+            {"$set": {"escalation_level": target_level, "last_escalated_at": now_iso()}},
+        )
+        return {"issue_id": issue["id"], "level": target_level, "skipped": "no_recipient"}
+    title = f"[Escalation L{target_level}] Issue {issue.get('issue_code') or issue['id']} is {age_days} day(s) old"
+    body = (issue.get("title") or "Unresolved issue") + \
+           f" — please act. Category: {issue.get('category')}. Status: {issue.get('status')}."
+    await _create_user_notification(
+        tenant_id=tid, title=title, body=body,
+        user_ids=recipient_ids, actor_id="system",
+    )
+    await db.issues.update_one(
+        {"id": issue["id"]},
+        {"$set": {"escalation_level": target_level, "last_escalated_at": now_iso()},
+         "$push": {"timeline": {
+             "status": issue.get("status") or "Open",
+             "at": now_iso(), "by": "System",
+             "note": f"Auto-escalated to {recipient_role_label} (L{target_level}) at age {age_days}d",
+         }}},
+    )
+    return {
+        "issue_id": issue["id"], "issue_code": issue.get("issue_code"),
+        "level": target_level, "recipient_role": recipient_role_label,
+        "recipient_count": len(recipient_ids), "age_days": age_days,
+    }
+
+
+async def _run_escalations() -> dict:
+    """Scan all active (non-terminal) issues and fire due escalations."""
+    cursor = db.issues.find(
+        {
+            # Explicit terminal-status exclusion — Resolved, Closed, Cancelled
+            # halt escalation immediately (per production rule).
+            "status": {"$nin": list(_TERMINAL_ISSUE_STATUSES)},
+            "escalation_level": {"$lt": len(_ESCALATION_THRESHOLDS_DAYS)},
+        },
+        {"_id": 0},
+    )
+    escalated: List[dict] = []
+    scanned = 0
+    async for issue in cursor:
+        scanned += 1
+        meta = await _escalate_one_issue(issue)
+        if meta:
+            escalated.append(meta)
+    if escalated:
+        await _audit("escalation.batch", None,
+                     {"scanned": scanned, "escalated_count": len(escalated),
+                      "sample": escalated[:20]})
+    return {"scanned": scanned, "escalated": escalated, "ran_at": now_iso()}
+
+
+@api.post("/admin/issues/run-escalations")
+async def run_escalations_manual(user: dict = Depends(require_roles("super_admin", "admin"))):
+    result = await _run_escalations()
+    await _audit("escalation.manual_run", user, {"summary": {
+        "scanned": result["scanned"], "escalated_count": len(result["escalated"])}})
+    return result
+
+
+_ESCALATION_TASK: Optional[asyncio.Task] = None
+
+
+async def _escalation_loop() -> None:
+    # Wait a moment on boot so indexes / seed data finish.
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await _run_escalations()
+        except Exception:
+            logger.exception("Escalation loop iteration failed")
+        # Sleep 1 hour between passes.
+        await asyncio.sleep(60 * 60)
+
+
+@app.on_event("startup")
+async def _start_escalation_loop():
+    global _ESCALATION_TASK
+    if _ESCALATION_TASK is None or _ESCALATION_TASK.done():
+        _ESCALATION_TASK = asyncio.create_task(_escalation_loop())
+
+
+# ============================================================================
+# PORTAL ARCHIVE / RESTORE / PERMANENT DELETE  (Super Admin only)
+# ============================================================================
+def _portal_has_active_subscription(p: dict) -> bool:
+    """A portal has an ACTIVE (paying) subscription when it is not on trial
+    AND has a non-trivial subscription plan. Trials or unset plans are safe
+    to archive without a force flag."""
+    if p.get("is_trial", True):
+        return False
+    plan = (p.get("subscription_plan") or "").strip().lower()
+    return plan not in ("", "trial", "cancelled", "expired")
+
+
+@api.post("/admin/portals/{portal_id}/archive")
+async def archive_portal(portal_id: str, force: bool = False,
+                         user: dict = Depends(require_roles("super_admin"))):
+    """Soft-delete: mark portal as archived and inactive. Hides it from
+    public/admin lists (unless explicitly requested). Reversible via
+    /admin/portals/{id}/restore.
+    Guard: if the portal has an active paying subscription, block unless
+    `?force=true` is passed. Super Admin should deactivate the subscription
+    first, or explicitly force-archive."""
+    p = await db.portal_configs.find_one({"id": portal_id})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    if p.get("portal_status") == "archived":
+        return {"ok": True, "already_archived": True}
+    if _portal_has_active_subscription(p) and not force:
+        raise HTTPException(
+            409,
+            f"Portal has an active '{p.get('subscription_plan')}' subscription "
+            f"(renewal {p.get('next_renewal_date') or 'n/a'}). "
+            f"Deactivate the subscription first, or pass ?force=true to override.",
+        )
+    await db.portal_configs.update_one(
+        {"id": portal_id},
+        {"$set": {"portal_status": "archived", "is_active": False,
+                  "archived_at": now_iso(), "archived_by": user["id"],
+                  "updated_at": now_iso()}},
+    )
+    await _audit("portal.archive", user, {
+        "portal_id": portal_id, "slug": p.get("slug"),
+        "forced": force, "had_active_subscription": _portal_has_active_subscription(p),
+        "subscription_plan": p.get("subscription_plan"),
+    })
+    return {"ok": True, "portal_id": portal_id, "forced": force}
+
+
+@api.post("/admin/portals/{portal_id}/restore")
+async def restore_portal(portal_id: str, user: dict = Depends(require_roles("super_admin"))):
+    p = await db.portal_configs.find_one({"id": portal_id})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    if p.get("portal_status") != "archived":
+        raise HTTPException(400, "Portal is not archived")
+    await db.portal_configs.update_one(
+        {"id": portal_id},
+        {"$set": {"portal_status": "active", "is_active": True,
+                  "archived_at": None, "archived_by": None,
+                  "restored_at": now_iso(), "restored_by": user["id"],
+                  "updated_at": now_iso()}},
+    )
+    await _audit("portal.restore", user, {"portal_id": portal_id, "slug": p.get("slug")})
+    return {"ok": True, "portal_id": portal_id}
+
+
+# Collections that are strictly tenant-scoped (have a `tenant_id` field).
+# Deleting rows keyed on tenant_id is the safe cascade. Global collections
+# (persons, relationships_v2, person_timeline_events, memberships) are handled
+# separately below (memberships archived, timeline preserved).
+_TENANT_SCOPED_COLLECTIONS = [
+    "users", "households", "areas", "issues", "issue_history",
+    "notifications", "visits", "devworks", "files",
+    "karyakartas", "pending_karyakartas", "castes", "religions",
+    "family_invitations", "relationships",
+    "staff_invitations", "leads",
+    # V2 shadow / dual-write collections that ARE tenant-scoped
+    "issue_events_v2",
+]
+
+
+class PortalPurgeRequest(BaseModel):
+    confirm_slug: str
+    confirm_text: str  # must equal 'DELETE PERMANENTLY'
+
+
+@api.delete("/admin/portals/{portal_id}")
+async def purge_portal(portal_id: str, payload: PortalPurgeRequest,
+                        user: dict = Depends(require_roles("super_admin"))):
+    """Irreversibly delete an ARCHIVED portal + all its tenant-scoped data.
+    Global Person / RelationshipV2 / PersonTimelineEvent records are kept;
+    memberships to this tenant are archived so cross-tenant history stays intact."""
+    p = await db.portal_configs.find_one({"id": portal_id})
+    if not p:
+        raise HTTPException(404, "Portal not found")
+    if p.get("portal_status") != "archived":
+        raise HTTPException(400, "Portal must be archived before permanent delete")
+    if payload.confirm_slug != p.get("slug"):
+        raise HTTPException(400, "confirm_slug must match the portal slug")
+    if payload.confirm_text != "DELETE PERMANENTLY":
+        raise HTTPException(400, "confirm_text must equal 'DELETE PERMANENTLY'")
+    counts: dict = {}
+    for coll in _TENANT_SCOPED_COLLECTIONS:
+        try:
+            res = await db[coll].delete_many({"tenant_id": portal_id})
+            counts[coll] = res.deleted_count
+        except Exception as e:
+            logger.exception("purge %s failed", coll)
+            counts[coll] = f"error: {e}"
+    # V2 — Preserve global Persons; archive their memberships in this tenant.
+    try:
+        mres = await db.memberships.update_many(
+            {"organisation_id": portal_id, "status": "active"},
+            {"$set": {"status": "archived",
+                      "archived_at": now_iso(),
+                      "archived_reason": "portal_purged"}},
+        )
+        counts["memberships_archived"] = mres.modified_count
+    except Exception:
+        logger.exception("memberships archive failed")
+    # Finally, the portal_config row itself.
+    del_res = await db.portal_configs.delete_one({"id": portal_id})
+    counts["portal_configs"] = del_res.deleted_count
+    await _audit("portal.permanent_delete", user, {
+        "portal_id": portal_id, "slug": p.get("slug"),
+        "constituency_name": p.get("constituency_name"),
+        "deleted_counts": counts,
+    })
+    return {"ok": True, "portal_id": portal_id, "counts": counts}
+
+
+# ===========================================================================
+# CAMPAIGNS & FIELD OPERATIONS
+# ===========================================================================
+
+from models import (
+    Campaign, CampaignCreate, CampaignUpdate,
+    CampaignResponse, CampaignResponseCreate,
+    CampaignTask, CampaignTaskCreate, AssignWorkersPayload,
+)
+
+
+@api.get("/campaigns/stats")
+async def campaign_stats(user: dict = Depends(get_current_user)):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {}
+    if tid:
+        query["tenant_id"] = tid
+    if user.get("role") == "worker":
+        query["assigned_worker_ids"] = user["id"]
+
+    total = await db.campaigns.count_documents(query)
+    active = await db.campaigns.count_documents({**query, "status": "active"})
+    draft = await db.campaigns.count_documents({**query, "status": "draft"})
+    completed = await db.campaigns.count_documents({**query, "status": "completed"})
+    archived = await db.campaigns.count_documents({**query, "status": "archived"})
+
+    resp_q: dict = {}
+    if tid:
+        resp_q["tenant_id"] = tid
+    if user.get("role") == "worker":
+        resp_q["worker_id"] = user["id"]
+    total_responses = await db.campaign_responses.count_documents(resp_q)
+
+    active_campaigns = await db.campaigns.find(
+        {**query, "status": "active"}, {"assigned_worker_ids": 1}
+    ).to_list(None)
+    worker_ids: set = set()
+    for c in active_campaigns:
+        worker_ids.update(c.get("assigned_worker_ids", []))
+
+    return {
+        "total": total, "active": active, "draft": draft,
+        "completed": completed, "archived": archived,
+        "total_responses": total_responses, "active_workers": len(worker_ids),
+    }
+
+
+@api.get("/campaigns")
+async def list_campaigns(
+    user: dict = Depends(get_current_user),
+    status: Optional[str] = None,
+    campaign_type: Optional[str] = None,
+    search: Optional[str] = None,
+    priority: Optional[str] = None,
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {}
+    if tid:
+        query["tenant_id"] = tid
+    if user.get("role") == "worker":
+        query["assigned_worker_ids"] = user["id"]
+        if not status:
+            query["status"] = "active"
+    if status:
+        query["status"] = status
+    if campaign_type:
+        query["campaign_type"] = campaign_type
+    if priority:
+        query["priority"] = priority
+    if search:
+        query["name"] = {"$regex": search, "$options": "i"}
+    return await db.campaigns.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+
+@api.post("/campaigns")
+async def create_campaign(
+    payload: CampaignCreate,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    campaign = Campaign(**payload.model_dump(), tenant_id=tid, created_by=user["id"])
+    await db.campaigns.insert_one({**campaign.model_dump(), "_id": campaign.id})
+    return campaign.model_dump()
+
+
+@api.get("/campaigns/{campaign_id}")
+async def get_campaign(campaign_id: str, user: dict = Depends(get_current_user)):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"id": campaign_id}
+    if tid:
+        query["tenant_id"] = tid
+    campaign = await db.campaigns.find_one(query, {"_id": 0})
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    if user.get("role") == "worker" and user["id"] not in campaign.get("assigned_worker_ids", []):
+        raise HTTPException(403, "Not assigned to this campaign")
+    return campaign
+
+
+@api.put("/campaigns/{campaign_id}")
+async def update_campaign(
+    campaign_id: str,
+    payload: CampaignUpdate,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"id": campaign_id}
+    if tid:
+        query["tenant_id"] = tid
+    if not await db.campaigns.find_one(query):
+        raise HTTPException(404, "Campaign not found")
+    updates = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+    if "form_fields" in updates and payload.form_fields is not None:
+        updates["form_fields"] = [
+            f.model_dump() if hasattr(f, "model_dump") else f for f in payload.form_fields
+        ]
+    updates["updated_at"] = now_iso()
+    await db.campaigns.update_one({"id": campaign_id}, {"$set": updates})
+    return await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
+
+
+@api.delete("/campaigns/{campaign_id}")
+async def archive_campaign(
+    campaign_id: str,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"id": campaign_id}
+    if tid:
+        query["tenant_id"] = tid
+    r = await db.campaigns.update_one(query, {"$set": {"status": "archived", "updated_at": now_iso()}})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Campaign not found")
+    return {"ok": True}
+
+
+@api.put("/campaigns/{campaign_id}/workers")
+async def assign_workers(
+    campaign_id: str,
+    payload: AssignWorkersPayload,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"id": campaign_id}
+    if tid:
+        query["tenant_id"] = tid
+    campaign = await db.campaigns.find_one(query)
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    prev_ids = set(campaign.get("assigned_worker_ids", []))
+    await db.campaigns.update_one(
+        {"id": campaign_id},
+        {"$set": {"assigned_worker_ids": payload.worker_ids, "updated_at": now_iso()}},
+    )
+    for wid in payload.worker_ids:
+        if wid not in prev_ids:
+            notif = {
+                "id": new_id(), "user_id": wid, "tenant_id": tid,
+                "title": "Campaign Assigned",
+                "body": f"You have been assigned to: {campaign['name']}",
+                "kind": "info", "data": {"campaign_id": campaign_id},
+                "read": False, "created_at": now_iso(),
+            }
+            await db.push_notifications.insert_one(notif)
+            tokens = await db.device_tokens.find({"user_id": wid}).to_list(None)
+            if tokens:
+                push_service.send(
+                    [t["token"] for t in tokens],
+                    title="Campaign Assigned",
+                    body=f"You've been assigned to: {campaign['name']}",
+                    data={"campaign_id": campaign_id},
+                )
+    return {"ok": True, "worker_ids": payload.worker_ids}
+
+
+@api.get("/campaigns/{campaign_id}/responses")
+async def list_campaign_responses(
+    campaign_id: str,
+    user: dict = Depends(get_current_user),
+    skip: int = 0,
+    limit: int = 50,
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"campaign_id": campaign_id}
+    if tid:
+        query["tenant_id"] = tid
+    if user.get("role") == "worker":
+        query["worker_id"] = user["id"]
+    total = await db.campaign_responses.count_documents(query)
+    items = await db.campaign_responses.find(query, {"_id": 0}).sort("submitted_at", -1).skip(skip).limit(limit).to_list(None)
+    return {"total": total, "items": items}
+
+
+@api.post("/campaigns/{campaign_id}/responses")
+async def submit_campaign_response(
+    campaign_id: str,
+    payload: CampaignResponseCreate,
+    user: dict = Depends(get_current_user),
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    query: dict = {"id": campaign_id}
+    if tid:
+        query["tenant_id"] = tid
+    campaign = await db.campaigns.find_one(query)
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    if campaign.get("status") != "active":
+        raise HTTPException(400, "Campaign is not active")
+    resp = CampaignResponse(
+        campaign_id=campaign_id, tenant_id=tid,
+        worker_id=user["id"], worker_name=user.get("name"),
+        **payload.model_dump(),
+    )
+    await db.campaign_responses.insert_one({**resp.model_dump(), "_id": resp.id})
+    inc = {"total_responses": 1}
+    if payload.status == "completed":
+        inc["completed_responses"] = 1
+    await db.campaigns.update_one({"id": campaign_id}, {"$inc": inc})
+    return resp.model_dump()
+
+
+@api.get("/campaigns/{campaign_id}/responses/{response_id}")
+async def get_campaign_response(
+    campaign_id: str, response_id: str, user: dict = Depends(get_current_user)
+):
+    resp = await db.campaign_responses.find_one({"id": response_id, "campaign_id": campaign_id}, {"_id": 0})
+    if not resp:
+        raise HTTPException(404, "Response not found")
+    return resp
+
+
+@api.get("/campaigns/{campaign_id}/tasks")
+async def list_campaign_tasks(campaign_id: str, user: dict = Depends(get_current_user)):
+    query: dict = {"campaign_id": campaign_id}
+    if user.get("role") == "worker":
+        query["assigned_to"] = user["id"]
+    return await db.campaign_tasks.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+
+@api.post("/campaigns/{campaign_id}/tasks")
+async def create_campaign_task(
+    campaign_id: str,
+    payload: CampaignTaskCreate,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    tid = get_tenant_id_for_write(user) if user.get("role") != "super_admin" else user.get("tenant_id")
+    assigned_name = None
+    if payload.assigned_to:
+        w = await db.users.find_one({"id": payload.assigned_to})
+        assigned_name = w["name"] if w else None
+    task = CampaignTask(
+        campaign_id=campaign_id, tenant_id=tid,
+        assigned_to_name=assigned_name, created_by=user["id"],
+        **payload.model_dump(),
+    )
+    await db.campaign_tasks.insert_one({**task.model_dump(), "_id": task.id})
+    if payload.assigned_to:
+        notif = {
+            "id": new_id(), "user_id": payload.assigned_to, "tenant_id": tid,
+            "title": "Task Assigned", "body": f"New task: {payload.title}",
+            "kind": "info", "data": {"campaign_id": campaign_id, "task_id": task.id},
+            "read": False, "created_at": now_iso(),
+        }
+        await db.push_notifications.insert_one(notif)
+    return task.model_dump()
+
+
+@api.put("/campaigns/{campaign_id}/tasks/{task_id}")
+async def update_campaign_task(
+    campaign_id: str, task_id: str,
+    payload: dict,
+    user: dict = Depends(get_current_user),
+):
+    task = await db.campaign_tasks.find_one({"id": task_id, "campaign_id": campaign_id})
+    if not task:
+        raise HTTPException(404, "Task not found")
+    if user.get("role") == "worker":
+        if task.get("assigned_to") != user["id"]:
+            raise HTTPException(403, "Not your task")
+        payload = {"status": payload.get("status")}
+    payload["updated_at"] = now_iso()
+    await db.campaign_tasks.update_one({"id": task_id}, {"$set": payload})
+    return await db.campaign_tasks.find_one({"id": task_id}, {"_id": 0})
+
+
+@api.delete("/campaigns/{campaign_id}/tasks/{task_id}")
+async def delete_campaign_task(
+    campaign_id: str, task_id: str,
+    user: dict = Depends(require_roles("admin", "super_admin", "pa", "politician")),
+):
+    r = await db.campaign_tasks.delete_one({"id": task_id, "campaign_id": campaign_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Task not found")
+    return {"ok": True}
+
+
+@api.get("/campaigns/{campaign_id}/analytics")
+async def campaign_analytics(campaign_id: str, user: dict = Depends(get_current_user)):
+    responses = await db.campaign_responses.find(
+        {"campaign_id": campaign_id},
+        {"submitted_at": 1, "worker_id": 1, "worker_name": 1, "_id": 0},
+    ).to_list(None)
+    daily: dict = {}
+    worker_counts: dict = {}
+    for r in responses:
+        day = (r.get("submitted_at") or "")[:10]
+        if day:
+            daily[day] = daily.get(day, 0) + 1
+        wname = r.get("worker_name") or r.get("worker_id", "Unknown")
+        worker_counts[wname] = worker_counts.get(wname, 0) + 1
+    campaign = await db.campaigns.find_one({"id": campaign_id}, {"total_responses": 1, "completed_responses": 1, "assigned_worker_ids": 1, "_id": 0})
+    tasks = await db.campaign_tasks.find({"campaign_id": campaign_id}, {"status": 1, "_id": 0}).to_list(None)
+    task_counts: dict = {}
+    for t in tasks:
+        task_counts[t["status"]] = task_counts.get(t["status"], 0) + 1
+    return {
+        "daily_responses": [{"date": d, "responses": c} for d, c in sorted(daily.items())],
+        "worker_performance": [{"worker": w, "responses": c} for w, c in sorted(worker_counts.items(), key=lambda x: -x[1])[:10]],
+        "task_status_counts": task_counts,
+        "total_responses": (campaign or {}).get("total_responses", 0),
+        "completed_responses": (campaign or {}).get("completed_responses", 0),
+        "active_workers": len((campaign or {}).get("assigned_worker_ids", [])),
+    }
+
+
+@api.get("/campaigns/{campaign_id}/export")
+async def export_campaign_csv(campaign_id: str, user: dict = Depends(get_current_user)):
+    import csv as _csv, io as _io
+    campaign = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+    responses = await db.campaign_responses.find({"campaign_id": campaign_id}, {"_id": 0}).to_list(None)
+    fields = campaign.get("form_fields", [])
+    out = _io.StringIO()
+    writer = _csv.writer(out)
+    writer.writerow(["Response ID", "Worker", "Citizen", "Submitted At", "Status"] + [f["label"] for f in fields])
+    for r in responses:
+        row = [r["id"], r.get("worker_name", ""), r.get("citizen_name", ""), r.get("submitted_at", ""), r.get("status", "")]
+        for f in fields:
+            val = r.get("responses", {}).get(f["id"], "")
+            row.append(", ".join(str(v) for v in val) if isinstance(val, list) else val)
+        writer.writerow(row)
+    return Response(
+        content=out.getvalue().encode("utf-8"), media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="campaign-{campaign_id}.csv"'},
+    )
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    client.close()
+
+
+app.include_router(api)

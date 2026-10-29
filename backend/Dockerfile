@@ -12,8 +12,8 @@ RUN groupadd -r jansetu && useradd -r -g jansetu -d /app -s /sbin/nologin janset
 WORKDIR /app
 
 # ── Python dependencies (cached layer — only re-runs when requirements change)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-runtime.txt .
+RUN pip install --no-cache-dir --require-hashes -r requirements-runtime.txt
 
 # ── Application code ──────────────────────────────────────────────────────────
 COPY . .

@@ -1,3 +1,43 @@
+# Multi-app workspace path update
+
+The existing web frontend now lives in `artifacts/jansetu-web/` rather than
+`frontend/`. Docker Compose builds the frontend from that directory using the
+same CRACO production build and Nginx configuration. GitHub remains the source
+of truth; the existing `scripts/deploy.sh` workflow is unchanged. Backend source,
+MongoDB configuration, named volumes, service names, production `.env`, and
+private Firebase service-account mount remain unchanged. No production
+migration, deployment, or data reset is part of this workspace port.
+
+For Replit development, use the two managed artifact workflows documented in
+`replit.md`, not the old `cd frontend && yarn start` command. The original frontend
+and backend are retained locally in `.migration-backup/` for recovery. Keep private
+configuration and uploaded files outside Git as before.
+
+The workspace Python installer uses the root `pyproject.toml` and `uv.lock` for the
+runtime modules imported by JanSetu, pinned to their existing direct versions.
+The original broad backend requirement snapshots remain unchanged for reference.
+The snapshot contains unrelated development/AI packages that cannot all be
+resolved by a new universal lockfile. The backend Dockerfile now installs the
+hash-pinned `backend/requirements-runtime.txt`, exported from the same `uv.lock`,
+so Docker and the workspace use the same resolvable runtime.
+
+After changing Python dependencies, regenerate the production dependency file:
+
+```sh
+uv export --frozen --no-dev --no-emit-project --format requirements-txt \
+  --output-file backend/requirements-runtime.txt
+```
+
+Commit both lock files together. The export only writes a dependency manifest;
+it does not start the app, run migrations, or access MongoDB.
+
+Development API startup explicitly skips the original startup seed/backfill/
+index/escalation lifecycle. This avoids migration writes to an existing MongoDB.
+It does not make API mutations read-only; normal user actions can still write.
+Production startup behavior is unchanged.
+
+---
+
 # JANSETU — Production Deployment Guide
 ## Git-Based Workflow · Nginx Proxy Manager · Docker Compose
 

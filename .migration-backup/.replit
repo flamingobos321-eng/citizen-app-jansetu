@@ -1,0 +1,76 @@
+modules = ["python-3.12", "nodejs-20", "web"]
+[agent]
+expertMode = true
+
+[nix]
+channel = "stable-25_05"
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 180000
+
+[userenv]
+
+[userenv.shared]
+DANGEROUSLY_DISABLE_HOST_CHECK = "true"
+DB_NAME = "jansetu"
+PORT = "5000"
+REACT_APP_BACKEND_URL = ""
+LOCAL_STORAGE_PATH = "./uploads"
+FCM_SERVICE_ACCOUNT_JSON = "/home/runner/workspace/backend/secrets/firebase-admin.json"
+REACT_APP_FIREBASE_API_KEY = "AIzaSyDVMKM2iQKAW9AGPomTh_pEFRmJbvq8hlo"
+REACT_APP_FIREBASE_APP_ID = "1:1001872155963:web:2f29e7e13ff1021eb2031e"
+REACT_APP_FIREBASE_AUTH_DOMAIN = "jansetu-c8b85.firebaseapp.com"
+REACT_APP_FIREBASE_MESSAGING_SENDER_ID = "1001872155963"
+REACT_APP_FIREBASE_PROJECT_ID = "jansetu-c8b85"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Backend API"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Backend API"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd backend && uvicorn server:app --host 0.0.0.0 --port 8000 --reload"
+waitForPort = 8000
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd frontend && PORT=5000 yarn start"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 8000
+externalPort = 8000
+
+[deployment]
+deploymentTarget = "cloudrun"

@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "JanSetu"
+description = "The existing JanSetu constituency management web application for citizens, representatives, and their teams, powered by the original FastAPI and MongoDB backend."
+version = "1.0.0"
+id = "artifacts/jansetu-web"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18197
+
+[services.development]
+run = "pnpm --filter @workspace/jansetu-web run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/jansetu-web", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/jansetu-web/build"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18197"
+BASE_PATH = "/"
