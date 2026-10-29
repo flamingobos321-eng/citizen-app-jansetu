@@ -144,6 +144,23 @@ export type NotificationItem = {
   created_at: string;
 };
 
+export type PushNotification = {
+  id: string;
+  title: string;
+  body: string;
+  kind: string;
+  data?: Record<string, unknown>;
+  read: boolean;
+  click_action?: string | null;
+  created_at: string;
+  read_at?: string | null;
+};
+
+export type PushInboxResponse = {
+  notifications: PushNotification[];
+  unread_count: number;
+};
+
 export type NotificationPreferences = {
   issue_updates: boolean;
   broadcasts: boolean;
@@ -166,6 +183,13 @@ export async function unregisterPushToken(token: string, authToken: string) {
   return apiRequest<{ ok: boolean }>(
     `/push/register?token=${encodeURIComponent(token)}`,
     { method: 'DELETE', token: authToken },
+  );
+}
+
+export async function markPushNotificationRead(id: string, authToken: string) {
+  return apiRequest<{ ok: boolean }>(
+    `/push/inbox/${encodeURIComponent(id)}/read`,
+    { method: 'POST', token: authToken },
   );
 }
 
