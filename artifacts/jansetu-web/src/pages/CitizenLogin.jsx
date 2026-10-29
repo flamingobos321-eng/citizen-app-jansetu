@@ -89,6 +89,16 @@ export default function CitizenLogin() {
       //   { exists: true, same_tenant: true }     → linked here (proceed)
       //   { exists: true, same_tenant: false }    → linked elsewhere (transfer)
       if (check.data.exists && check.data.same_tenant === false) {
+        // A stale/missing source portal cannot be transferred automatically.
+        // Respect the backend's safety decision instead of sending the citizen
+        // to a transfer flow that cannot be completed.
+        if (check.data.can_transfer === false) {
+          toast.error(
+            check.data.message ||
+              "We could not verify this account's constituency. Please contact support.",
+          );
+          return;
+        }
         toast.info("This mobile is registered in another constituency. Redirecting to transfer…");
         setTimeout(() => navigate(`/citizen/register?mobile=${mobile}&office=${(tenantIdent || "").toUpperCase()}&transfer=1`), 1200);
         return;
