@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "JanSetu",
+    "slug": "jansetu-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "jansetu",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "in.jansetu.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "JanSetu uses your location only when you choose to attach it to a civic issue report."
+      }
+    },
+    "android": {
+      "package": "in.jansetu.app",
+      "versionCode": 1
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "JanSetu uses your location only when you choose to attach it to a civic issue report."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}

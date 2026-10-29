@@ -1,0 +1,24 @@
+kind = "mobile"
+previewPath = "/jansetu-mobile/"
+title = "JanSetu Mobile"
+description = "A native citizen app for JanSetu on Android and iOS. Citizens can sign in, raise civic issues, follow progress, and receive constituency updates using JanSetu's existing backend."
+version = "1.0.0"
+id = "artifacts/jansetu-mobile"
+router = "expo-domain"
+
+[[services]]
+name = "expo"
+ensurePreviewReachable = "/status"
+paths = [ "/jansetu-mobile/" ]
+localPort = 25422
+
+[services.development]
+run = "pnpm --filter @workspace/jansetu-mobile run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/jansetu-mobile", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/jansetu-mobile", "run", "serve" ]
+
+[services.env]
+PORT = "25422"
+BASE_PATH = "/jansetu-mobile/"
