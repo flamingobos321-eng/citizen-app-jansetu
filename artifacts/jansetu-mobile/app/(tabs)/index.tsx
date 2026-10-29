@@ -13,11 +13,13 @@ import {
   StatusBadge,
   uiStyles,
 } from '@/components/ui';
+import { RepresentativeIdentity } from '@/components/RepresentativeIdentity';
 import {
   apiRequest,
   type CitizenStats,
   type Issue,
   type NotificationItem,
+  type Portal,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useColors } from '@/hooks/useColors';
@@ -40,8 +42,22 @@ export default function HomeScreen() {
     queryFn: () => apiRequest<NotificationItem[]>('/notifications', { token }),
     enabled: !!token,
   });
+  const representative = useQuery({
+    queryKey: ['citizen-portal', token],
+    queryFn: async () => {
+      const config = await apiRequest<{ slug?: string | null }>('/me/portal-config', { token });
+      if (!config.slug) return null;
+      return apiRequest<Portal>(`/portals/${encodeURIComponent(config.slug)}`, { token });
+    },
+    enabled: !!token,
+  });
   const refresh = async () => {
-    await Promise.all([stats.refetch(), issues.refetch(), notifications.refetch()]);
+    await Promise.all([
+      stats.refetch(),
+      issues.refetch(),
+      notifications.refetch(),
+      representative.refetch(),
+    ]);
   };
 
   return (
@@ -49,7 +65,7 @@ export default function HomeScreen() {
       contentStyle={{ gap: 22 }}
       refreshControl={
         <RefreshControl
-          refreshing={stats.isRefetching || issues.isRefetching}
+          refreshing={stats.isRefetching || issues.isRefetching || representative.isRefetching}
           onRefresh={() => void refresh()}
           tintColor={colors.primary}
         />
@@ -67,6 +83,24 @@ export default function HomeScreen() {
           </View>
         }
       />
+
+      {representative.isError ? (
+        <ErrorNotice
+          message="Could not load your representative details."
+          onRetry={() => void representative.refetch()}
+        />
+      ) : representative.data?.politician_name ? (
+        <Card>
+          <RepresentativeIdentity
+            name={representative.data.politician_name}
+            subtitle={
+              representative.data.designation ||
+              representative.data.constituency_name ||
+              'Local representative'
+            }
+          />
+        </Card>
+      ) : null}
 
       <View style={[styles.hero, { backgroundColor: colors.primary }]}>
         <View style={styles.heroCopy}>

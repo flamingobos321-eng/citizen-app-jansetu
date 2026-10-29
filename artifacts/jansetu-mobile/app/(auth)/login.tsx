@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { KeyboardAwareScrollViewCompat } from '@/components/KeyboardAwareScrollViewCompat';
 import { ActionButton, BrandMark, ErrorNotice } from '@/components/ui';
+import { RepresentativeIdentity } from '@/components/RepresentativeIdentity';
 import { apiRequest, type Portal } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useColors } from '@/hooks/useColors';
@@ -244,19 +245,16 @@ export default function LoginScreen() {
                   Office {portal?.office_code || officeCode} · Change
                 </Text>
               </Pressable>
-              <View style={[styles.officePreview, { backgroundColor: colors.secondary }]}>
-                <View style={[styles.officeMark, { backgroundColor: markColor }]}>
-                  <Feather name="map-pin" size={16} color="#FFFFFF" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.officeTitle, { color: colors.foreground }]}>
-                    {officeName}
-                  </Text>
-                  <Text style={[styles.officeSub, { color: colors.mutedForeground }]}>
-                    Office {portal?.office_code || officeCode}
-                  </Text>
-                </View>
-              </View>
+              <RepresentativeIdentity
+                name={portal?.politician_name || officeName}
+                subtitle={
+                  portal?.constituency_name ||
+                  `Office ${portal?.office_code || officeCode}`
+                }
+                label="YOUR REPRESENTATIVE"
+                accentColor={markColor}
+                style={[styles.officePreview, { backgroundColor: colors.secondary }]}
+              />
               <FieldLabel label="Mobile number" />
               <View style={[styles.phoneInput, { borderColor: colors.input }]}>
                 <Text style={[styles.countryCode, { color: colors.foreground }]}>+91</Text>
@@ -394,10 +392,7 @@ const styles = StyleSheet.create({
   phoneTextInput: { flex: 1, paddingLeft: 12, fontFamily: 'Manrope_500Medium', fontSize: 15, minHeight: 50 },
   backLink: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 19 },
   backText: { fontFamily: 'Manrope_700Bold', fontSize: 12 },
-  officePreview: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 12, marginBottom: 18 },
-  officeMark: { width: 36, height: 36, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
-  officeTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 14 },
-  officeSub: { fontFamily: 'Manrope_500Medium', fontSize: 11, marginTop: 2 },
+  officePreview: { padding: 12, borderRadius: 12, marginBottom: 18 },
   infoBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, borderRadius: 10, padding: 12, marginTop: 15 },
   infoText: { flex: 1, fontFamily: 'Manrope_500Medium', fontSize: 12, lineHeight: 18 },
   demoBox: { alignItems: 'center', borderWidth: 1, borderRadius: 10, padding: 11, marginTop: 12 },

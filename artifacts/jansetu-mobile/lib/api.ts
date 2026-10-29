@@ -79,6 +79,7 @@ export type Portal = {
   slug?: string;
   constituency_name?: string;
   politician_name?: string;
+  designation?: string;
   theme_color?: string;
   portal_status?: string;
 };
