@@ -1,2 +1,0 @@
-- [Jansetu Replit setup](jansetu-setup.md) — key quirks for running the backend + frontend on Replit
-- [Jansetu modules built](jansetu-modules.md) — summary of major features added and their patterns

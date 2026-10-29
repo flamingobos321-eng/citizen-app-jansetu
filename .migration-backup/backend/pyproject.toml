@@ -1,6 +1,0 @@
-[tool.ruff]
-line-length = 200
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["E701", "E702", "F841", "E401"]
-"migrations/**/*.py" = ["E701", "E702", "F841"]
