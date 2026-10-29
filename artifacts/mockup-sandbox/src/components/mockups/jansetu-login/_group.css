@@ -1,0 +1,10 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Outfit:wght@600;700&display=swap');
+
+:root {
+  --jansetu-background: #f9fafb;
+  --jansetu-foreground: #111827;
+  --jansetu-primary: #0a1128;
+  --jansetu-muted: #64748b;
+  --jansetu-border: #e5e7eb;
+  --jansetu-input: #d1d5db;
+}
