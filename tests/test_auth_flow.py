@@ -179,11 +179,25 @@ _DEMO_CITIZEN = {
 _DEMO_PORTAL = {
     "id": "tenant-001",
     "slug": "pune-cantonment",
+    "office_code": "JS1045",
+    "constituency_name": "Pune Cantonment Test Office",
+    "politician_name": "JanSetu Test Office",
+    "theme_color": "#147D64",
     "is_active": True,
     "is_default": True,
     "communication_mode": "development",
     "portal_status": "active",
     "otp_config": {},
+}
+
+_DEMO_ANNOUNCEMENT = {
+    "id": "notification-test-announcement",
+    "tenant_id": "tenant-001",
+    "scope": "all",
+    "title": "Test office hours",
+    "body": "This announcement belongs to the isolated mobile test office.",
+    "notif_type": "announcement",
+    "created_at": "2026-01-15T10:00:00+00:00",
 }
 
 _DEMO_AREA = {
@@ -212,6 +226,16 @@ def _make_db_mock():
             return _store.get(self._name, {}).get(doc_id)
 
         async def find_one(self, query, projection=None):
+            if self._name in ("issues", "notifications") and query.get("id"):
+                stored = self._stored(query["id"])
+                if stored and all(
+                    stored.get(key) == value
+                    for key, value in query.items()
+                    if not key.startswith("$")
+                ):
+                    return dict(stored)
+                return None
+
             if self._name == "users":
                 # --- id-based lookup (used by get_current_user after JWT decode) ---
                 user_id = query.get("id")
@@ -279,6 +303,8 @@ def _make_db_mock():
                 return None
 
             if self._name == "portal_configs":
+                if query.get("office_code") == "JS1045":
+                    return dict(_DEMO_PORTAL)
                 if query.get("is_default") is True:
                     return dict(_DEMO_PORTAL)
                 if query.get("slug") == "pune-cantonment":
@@ -307,9 +333,27 @@ def _make_db_mock():
             return None
 
         def find(self, query=None, projection=None):
+            query = query or {}
             m = MagicMock()
             if self._name == "areas":
                 m.to_list = AsyncMock(return_value=[dict(_DEMO_AREA)])
+            elif self._name == "issues":
+                docs = list(_store.get("issues", {}).values())
+                docs = [
+                    doc for doc in docs
+                    if all(doc.get(key) == value for key, value in query.items()
+                           if not key.startswith("$"))
+                ]
+                m.to_list = AsyncMock(return_value=docs)
+            elif self._name == "notifications":
+                docs = [dict(_DEMO_ANNOUNCEMENT)]
+                docs.extend(_store.get("notifications", {}).values())
+                docs = [
+                    doc for doc in docs
+                    if all(doc.get(key) == value for key, value in query.items()
+                           if not key.startswith("$"))
+                ]
+                m.to_list = AsyncMock(return_value=docs)
             elif self._name == "portal_configs":
                 m.to_list = AsyncMock(return_value=[])
             else:
@@ -679,3 +723,128 @@ class TestCitizenRegister:
         # JWT must decode cleanly
         claims = jwt.decode(token, _TEST_JWT_SECRET, algorithms=["HS256"])
         assert claims["role"] == "citizen"
+
+
+class TestMobileCitizenJourney:
+    """Mobile API contracts run only against the in-memory test database."""
+
+    def test_office_otp_issue_timeline_and_announcements(self, client):
+        import server
+
+        office = client.get("/api/portals/office/JS1045")
+        assert office.status_code == 200, office.text
+        office_body = office.json()
+        assert office_body["office_code"] == "JS1045"
+        assert office_body["constituency_name"] == "Pune Cantonment Test Office"
+        assert "otp_config" not in office_body
+
+        categories = client.get("/api/meta/categories")
+        assert categories.status_code == 200, categories.text
+        assert isinstance(categories.json().get("issue_categories"), list)
+        assert categories.json()["issue_categories"]
+
+        mobile = _DEMO_CITIZEN["mobile"]
+        with patch.object(
+            server.v2tr,
+            "detect_transfer_need",
+            new=AsyncMock(return_value={"exists": True, "same_tenant": True}),
+        ):
+            checked = client.post(
+                "/api/auth/citizen/check-mobile",
+                json={"mobile": mobile, "tenant_slug": "JS1045"},
+            )
+        assert checked.status_code == 200, checked.text
+        assert checked.json()["exists"] is True
+
+        requested = client.post(
+            "/api/auth/citizen/request-otp",
+            json={"mobile": mobile, "tenant_slug": "JS1045"},
+        )
+        assert requested.status_code == 200, requested.text
+        otp_body = requested.json()
+        assert otp_body["sent"] is True
+        assert otp_body["mode"] == "development"
+        assert otp_body["demo_otp"] == "123456"
+
+        verified = client.post(
+            "/api/auth/citizen/verify-otp",
+            json={
+                "mobile": mobile,
+                "otp": otp_body["demo_otp"],
+                "tenant_slug": "JS1045",
+            },
+        )
+        assert verified.status_code == 200, verified.text
+        auth_body = verified.json()
+        assert auth_body["new_user"] is False
+        assert auth_body["user"]["role"] == "citizen"
+        token = auth_body["token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        submitted = client.post(
+            "/api/issues",
+            headers=headers,
+            json={
+                "category": "Roads",
+                "title": "Test lane pothole",
+                "description": "This report verifies the isolated mobile issue flow.",
+                "photos": [],
+                "gps_lat": None,
+                "gps_lng": None,
+                "location_address": "",
+            },
+        )
+        assert submitted.status_code == 200, submitted.text
+        issue = submitted.json()
+        assert issue["id"]
+        assert issue["issue_code"]
+        assert issue["title"] == "Test lane pothole"
+
+        listed = client.get("/api/issues", headers=headers)
+        assert listed.status_code == 200, listed.text
+        assert any(item["id"] == issue["id"] for item in listed.json())
+
+        detail = client.get(f"/api/issues/{issue['id']}", headers=headers)
+        assert detail.status_code == 200, detail.text
+        detail_issue = detail.json()["issue"]
+        assert detail_issue["id"] == issue["id"]
+        assert detail_issue["timeline"]
+        assert detail_issue["timeline"][0]["status"] == "New"
+
+        announcements = client.get("/api/notifications", headers=headers)
+        assert announcements.status_code == 200, announcements.text
+        assert any(
+            item["id"] == _DEMO_ANNOUNCEMENT["id"]
+            and item["title"] == _DEMO_ANNOUNCEMENT["title"]
+            for item in announcements.json()
+        )
+
+    def test_mobile_navigation_targets_exist(self):
+        from pathlib import Path
+
+        mobile_root = Path(__file__).parents[1] / "artifacts" / "jansetu-mobile"
+        login = (mobile_root / "app" / "(auth)" / "login.tsx").read_text()
+        issues = (mobile_root / "app" / "(tabs)" / "issues.tsx").read_text()
+        new_issue = (mobile_root / "app" / "issues" / "new.tsx").read_text()
+        issue_detail = (mobile_root / "app" / "issues" / "[id].tsx").read_text()
+        notifications = (mobile_root / "app" / "(tabs)" / "notifications.tsx").read_text()
+        profile = (mobile_root / "app" / "(tabs)" / "profile.tsx").read_text()
+        auth = (mobile_root / "lib" / "auth.tsx").read_text()
+
+        assert "`/portals/office/${encodeURIComponent(code)}`" in login
+        assert "'/auth/citizen/check-mobile'" in login
+        assert "'/auth/citizen/request-otp'" in login
+        assert "'/auth/citizen/verify-otp'" in login
+        assert "router.replace('/(tabs)')" in login
+        assert "router.push('/issues/new')" in issues
+        assert "apiRequest<CreatedIssue>('/issues'" in new_issue
+        assert "router.replace(`/issues/${created.id}`)" in new_issue
+        assert "apiRequest<IssueDetailResponse>(`/issues/${encodeURIComponent(id)}`" in issue_detail
+        assert "apiRequest<NotificationItem[]>('/notifications'" in notifications
+        assert "router.replace('/(auth)/login')" in profile
+        assert "const signOut = useCallback(async () => {" in auth
+        assert "await removeToken();" in auth
+        assert "setToken(null);" in auth
+        assert "setUser(null);" in auth
+        assert (mobile_root / "app" / "(tabs)" / "_layout.tsx").is_file()
+        assert (mobile_root / "app" / "issues" / "[id].tsx").is_file()
