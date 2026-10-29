@@ -2,8 +2,10 @@ import { Feather } from '@expo/vector-icons';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
+import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { useState } from 'react';
+import { Image, Platform } from 'react-native';
 import {
   Pressable,
   StyleSheet,
@@ -19,12 +21,14 @@ import {
   Screen,
   uiStyles,
 } from '@/components/ui';
-import { apiRequest } from '@/lib/api';
+import { apiRequest, uploadIssuePhoto } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useColors } from '@/hooks/useColors';
 
 type CategoryResponse = { issue_categories: string[] };
 type CreatedIssue = { id: string; issue_code: string };
+type SelectedPhoto = ImagePicker.ImagePickerAsset;
+const MAX_ISSUE_PHOTOS = 5;
 
 export default function NewIssueScreen() {
   const colors = useColors();
@@ -39,26 +43,49 @@ export default function NewIssueScreen() {
   } | null>(null);
   const [formError, setFormError] = useState('');
   const [locationLoading, setLocationLoading] = useState(false);
+  const [photos, setPhotos] = useState<SelectedPhoto[]>([]);
 
   const categories = useQuery({
     queryKey: ['issue-categories'],
     queryFn: () => apiRequest<CategoryResponse>('/meta/categories'),
   });
   const submitIssue = useMutation({
-    mutationFn: () =>
-      apiRequest<CreatedIssue>('/issues', {
+    mutationFn: async () => {
+      const uploadedPhotos = await Promise.all(
+        photos.map(async (photo, index) => {
+          const extension = photo.mimeType?.split('/')[1] || 'jpg';
+          const name = photo.fileName || `issue-photo-${index + 1}.${extension}`;
+          try {
+            const uploaded = await uploadIssuePhoto(
+              {
+                uri: photo.uri,
+                name,
+                type: photo.mimeType || 'image/jpeg',
+                file: photo.file,
+              },
+              token,
+            );
+            return uploaded.path;
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : 'Unknown upload error.';
+            throw new Error(`Could not upload ${name}: ${detail}`);
+          }
+        }),
+      );
+      return apiRequest<CreatedIssue>('/issues', {
         method: 'POST',
         token,
         body: {
           category,
           title: title.trim(),
           description: description.trim(),
-          photos: [],
+          photos: uploadedPhotos,
           gps_lat: location?.gps_lat ?? null,
           gps_lng: location?.gps_lng ?? null,
           location_address: location?.location_address || '',
         },
-      }),
+      });
+    },
     onSuccess: (created) => {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.replace(`/issues/${created.id}`);
@@ -68,6 +95,51 @@ export default function NewIssueScreen() {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     },
   });
+
+  const addPhotos = async (source: 'library' | 'camera') => {
+    setFormError('');
+    if (photos.length >= MAX_ISSUE_PHOTOS) {
+      setFormError(`You can attach up to ${MAX_ISSUE_PHOTOS} photos.`);
+      return;
+    }
+    try {
+      if (source === 'library') {
+        const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!permission.granted) {
+          setFormError('Photo library access was not granted. Allow access in settings to attach photos.');
+          return;
+        }
+        const result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          allowsMultipleSelection: true,
+          selectionLimit: MAX_ISSUE_PHOTOS - photos.length,
+          quality: 0.8,
+        });
+        if (!result.canceled) {
+          setPhotos((current) => [...current, ...result.assets].slice(0, MAX_ISSUE_PHOTOS));
+        }
+      } else {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          setFormError('Camera access was not granted. Allow access in settings to take a photo.');
+          return;
+        }
+        const result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ['images'],
+          quality: 0.8,
+        });
+        if (!result.canceled) {
+          setPhotos((current) => [...current, ...result.assets].slice(0, MAX_ISSUE_PHOTOS));
+        }
+      }
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? `Could not add a photo: ${error.message}`
+          : 'Could not open the photo picker. Please try again.',
+      );
+    }
+  };
 
   const captureLocation = async () => {
     setLocationLoading(true);
@@ -226,6 +298,69 @@ export default function NewIssueScreen() {
         </Text>
       </View>
 
+      <View style={{ gap: 10 }}>
+        <View style={styles.photoHeading}>
+          <View style={{ flex: 1 }}>
+            <Text style={[uiStyles.inputLabel, { color: colors.mutedForeground }]}>
+              Add photos
+            </Text>
+            <Text style={[styles.locationText, { color: colors.mutedForeground }]}>
+              Optional. Add up to {MAX_ISSUE_PHOTOS} photos as evidence.
+            </Text>
+          </View>
+          <Text style={[styles.photoCount, { color: colors.mutedForeground }]}>
+            {photos.length}/{MAX_ISSUE_PHOTOS}
+          </Text>
+        </View>
+        <View style={styles.photoActions}>
+          <ActionButton
+            title="Photo library"
+            icon="image"
+            variant="outline"
+            style={styles.photoAction}
+            onPress={() => void addPhotos('library')}
+            disabled={submitIssue.isPending}
+          />
+          {Platform.OS !== 'web' ? (
+            <ActionButton
+              title="Take photo"
+              icon="camera"
+              variant="outline"
+              style={styles.photoAction}
+              onPress={() => void addPhotos('camera')}
+              disabled={submitIssue.isPending}
+            />
+          ) : null}
+        </View>
+        {photos.length ? (
+          <View style={styles.photoGrid}>
+            {photos.map((photo, index) => (
+              <View key={`${photo.uri}-${index}`} style={styles.photoPreview}>
+                <Image
+                  source={{ uri: photo.uri }}
+                  style={[
+                    styles.photoImage,
+                    { backgroundColor: colors.secondary },
+                  ]}
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove photo ${index + 1}`}
+                  testID={`remove-issue-photo-${index}`}
+                  onPress={() => {
+                    setPhotos((current) => current.filter((_, photoIndex) => photoIndex !== index));
+                    setFormError('');
+                  }}
+                  style={[styles.removePhoto, { backgroundColor: colors.card }]}
+                >
+                  <Feather name="x" size={15} color={colors.foreground} />
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </View>
+
       <Card style={styles.locationCard}>
         <View style={[styles.locationIcon, { backgroundColor: colors.secondary }]}>
           <Feather name="map-pin" size={17} color={colors.primary} />
@@ -285,6 +420,14 @@ const styles = StyleSheet.create({
   categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   category: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
   categoryText: { fontFamily: 'Manrope_600SemiBold', fontSize: 12 },
+  photoHeading: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  photoCount: { fontFamily: 'Manrope_600SemiBold', fontSize: 11 },
+  photoActions: { flexDirection: 'row', gap: 9 },
+  photoAction: { flex: 1, paddingHorizontal: 8 },
+  photoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 9 },
+  photoPreview: { width: 76, height: 76, position: 'relative' },
+  photoImage: { width: 76, height: 76, borderRadius: 10 },
+  removePhoto: { position: 'absolute', top: 4, right: 4, width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   description: { minHeight: 128, paddingTop: 14 },
   counter: { fontFamily: 'Manrope_500Medium', fontSize: 10, textAlign: 'right' },
   locationCard: { flexDirection: 'row', alignItems: 'center', gap: 11 },

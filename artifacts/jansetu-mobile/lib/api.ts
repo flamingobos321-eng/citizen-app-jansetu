@@ -23,6 +23,11 @@ type RequestOptions = {
   token?: string | null;
 };
 
+export type UploadedFile = {
+  path: string;
+  url: string;
+};
+
 export async function apiRequest<T>(
   path: string,
   { method = 'GET', body, token }: RequestOptions = {},
@@ -72,6 +77,26 @@ export async function apiRequest<T>(
     throw new ApiError(detail, response.status);
   }
   return payload as T;
+}
+
+export async function uploadIssuePhoto(
+  photo: { uri: string; name: string; type: string; file?: File },
+  token?: string | null,
+): Promise<UploadedFile> {
+  const formData = new FormData();
+  if (photo.file) {
+    formData.append('file', photo.file, photo.name);
+  } else {
+    formData.append(
+      'file',
+      { uri: photo.uri, name: photo.name, type: photo.type } as unknown as Blob,
+    );
+  }
+  return apiRequest<UploadedFile>('/files/upload', {
+    method: 'POST',
+    token,
+    body: formData,
+  });
 }
 
 export type Portal = {
