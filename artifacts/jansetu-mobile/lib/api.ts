@@ -119,6 +119,42 @@ export type NotificationItem = {
   created_at: string;
 };
 
+export type NotificationPreferences = {
+  issue_updates: boolean;
+  broadcasts: boolean;
+  announcements: boolean;
+};
+
+export async function registerPushToken(
+  token: string,
+  platform: 'android' | 'ios',
+  authToken: string,
+) {
+  return apiRequest<{ id: string; status: string }>('/push/register', {
+    method: 'POST',
+    token: authToken,
+    body: { token, platform, device_info: `JanSetu mobile (${platform})` },
+  });
+}
+
+export async function unregisterPushToken(token: string, authToken: string) {
+  return apiRequest<{ ok: boolean }>(
+    `/push/register?token=${encodeURIComponent(token)}`,
+    { method: 'DELETE', token: authToken },
+  );
+}
+
+export async function updateIssueNotificationPreference(
+  enabled: boolean,
+  authToken: string,
+) {
+  return apiRequest<NotificationPreferences>('/me/notification-prefs', {
+    method: 'PUT',
+    token: authToken,
+    body: { issue_updates: enabled },
+  });
+}
+
 export type CitizenStats = {
   total: number;
   resolved: number;

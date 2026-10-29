@@ -1,20 +1,77 @@
 import { Feather } from '@expo/vector-icons';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
-import { Alert, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Alert, Linking, Platform, StyleSheet, Switch, Text, View } from 'react-native';
 import { ActionButton, Card, ErrorNotice, PageHeader, Screen } from '@/components/ui';
-import { apiRequest, type CitizenStats } from '@/lib/api';
+import { apiRequest, type CitizenStats, type NotificationPreferences } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useColors } from '@/hooks/useColors';
+import {
+  disableIssuePushNotifications,
+  enableIssuePushNotifications,
+  getSavedPushToken,
+} from '@/lib/pushNotifications';
 
 export default function ProfileScreen() {
   const colors = useColors();
   const { user, token, signOut } = useAuth();
+  const queryClient = useQueryClient();
+  const [notificationError, setNotificationError] = useState<string | null>(null);
   const stats = useQuery({
     queryKey: ['citizen-stats', token],
     queryFn: () => apiRequest<CitizenStats>('/dashboard/citizen-stats', { token }),
     enabled: !!token,
   });
+  const notificationPreferences = useQuery({
+    queryKey: ['notification-preferences', token],
+    queryFn: () => apiRequest<NotificationPreferences>('/me/notification-prefs', { token }),
+    enabled: !!token,
+  });
+  const savedPushToken = useQuery({
+    queryKey: ['saved-push-token', user?.id],
+    queryFn: () => getSavedPushToken(user!.id),
+    enabled: !!user?.id,
+  });
+  const notificationMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      if (!user || !token) throw new Error('Sign in again to change notification settings.');
+      if (enabled) await enableIssuePushNotifications(user.id, token);
+      else await disableIssuePushNotifications(user.id, token);
+    },
+    onSuccess: async () => {
+      setNotificationError(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['notification-preferences', token] }),
+        queryClient.invalidateQueries({ queryKey: ['saved-push-token', user?.id] }),
+      ]);
+    },
+    onError: (error) => {
+      setNotificationError(
+        error instanceof Error ? error.message : 'Could not update notification settings.',
+      );
+    },
+  });
+  const notificationsEnabled =
+    !!notificationPreferences.data?.issue_updates && !!savedPushToken.data;
+
+  const changeNotificationSetting = (enabled: boolean) => {
+    setNotificationError(null);
+    if (Platform.OS === 'web') {
+      Alert.alert('Use the mobile app', 'Issue alerts can be enabled from JanSetu on your phone.');
+      return;
+    }
+    notificationMutation.mutate(enabled);
+  };
+
+  const openNotificationSettings = () => {
+    void Linking.openSettings().catch(() => {
+      Alert.alert(
+        'Open device settings',
+        'Find JanSetu in your device settings and allow notifications.',
+      );
+    });
+  };
 
   const confirmSignOut = () => {
     if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
@@ -75,6 +132,58 @@ export default function ProfileScreen() {
         <ProfileRow label="Area type" value={user?.region_type} />
         <ProfileRow label="House number" value={user?.house_number} />
         <ProfileRow label="Address" value={user?.address} last />
+      </Card>
+
+      <Card style={styles.notificationCard}>
+        <View style={styles.notificationHeading}>
+          <View style={[styles.notificationIcon, { backgroundColor: colors.infoBackground }]}>
+            <Feather name="bell" size={17} color={colors.info} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.notificationTitle, { color: colors.foreground }]}>
+              Issue progress alerts
+            </Text>
+            <Text style={[styles.notificationBody, { color: colors.mutedForeground }]}>
+              Get a phone alert when your issue is assigned or its status changes.
+            </Text>
+          </View>
+          <Switch
+            accessibilityLabel="Issue progress alerts"
+            testID="issue-progress-alerts-switch"
+            value={notificationsEnabled}
+            onValueChange={changeNotificationSetting}
+            disabled={
+              Platform.OS === 'web' ||
+              notificationMutation.isPending ||
+              notificationPreferences.isLoading ||
+              savedPushToken.isLoading
+            }
+            trackColor={{ false: colors.border, true: colors.primary }}
+          />
+        </View>
+        {notificationError ? (
+          <View style={styles.notificationFeedback}>
+            <Text style={[styles.notificationBody, { color: colors.destructive, flex: 1 }]}>
+              {notificationError}
+            </Text>
+            {notificationError.includes('device settings') ? (
+              <Text
+                accessibilityRole="button"
+                onPress={openNotificationSettings}
+                style={[styles.settingsLink, { color: colors.primary }]}
+              >
+                Settings
+              </Text>
+            ) : null}
+          </View>
+        ) : Platform.OS === 'web' ? (
+          <Text style={[styles.notificationBody, { color: colors.mutedForeground }]}>
+            Open JanSetu on your phone to manage push alerts.
+          </Text>
+        ) : null}
+        {notificationPreferences.isError || savedPushToken.isError ? (
+          <ErrorNotice message="Could not load your notification setting. Try again later." />
+        ) : null}
       </Card>
 
       <ActionButton
@@ -138,5 +247,12 @@ const styles = StyleSheet.create({
   profileRow: { minHeight: 58, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 16, paddingVertical: 11, gap: 3 },
   label: { fontFamily: 'Manrope_700Bold', fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase' },
   value: { fontFamily: 'Manrope_500Medium', fontSize: 13 },
+  notificationCard: { gap: 12 },
+  notificationHeading: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  notificationIcon: { width: 38, height: 38, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  notificationTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 15 },
+  notificationBody: { fontFamily: 'Manrope_400Regular', fontSize: 11, lineHeight: 17, marginTop: 3 },
+  notificationFeedback: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  settingsLink: { fontFamily: 'Manrope_700Bold', fontSize: 12 },
   footer: { fontFamily: 'Manrope_500Medium', fontSize: 11, textAlign: 'center', marginTop: 2 },
 });

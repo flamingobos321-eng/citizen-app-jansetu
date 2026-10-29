@@ -10,6 +10,7 @@ import React, {
 } from 'react';
 import { Platform } from 'react-native';
 import { apiRequest, ApiError, type Citizen } from '@/lib/api';
+import { unregisterPushTokenOnSignOut } from '@/lib/pushNotifications';
 
 const TOKEN_KEY = 'jansetu_token';
 
@@ -93,11 +94,14 @@ export function AuthProvider({ children }: React.PropsWithChildren) {
   }, []);
 
   const signOut = useCallback(async () => {
+    if (token && user?.id) {
+      await unregisterPushTokenOnSignOut(user.id, token);
+    }
     await removeToken();
     setToken(null);
     setUser(null);
     setError(null);
-  }, []);
+  }, [token, user?.id]);
 
   const value = useMemo(
     () => ({ user, token, loading, error, signIn, signOut, refreshSession }),

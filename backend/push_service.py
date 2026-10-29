@@ -1,6 +1,7 @@
 """JanSetu push notification service.
 
 **Delivery adapters:**
+  * Expo Push Service — native Expo notifications
   * FCM (Firebase Cloud Messaging) — for both Android + web push
   * DEV — logs to stdout when no credentials configured
 
@@ -17,6 +18,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
 
@@ -141,9 +144,74 @@ def get_adapter():
 
 def send(tokens: Iterable[str], title: str, body: str,
          data: Optional[dict] = None, click_action: Optional[str] = None) -> dict:
-    """Send a push notification to N device tokens. Returns delivery stats."""
+    """Send FCM and Expo push tokens through their respective gateways."""
     msg = PushMessage(title=title, body=body, data=data, click_action=click_action)
-    return get_adapter().send(list(tokens), msg)
+    unique_tokens = list(dict.fromkeys(tokens))
+    expo_tokens = [token for token in unique_tokens if token.startswith(("ExpoPushToken[", "ExponentPushToken["))]
+    fcm_tokens = [token for token in unique_tokens if token not in expo_tokens]
+    expo_result = _send_expo(expo_tokens, msg) if expo_tokens else {
+        "success": 0, "failure": 0, "invalid_tokens": [],
+    }
+    fcm_result = get_adapter().send(fcm_tokens, msg) if fcm_tokens else {
+        "success": 0, "failure": 0, "invalid_tokens": [],
+    }
+    return {
+        "success": expo_result["success"] + fcm_result["success"],
+        "failure": expo_result["failure"] + fcm_result["failure"],
+        "invalid_tokens": expo_result["invalid_tokens"] + fcm_result["invalid_tokens"],
+    }
+
+
+def _send_expo(tokens: List[str], msg: PushMessage) -> dict:
+    """Deliver ExpoPushTokens through Expo's push service in batches of 100."""
+    success = 0
+    failure = 0
+    invalid_tokens: List[str] = []
+    data = dict(msg.data or {})
+    if msg.click_action:
+        data.setdefault("click_action", msg.click_action)
+
+    for start in range(0, len(tokens), 100):
+        batch = tokens[start:start + 100]
+        messages = [
+            {
+                "to": token,
+                "title": msg.title,
+                "body": msg.body,
+                "sound": "default",
+                "priority": "high",
+                "channelId": "jansetu_default",
+                "data": data,
+            }
+            for token in batch
+        ]
+        request = urllib.request.Request(
+            "https://exp.host/--/api/v2/push/send",
+            data=json.dumps(messages).encode("utf-8"),
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            tickets = result.get("data", [])
+            for index, token in enumerate(batch):
+                ticket = tickets[index] if index < len(tickets) else {}
+                if ticket.get("status") == "ok":
+                    success += 1
+                else:
+                    failure += 1
+                    details = ticket.get("details") or {}
+                    if details.get("error") == "DeviceNotRegistered":
+                        invalid_tokens.append(token)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+            logger.warning("Expo push request failed for %d device(s): %s", len(batch), error)
+            failure += len(batch)
+
+    return {"success": success, "failure": failure, "invalid_tokens": invalid_tokens}
 
 
 def current_mode() -> str:
