@@ -141,6 +141,13 @@ export default function ProfileScreen() {
         onPress={() => router.push('/my-household')}
       />
 
+      <ActionButton
+        title="Manage family links"
+        icon="users"
+        variant="outline"
+        onPress={() => router.push('/family')}
+      />
+
       <Card style={styles.notificationCard}>
         <View style={styles.notificationHeading}>
           <View style={[styles.notificationIcon, { backgroundColor: colors.infoBackground }]}>
