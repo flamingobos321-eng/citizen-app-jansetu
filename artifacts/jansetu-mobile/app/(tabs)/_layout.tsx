@@ -28,6 +28,10 @@ function NativeTabLayout() {
         <NativeTabs.Trigger.Icon sf={{ default: 'doc.text', selected: 'doc.text.fill' }} />
         <NativeTabs.Trigger.Label>Issues</NativeTabs.Trigger.Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="services">
+        <NativeTabs.Trigger.Icon sf={{ default: 'map', selected: 'map.fill' }} />
+        <NativeTabs.Trigger.Label>Services</NativeTabs.Trigger.Label>
+      </NativeTabs.Trigger>
       <NativeTabs.Trigger name="notifications">
         <NativeTabs.Trigger.Icon sf={{ default: 'bell', selected: 'bell.fill' }} />
         <NativeTabs.Trigger.Label>Updates</NativeTabs.Trigger.Label>
@@ -108,6 +112,18 @@ function ClassicTabLayout() {
               <SymbolView name="doc.text" tintColor={color} size={22} />
             ) : (
               <Feather name="file-text" size={21} color={focused ? colors.primary : colors.mutedForeground} />
+            ),
+        }}
+      />
+      <Tabs.Screen
+        name="services"
+        options={{
+          title: 'Services',
+          tabBarIcon: ({ color, focused }) =>
+            isIOS ? (
+              <SymbolView name="map" tintColor={color} size={22} />
+            ) : (
+              <Feather name="map" size={21} color={focused ? colors.primary : colors.mutedForeground} />
             ),
         }}
       />

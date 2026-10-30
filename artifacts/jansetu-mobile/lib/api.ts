@@ -133,6 +133,18 @@ export type Issue = {
   created_at: string;
   updated_at?: string;
   location_address?: string;
+  assigned_to?: string | null;
+  assigned_to_name?: string | null;
+  due_date?: string | null;
+  remarks?: string | null;
+  completion_notes?: string | null;
+  reassignment_request?: {
+    requested_by?: string;
+    requested_by_name?: string;
+    reason?: string;
+    at?: string;
+    status?: string;
+  } | null;
   timeline?: Array<{ status: string; at: string; by?: string; note?: string }>;
 };
 

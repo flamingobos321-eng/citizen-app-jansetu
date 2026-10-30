@@ -23,6 +23,13 @@ const ROLE_LABELS: Record<string, string> = {
   worker: 'Field worker',
 };
 
+type OfficeDashboardStats = {
+  total_citizens: number;
+  total_households: number;
+  total_issues: number;
+  total_workers: number;
+};
+
 export default function OfficeWorkspaceScreen() {
   const colors = useColors();
   const { user, token, loading, signOut } = useAuth();
@@ -30,6 +37,11 @@ export default function OfficeWorkspaceScreen() {
     queryKey: ['office-issues', token, user?.role],
     queryFn: () => apiRequest<Issue[]>('/issues', { token }),
     enabled: !!token && !!user && OFFICE_ROLES.includes(user.role),
+  });
+  const dashboardQuery = useQuery({
+    queryKey: ['office-dashboard', token],
+    queryFn: () => apiRequest<OfficeDashboardStats>('/dashboard/stats', { token }),
+    enabled: !!token && !!user && user.role !== 'worker' && OFFICE_ROLES.includes(user.role),
   });
 
   if (loading) return null;
@@ -97,6 +109,39 @@ export default function OfficeWorkspaceScreen() {
         <Summary label="In progress" value={inProgressCount} />
         <Summary label="Resolved" value={resolvedCount} />
       </View>
+
+      {dashboardQuery.data ? (
+        <View style={styles.overviewGrid}>
+          <OverviewMetric label="Citizens" value={dashboardQuery.data.total_citizens} />
+          <OverviewMetric label="Households" value={dashboardQuery.data.total_households} />
+          <OverviewMetric label="All issues" value={dashboardQuery.data.total_issues} />
+          <OverviewMetric label="Field workers" value={dashboardQuery.data.total_workers} />
+        </View>
+      ) : null}
+
+      {dashboardQuery.isError ? (
+        <ErrorNotice
+          message={dashboardQuery.error instanceof Error ? dashboardQuery.error.message : 'Could not load office summary.'}
+          onRetry={() => void dashboardQuery.refetch()}
+        />
+      ) : null}
+
+      {user.role !== 'worker' ? (
+        <View style={styles.shortcutGrid}>
+          <FeatureLink
+            icon="calendar"
+            title="Visits & camps"
+            subtitle="Schedule and approve office visits"
+            onPress={() => router.push('/visits')}
+          />
+          <FeatureLink
+            icon="tool"
+            title="Development works"
+            subtitle="Manage local project progress"
+            onPress={() => router.push('/devworks')}
+          />
+        </View>
+      ) : null}
 
       <View style={styles.sectionHeader}>
         <View>
@@ -194,6 +239,49 @@ function Summary({ label, value }: { label: string; value: number }) {
   );
 }
 
+function OverviewMetric({ label, value }: { label: string; value: number }) {
+  const colors = useColors();
+  return (
+    <View style={[styles.overviewCard, { borderColor: colors.border, backgroundColor: colors.card }]}>
+      <Text style={[styles.overviewValue, { color: colors.foreground }]}>{value}</Text>
+      <Text style={[styles.overviewLabel, { color: colors.mutedForeground }]}>{label}</Text>
+    </View>
+  );
+}
+
+function FeatureLink({
+  icon,
+  title,
+  subtitle,
+  onPress,
+}: {
+  icon: keyof typeof Feather.glyphMap;
+  title: string;
+  subtitle: string;
+  onPress: () => void;
+}) {
+  const colors = useColors();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      accessibilityHint={subtitle}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.featureLink,
+        { borderColor: colors.border, backgroundColor: colors.card, opacity: pressed ? 0.82 : 1 },
+      ]}
+    >
+      <Feather name={icon} size={19} color={colors.primary} />
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.featureTitle, { color: colors.foreground }]}>{title}</Text>
+        <Text style={[styles.featureSubtitle, { color: colors.mutedForeground }]}>{subtitle}</Text>
+      </View>
+      <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', alignItems: 'flex-start' },
   signOutButton: {
@@ -206,6 +294,14 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   statsRow: { flexDirection: 'row', gap: 9 },
+  overviewGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 9 },
+  overviewCard: { width: '48%', minHeight: 68, borderWidth: 1, borderRadius: 14, padding: 11, justifyContent: 'center' },
+  overviewValue: { fontFamily: 'Outfit_700Bold', fontSize: 20 },
+  overviewLabel: { fontFamily: 'Manrope_500Medium', fontSize: 12, marginTop: 2 },
+  shortcutGrid: { gap: 9 },
+  featureLink: { minHeight: 64, borderWidth: 1, borderRadius: 14, padding: 13, flexDirection: 'row', alignItems: 'center', gap: 11 },
+  featureTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 14 },
+  featureSubtitle: { fontFamily: 'Manrope_400Regular', fontSize: 12, lineHeight: 17, marginTop: 2 },
   summary: {
     flex: 1,
     minHeight: 75,

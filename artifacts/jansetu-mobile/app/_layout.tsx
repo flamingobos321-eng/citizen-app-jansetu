@@ -102,6 +102,8 @@ function RootLayoutNav() {
       <Stack.Screen name="(auth)" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="office" options={{ headerShown: false }} />
+      <Stack.Screen name="visits" options={{ headerShown: false }} />
+      <Stack.Screen name="devworks" options={{ headerShown: false }} />
       <Stack.Screen name="issues/new" options={{ headerShown: false, presentation: 'modal' }} />
       <Stack.Screen name="issues/[id]" options={{ headerShown: false }} />
     </Stack>
