@@ -4,6 +4,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { setAuthTokenGetter, setBaseUrl } from '@workspace/api-client-react';
 import {
   Manrope_400Regular,
   Manrope_500Medium,
@@ -23,9 +24,15 @@ import { useSegments } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { AuthProvider } from '@/lib/auth';
-import { useAuth } from '@/lib/auth';
+import { AuthProvider, getStoredAuthToken, useAuth } from '@/lib/auth';
 import { Platform } from 'react-native';
+
+const apiDomain = process.env.EXPO_PUBLIC_DOMAIN
+  ?.trim()
+  .replace(/^https?:\/\//i, '')
+  .replace(/\/+$/, '');
+setBaseUrl(apiDomain ? `https://${apiDomain}` : null);
+setAuthTokenGetter(getStoredAuthToken);
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 void SplashScreen.preventAutoHideAsync();

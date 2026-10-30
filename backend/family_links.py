@@ -238,14 +238,11 @@ async def list_family_members(db, user: dict) -> list[dict[str, Any]]:
         other_tenant_id = (other or {}).get("tenant_id")
         result.append({
             "id": edge["id"],
-            "other_user_id": (other or {}).get("id") or other_user_id,
-            "other_person_id": other_person_id,
             "other_name": (other or {}).get("name") or person.get("name"),
             "other_mobile": (other or {}).get("mobile"),
             "other_constituency": constituency_names.get(other_tenant_id),
             "cross_constituency": bool(other_tenant_id and other_tenant_id != tenant_id),
             "relation": edge["relation"],
-            "created_at": edge.get("created_at"),
         })
     result.sort(key=lambda row: ((row.get("relation") or ""), (row.get("other_name") or "")))
     return result

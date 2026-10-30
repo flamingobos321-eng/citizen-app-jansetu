@@ -20,6 +20,10 @@ async function readToken() {
     : SecureStore.getItemAsync(TOKEN_KEY);
 }
 
+export async function getStoredAuthToken() {
+  return readToken();
+}
+
 async function writeToken(token: string) {
   if (Platform.OS === 'web') {
     await AsyncStorage.setItem(TOKEN_KEY, token);

@@ -1039,7 +1039,7 @@ class FamilyInvitation(BaseModel):
     target_name: Optional[str] = None
     relation_type: str                   # RELATION_TYPES value
     marriage_anniversary: Optional[str] = None  # captured only for Husband/Wife
-    status: Literal["pending", "accepted", "declined", "linked"] = "pending"
+    status: Literal["pending", "accepted", "declined", "linked", "cancelled"] = "pending"
     resolved_user_id: Optional[str] = None
     resolved_person_id: Optional[str] = None
     relationship_id: Optional[str] = None
