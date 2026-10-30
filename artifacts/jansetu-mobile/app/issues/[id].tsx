@@ -179,8 +179,12 @@ export default function IssueDetailScreen() {
   };
   const updateIssueStatus = useMutation({
     mutationFn: async () => {
-      if (!statusUpdate) throw new Error('Choose a status first.');
-      const uploadedPhotos = statusUpdate === 'Resolved'
+      const nextStatus = statusUpdate || issue?.status;
+      if (!nextStatus) throw new Error('Choose a status first.');
+      if (!statusUpdate && !statusNote.trim()) {
+        throw new Error('Choose a status or add a progress note.');
+      }
+      const uploadedPhotos = nextStatus === 'Resolved'
         ? await Promise.all(
             completionPhotos.map(async (photo, index) => {
               const extension = photo.mimeType?.split('/')[1] || 'jpg';
@@ -197,15 +201,16 @@ export default function IssueDetailScreen() {
         method: 'POST',
         token,
         body: {
-          status: statusUpdate,
+          status: nextStatus,
           remarks: statusNote.trim() || undefined,
-          completion_notes: statusUpdate === 'Resolved' ? statusNote.trim() || undefined : undefined,
+          completion_notes: nextStatus === 'Resolved' ? statusNote.trim() || undefined : undefined,
           completion_photos: uploadedPhotos,
         },
       });
     },
     onSuccess: async () => {
       setStatusNote('');
+      setStatusUpdate('');
       setCompletionPhotos([]);
       setPhotoError('');
       await refreshIssue();
@@ -505,6 +510,9 @@ export default function IssueDetailScreen() {
           {canUpdateStatus ? (
             <Card style={styles.actionCard}>
               <Text style={[styles.actionTitle, { color: colors.foreground }]}>Update issue progress</Text>
+              <Text style={[styles.actionHint, { color: colors.mutedForeground }]}>
+                Choose a status change, or add a note to keep the current status.
+              </Text>
               <StatusChoices
                 statuses={WORKFLOW_STATUSES}
                 selected={statusUpdate}
@@ -561,7 +569,8 @@ export default function IssueDetailScreen() {
                 icon="save"
                 onPress={() => updateIssueStatus.mutate()}
                 loading={updateIssueStatus.isPending}
-                disabled={!statusUpdate}
+                disabled={!statusUpdate && !statusNote.trim()}
+                testID="save-issue-progress"
               />
             </Card>
           ) : null}
@@ -842,6 +851,8 @@ function StatusChoices({
             key={status}
             accessibilityRole="button"
             accessibilityState={{ selected: active }}
+            accessibilityLabel={`Set issue status to ${status}`}
+            testID={`issue-status-${status.toLowerCase().replace(/\s+/g, '-')}`}
             onPress={() => onSelect(status)}
             style={[
               styles.workerChoice,

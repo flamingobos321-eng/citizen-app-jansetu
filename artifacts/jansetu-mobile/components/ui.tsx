@@ -137,6 +137,7 @@ export function ActionButton({
   loading = false,
   disabled = false,
   style,
+  testID,
 }: {
   title: string;
   onPress: () => void;
@@ -145,6 +146,7 @@ export function ActionButton({
   loading?: boolean;
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
+  testID?: string;
 }) {
   const colors = useColors();
   const backgroundColor =
@@ -168,6 +170,7 @@ export function ActionButton({
         onPress();
       }}
       disabled={disabled || loading}
+      testID={testID}
       style={({ pressed }) => [
         styles.button,
         {

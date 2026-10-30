@@ -2361,11 +2361,16 @@ async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends
 async def update_status(issue_id: str, payload: IssueUpdateStatus, user: dict = Depends(require_roles("worker", "pa", "admin"))):
     if payload.status not in ISSUE_STATUSES:
         raise HTTPException(400, "Invalid status")
+    issue = await db.issues.find_one(
+        tenant_filter(user, {"id": issue_id}),
+        {"_id": 0, "status": 1, "assigned_to": 1},
+    )
+    if not issue:
+        raise HTTPException(404, "Issue not found")
     # workers can only update issues assigned to them
-    if user["role"] == "worker":
-        issue = await db.issues.find_one(tenant_filter(user, {"id": issue_id}))
-        if not issue or issue.get("assigned_to") != user["id"]:
-            raise HTTPException(403, "Not your assignment")
+    if user["role"] == "worker" and issue.get("assigned_to") != user["id"]:
+        raise HTTPException(403, "Not your assignment")
+    status_changed = issue.get("status") != payload.status
     update = {"status": payload.status, "updated_at": now_iso(),
               # Any staff action stops the escalation clock.
               "escalation_level": 0, "last_escalated_at": None}
@@ -2399,7 +2404,7 @@ async def update_status(issue_id: str, payload: IssueUpdateStatus, user: dict = 
             "Closed": ("Issue closed", "Your issue has been closed by the office."),
             "Reopened": ("Issue reopened", "Your issue has been reopened for further action."),
         }
-        if payload.status in _status_push_messages:
+        if status_changed and payload.status in _status_push_messages:
             issue_for_push = await db.issues.find_one(
                 tenant_filter(user, {"id": issue_id}), {"_id": 0, "citizen_id": 1, "title": 1})
             if issue_for_push and issue_for_push.get("citizen_id"):
