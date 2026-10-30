@@ -29,16 +29,17 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "JanSetu accesses your photos only when you choose images to attach to an issue report.",
-          "cameraPermission": "JanSetu uses your camera only when you choose to take a photo for an issue report."
+          "photosPermission": "JanSetu accesses your photos only when you choose images to attach to an issue or campaign response.",
+          "cameraPermission": "JanSetu uses your camera only when you choose to take a photo for an issue or campaign response."
         }
       ],
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "JanSetu uses your location only when you choose to attach it to a civic issue report."
+          "locationWhenInUsePermission": "JanSetu uses your location only when you choose to attach it to an issue or campaign response."
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": true,

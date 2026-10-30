@@ -1,2 +1,3 @@
 - [Dependency snapshot portability](dependency-portability.md) — legacy environment snapshots may contain unused, unresolvable packages; preserve originals and lock only the workspace runtime.
 - [Orphaned citizen tenant links](orphaned-citizen-tenants.md) — `same_tenant:false` can mean a missing source portal, not a transferable account.
+- [GitHub source of truth](git-source-of-truth.md) — JanSetu is developed in Replit, pushed to GitHub, then pulled and deployed on its isolated VPS project.

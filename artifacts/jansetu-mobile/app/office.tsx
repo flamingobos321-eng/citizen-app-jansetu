@@ -129,6 +129,12 @@ export default function OfficeWorkspaceScreen() {
       {user.role !== 'worker' ? (
         <View style={styles.shortcutGrid}>
           <FeatureLink
+            icon="users"
+            title="Citizens & households"
+            subtitle="Search families, members, and service history"
+            onPress={() => router.push('/households')}
+          />
+          <FeatureLink
             icon="calendar"
             title="Visits & camps"
             subtitle="Schedule and approve office visits"
@@ -140,8 +146,22 @@ export default function OfficeWorkspaceScreen() {
             subtitle="Manage local project progress"
             onPress={() => router.push('/devworks')}
           />
+          <FeatureLink
+            icon="bar-chart-2"
+            title="Reports & exports"
+            subtitle="View constituency totals and share CSV reports"
+            onPress={() => router.push('/reports')}
+          />
         </View>
       ) : null}
+      <View style={styles.shortcutGrid}>
+        <FeatureLink
+          icon="flag"
+          title={user.role === 'worker' ? 'My campaigns' : 'Campaigns'}
+          subtitle={user.role === 'worker' ? 'Assigned field work and campaign tasks' : 'Manage field operations and surveys'}
+          onPress={() => router.push('/campaigns')}
+        />
+      </View>
 
       <View style={styles.sectionHeader}>
         <View>

@@ -79,6 +79,40 @@ export async function apiRequest<T>(
   return payload as T;
 }
 
+export async function apiRequestText(
+  path: string,
+  token?: string | null,
+): Promise<string> {
+  if (!API_BASE_URL) {
+    throw new ApiError(
+      'The API address is not configured for this build. Restart the mobile preview and try again.',
+    );
+  }
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`, {
+      headers: {
+        Accept: 'text/csv',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+  } catch {
+    throw new ApiError('JanSetu could not reach its service. Check your connection and try again.');
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    let message = `Request failed (${response.status})`;
+    try {
+      const payload = JSON.parse(text);
+      if (typeof payload?.detail === 'string') message = payload.detail;
+    } catch {
+      if (text.trim()) message = text.trim();
+    }
+    throw new ApiError(message, response.status);
+  }
+  return response.text();
+}
+
 export async function uploadIssuePhoto(
   photo: { uri: string; name: string; type: string; file?: File },
   token?: string | null,
