@@ -147,11 +147,37 @@ export default function OfficeWorkspaceScreen() {
             onPress={() => router.push('/devworks')}
           />
           <FeatureLink
+            icon="gift"
+            title="Celebrations"
+            subtitle="Track birthdays, anniversaries, and remembrance dates"
+            onPress={() => router.push('/celebrations')}
+          />
+          <FeatureLink
+            icon="bell"
+            title="Notifications"
+            subtitle="Review announcements and send targeted citizen updates"
+            onPress={() => router.push('/office-notifications')}
+          />
+          <FeatureLink
+            icon="users"
+            title="Karyakartas"
+            subtitle="Manage volunteer and party worker records"
+            onPress={() => router.push('/karyakartas')}
+          />
+          <FeatureLink
             icon="bar-chart-2"
             title="Reports & exports"
             subtitle="View constituency totals and share CSV reports"
             onPress={() => router.push('/reports')}
           />
+          {user.role === 'admin' || user.role === 'pa' ? (
+            <FeatureLink
+              icon="settings"
+              title={user.role === 'admin' ? 'Administration' : 'Caste & religion'}
+              subtitle={user.role === 'admin' ? 'Manage office accounts and constituency setup' : 'Maintain citizen profile lists'}
+              onPress={() => router.push('/office-admin')}
+            />
+          ) : null}
         </View>
       ) : null}
       <View style={styles.shortcutGrid}>
@@ -160,6 +186,12 @@ export default function OfficeWorkspaceScreen() {
           title={user.role === 'worker' ? 'My campaigns' : 'Campaigns'}
           subtitle={user.role === 'worker' ? 'Assigned field work and campaign tasks' : 'Manage field operations and surveys'}
           onPress={() => router.push('/campaigns')}
+        />
+        <FeatureLink
+          icon="lock"
+          title="Change password"
+          subtitle="Update your account password"
+          onPress={() => router.push('/change-password')}
         />
       </View>
 

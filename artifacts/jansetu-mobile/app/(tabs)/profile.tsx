@@ -4,14 +4,35 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { Alert, Linking, Platform, StyleSheet, Switch, Text, View } from 'react-native';
 import { ActionButton, Card, ErrorNotice, PageHeader, Screen } from '@/components/ui';
-import { apiRequest, type CitizenStats, type NotificationPreferences } from '@/lib/api';
+import { apiRequest, type CitizenStats, type NotificationCategory, type NotificationPreferences } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useColors } from '@/hooks/useColors';
 import {
-  disableIssuePushNotifications,
-  enableIssuePushNotifications,
   getSavedPushToken,
+  setPushNotificationPreference,
 } from '@/lib/pushNotifications';
+
+const NOTIFICATION_CATEGORIES: {
+  key: NotificationCategory;
+  label: string;
+  description: string;
+}[] = [
+  {
+    key: 'issue_updates',
+    label: 'Issue updates',
+    description: 'Alerts when your submitted issues are assigned or updated.',
+  },
+  {
+    key: 'broadcasts',
+    label: 'Office announcements',
+    description: 'Messages sent by your representative’s office.',
+  },
+  {
+    key: 'announcements',
+    label: 'General alerts',
+    description: 'Reminders, events, and other general notifications.',
+  },
+];
 
 export default function ProfileScreen() {
   const colors = useColors();
@@ -34,10 +55,15 @@ export default function ProfileScreen() {
     enabled: !!user?.id,
   });
   const notificationMutation = useMutation({
-    mutationFn: async (enabled: boolean) => {
+    mutationFn: async ({
+      category,
+      enabled,
+    }: {
+      category: NotificationCategory;
+      enabled: boolean;
+    }) => {
       if (!user || !token) throw new Error('Sign in again to change notification settings.');
-      if (enabled) await enableIssuePushNotifications(user.id, token);
-      else await disableIssuePushNotifications(user.id, token);
+      await setPushNotificationPreference(user.id, token, category, enabled);
     },
     onSuccess: async () => {
       setNotificationError(null);
@@ -52,16 +78,13 @@ export default function ProfileScreen() {
       );
     },
   });
-  const notificationsEnabled =
-    !!notificationPreferences.data?.issue_updates && !!savedPushToken.data;
-
-  const changeNotificationSetting = (enabled: boolean) => {
+  const changeNotificationSetting = (category: NotificationCategory, enabled: boolean) => {
     setNotificationError(null);
     if (Platform.OS === 'web') {
-      Alert.alert('Use the mobile app', 'Issue alerts can be enabled from JanSetu on your phone.');
+      Alert.alert('Use the mobile app', 'Push alerts can be enabled from JanSetu on your phone.');
       return;
     }
-    notificationMutation.mutate(enabled);
+    notificationMutation.mutate({ category, enabled });
   };
 
   const openNotificationSettings = () => {
@@ -148,6 +171,13 @@ export default function ProfileScreen() {
         onPress={() => router.push('/family')}
       />
 
+      <ActionButton
+        title="Change password"
+        icon="lock"
+        variant="outline"
+        onPress={() => router.push('/change-password')}
+      />
+
       <Card style={styles.notificationCard}>
         <View style={styles.notificationHeading}>
           <View style={[styles.notificationIcon, { backgroundColor: colors.infoBackground }]}>
@@ -155,26 +185,38 @@ export default function ProfileScreen() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={[styles.notificationTitle, { color: colors.foreground }]}>
-              Issue progress alerts
+              Notification preferences
             </Text>
             <Text style={[styles.notificationBody, { color: colors.mutedForeground }]}>
-              Get a phone alert when your issue is assigned or its status changes.
+              Choose which push alerts you receive. Turning a category off keeps messages in your in-app inbox.
             </Text>
           </View>
-          <Switch
-            accessibilityLabel="Issue progress alerts"
-            testID="issue-progress-alerts-switch"
-            value={notificationsEnabled}
-            onValueChange={changeNotificationSetting}
-            disabled={
-              Platform.OS === 'web' ||
-              notificationMutation.isPending ||
-              notificationPreferences.isLoading ||
-              savedPushToken.isLoading
-            }
-            trackColor={{ false: colors.border, true: colors.primary }}
-          />
         </View>
+        {NOTIFICATION_CATEGORIES.map(({ key, label, description }) => {
+          const enabled = !!notificationPreferences.data?.[key] && !!savedPushToken.data;
+          return (
+            <View key={key} style={[styles.preferenceRow, { borderTopColor: colors.border }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.notificationTitle, { color: colors.foreground }]}>{label}</Text>
+                <Text style={[styles.notificationBody, { color: colors.mutedForeground }]}>{description}</Text>
+              </View>
+              <Switch
+                accessibilityLabel={label}
+                testID={`notification-pref-${key}`}
+                value={enabled}
+                onValueChange={(value) => changeNotificationSetting(key, value)}
+                disabled={
+                  Platform.OS === 'web' ||
+                  notificationMutation.isPending ||
+                  notificationPreferences.isLoading ||
+                  notificationPreferences.isError ||
+                  savedPushToken.isLoading
+                }
+                trackColor={{ false: colors.border, true: colors.primary }}
+              />
+            </View>
+          );
+        })}
         {notificationError ? (
           <View style={styles.notificationFeedback}>
             <Text style={[styles.notificationBody, { color: colors.destructive, flex: 1 }]}>
@@ -263,6 +305,7 @@ const styles = StyleSheet.create({
   value: { fontFamily: 'Manrope_500Medium', fontSize: 13 },
   notificationCard: { gap: 12 },
   notificationHeading: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  preferenceRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: 10, borderTopWidth: 1 },
   notificationIcon: { width: 38, height: 38, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   notificationTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 15 },
   notificationBody: { fontFamily: 'Manrope_400Regular', fontSize: 12, lineHeight: 18, marginTop: 3 },

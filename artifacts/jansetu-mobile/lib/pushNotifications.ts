@@ -3,9 +3,12 @@ import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import {
+  apiRequest,
   registerPushToken,
   unregisterPushToken,
-  updateIssueNotificationPreference,
+  updateNotificationPreferences,
+  type NotificationCategory,
+  type NotificationPreferences,
 } from '@/lib/api';
 
 function tokenStorageKey(userId: string) {
@@ -16,17 +19,14 @@ export function getSavedPushToken(userId: string) {
   return AsyncStorage.getItem(tokenStorageKey(userId));
 }
 
-export async function enableIssuePushNotifications(
-  userId: string,
-  authToken: string,
-) {
+async function registerCurrentDevice(authToken: string) {
   if (Platform.OS !== 'ios' && Platform.OS !== 'android') {
-    throw new Error('Issue alerts can be enabled in the JanSetu mobile app.');
+    throw new Error('Push alerts can be enabled in the JanSetu mobile app.');
   }
 
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('jansetu_default', {
-      name: 'Issue updates',
+      name: 'JanSetu alerts',
       importance: Notifications.AndroidImportance.HIGH,
       vibrationPattern: [0, 250, 250, 250],
     });
@@ -61,25 +61,59 @@ export async function enableIssuePushNotifications(
   }
 
   await registerPushToken(expoToken.data, Platform.OS, authToken);
+  return expoToken.data;
+}
+
+export async function setPushNotificationPreference(
+  userId: string,
+  authToken: string,
+  category: NotificationCategory,
+  enabled: boolean,
+) {
+  const savedToken = await getSavedPushToken(userId);
+  let pushToken = savedToken;
+  let registeredDuringUpdate = false;
+
+  if (enabled) {
+    if (pushToken) {
+      await registerPushToken(pushToken, Platform.OS as 'android' | 'ios', authToken);
+    } else {
+      pushToken = await registerCurrentDevice(authToken);
+      registeredDuringUpdate = true;
+    }
+  }
+
   try {
-    await updateIssueNotificationPreference(true, authToken);
-    await AsyncStorage.setItem(tokenStorageKey(userId), expoToken.data);
+    await updateNotificationPreferences({ [category]: enabled }, authToken);
+    if (enabled && pushToken) await AsyncStorage.setItem(tokenStorageKey(userId), pushToken);
   } catch (error) {
-    await unregisterPushToken(expoToken.data, authToken).catch(() => undefined);
+    if (registeredDuringUpdate && pushToken) {
+      await unregisterPushToken(pushToken, authToken).catch(() => undefined);
+    }
     throw error;
+  }
+
+  if (!enabled) {
+    const preferences = await apiRequest<NotificationPreferences>('/me/notification-prefs', {
+      token: authToken,
+    });
+    if (!Object.values(preferences).some(Boolean) && savedToken) {
+      try {
+        await unregisterPushToken(savedToken, authToken);
+        await AsyncStorage.removeItem(tokenStorageKey(userId));
+      } catch (error) {
+        console.warn('Could not unregister the JanSetu push token after all alert types were disabled.', error);
+      }
+    }
   }
 }
 
-export async function disableIssuePushNotifications(
-  userId: string,
-  authToken: string,
-) {
-  const savedToken = await getSavedPushToken(userId);
-  await updateIssueNotificationPreference(false, authToken);
-  if (savedToken) {
-    await unregisterPushToken(savedToken, authToken);
-    await AsyncStorage.removeItem(tokenStorageKey(userId));
-  }
+export async function enableIssuePushNotifications(userId: string, authToken: string) {
+  return setPushNotificationPreference(userId, authToken, 'issue_updates', true);
+}
+
+export async function disableIssuePushNotifications(userId: string, authToken: string) {
+  return setPushNotificationPreference(userId, authToken, 'issue_updates', false);
 }
 
 export async function unregisterPushTokenOnSignOut(

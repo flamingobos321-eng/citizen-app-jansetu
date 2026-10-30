@@ -19,6 +19,7 @@ import {
 } from '@expo-google-fonts/outfit';
 import { Stack } from 'expo-router';
 import { router } from 'expo-router';
+import { useSegments } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
@@ -51,6 +52,7 @@ if (Platform.OS !== 'web') {
 
 function RootLayoutNav() {
   const { user, loading } = useAuth();
+  const segments = useSegments();
   const pendingIssueId = React.useRef<string | null>(null);
 
   const handleNotificationResponse = React.useCallback((response: Notifications.NotificationResponse) => {
@@ -96,6 +98,11 @@ function RootLayoutNav() {
     }
   }, [loading, user]);
 
+  useEffect(() => {
+    if (loading || !user?.must_change_password) return;
+    if (segments[0] !== 'change-password') router.replace('/change-password');
+  }, [loading, segments, user?.must_change_password]);
+
   return (
     <Stack screenOptions={{ headerBackTitle: 'Back' }}>
       <Stack.Screen name="index" options={{ headerShown: false }} />
@@ -112,6 +119,11 @@ function RootLayoutNav() {
       <Stack.Screen name="campaigns" options={{ headerShown: false }} />
       <Stack.Screen name="campaigns/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="reports" options={{ headerShown: false }} />
+      <Stack.Screen name="celebrations" options={{ headerShown: false }} />
+      <Stack.Screen name="office-notifications" options={{ headerShown: false }} />
+      <Stack.Screen name="office-admin" options={{ headerShown: false }} />
+      <Stack.Screen name="karyakartas" options={{ headerShown: false }} />
+      <Stack.Screen name="change-password" options={{ headerShown: false, gestureEnabled: false }} />
       <Stack.Screen name="issues/new" options={{ headerShown: false, presentation: 'modal' }} />
       <Stack.Screen name="issues/[id]" options={{ headerShown: false }} />
     </Stack>

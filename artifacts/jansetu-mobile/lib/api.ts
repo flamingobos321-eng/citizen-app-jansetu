@@ -153,6 +153,7 @@ export type Citizen = {
   id: string;
   name: string;
   role: string;
+  must_change_password?: boolean;
   household_id?: string;
   mobile?: string;
   address?: string;
@@ -220,6 +221,7 @@ export type NotificationPreferences = {
   broadcasts: boolean;
   announcements: boolean;
 };
+export type NotificationCategory = keyof NotificationPreferences;
 
 export async function registerPushToken(
   token: string,
@@ -251,10 +253,17 @@ export async function updateIssueNotificationPreference(
   enabled: boolean,
   authToken: string,
 ) {
+  return updateNotificationPreferences({ issue_updates: enabled }, authToken);
+}
+
+export async function updateNotificationPreferences(
+  preferences: Partial<NotificationPreferences>,
+  authToken: string,
+) {
   return apiRequest<NotificationPreferences>('/me/notification-prefs', {
     method: 'PUT',
     token: authToken,
-    body: { issue_updates: enabled },
+    body: preferences,
   });
 }
 

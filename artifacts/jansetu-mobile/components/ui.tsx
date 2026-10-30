@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
+import { KeyboardAwareScrollViewCompat } from '@/components/KeyboardAwareScrollViewCompat';
 
 const brandIcon = require('../assets/images/icon.png');
 
@@ -22,31 +23,48 @@ export function Screen({
   children,
   contentStyle,
   refreshControl,
+  keyboardAware = false,
 }: React.PropsWithChildren<{
   contentStyle?: StyleProp<ViewStyle>;
   refreshControl?: ReactElement;
+  keyboardAware?: boolean;
 }>) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
+  const contentContainerStyle = [
+    styles.screenContent,
+    {
+      paddingTop:
+        (Platform.OS === 'web' ? Math.max(insets.top, 67) : insets.top) + 14,
+      paddingBottom:
+        (Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 18)) + 110,
+    },
+    contentStyle,
+  ];
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
-      <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
-        keyboardShouldPersistTaps="handled"
-        refreshControl={refreshControl}
-        contentContainerStyle={[
-          styles.screenContent,
-          {
-            paddingTop:
-              (Platform.OS === 'web' ? Math.max(insets.top, 67) : insets.top) + 14,
-            paddingBottom:
-              (Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 18)) + 110,
-          },
-          contentStyle,
-        ]}
-      >
-        {children}
-      </ScrollView>
+      {keyboardAware ? (
+        <KeyboardAwareScrollViewCompat
+          style={styles.scroll}
+          contentInsetAdjustmentBehavior="automatic"
+          keyboardShouldPersistTaps="handled"
+          bottomOffset={64}
+          refreshControl={refreshControl}
+          contentContainerStyle={contentContainerStyle}
+        >
+          {children}
+        </KeyboardAwareScrollViewCompat>
+      ) : (
+        <ScrollView
+          style={styles.scroll}
+          contentInsetAdjustmentBehavior="automatic"
+          keyboardShouldPersistTaps="handled"
+          refreshControl={refreshControl}
+          contentContainerStyle={contentContainerStyle}
+        >
+          {children}
+        </ScrollView>
+      )}
     </View>
   );
 }
@@ -334,6 +352,7 @@ export const uiStyles = StyleSheet.create({
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  scroll: { flex: 1 },
   screenContent: { paddingHorizontal: 20, gap: 19 },
   pageHeader: {
     flexDirection: 'row',

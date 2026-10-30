@@ -151,6 +151,7 @@ export default function FamilyScreen() {
 
   return (
     <Screen
+      keyboardAware
       contentStyle={{ gap: 16 }}
       refreshControl={
         <RefreshControl refreshing={isRefreshing} onRefresh={() => void refreshFamily()} tintColor={colors.primary} />
