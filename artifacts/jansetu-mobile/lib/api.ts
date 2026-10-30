@@ -216,6 +216,8 @@ export type PushInboxResponse = {
   unread_count: number;
 };
 
+export const pushInboxQueryKey = (token: string | null) => ['push-inbox', token] as const;
+
 export type NotificationPreferences = {
   issue_updates: boolean;
   broadcasts: boolean;

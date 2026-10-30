@@ -10,12 +10,14 @@ import { SymbolView } from 'expo-symbols';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Redirect } from 'expo-router';
 import { useAuth } from '@/lib/auth';
+import { apiRequest, pushInboxQueryKey, type PushInboxResponse } from '@/lib/api';
+import { useQuery } from '@tanstack/react-query';
 
 // IMPORTANT: iOS 26 uses NativeTabs for native tabs with liquid glass support.
 // NativeTabs intentionally does NOT use custom design tokens — liquid glass
 // is a system-level appearance provided by iOS and cannot be overridden.
 // Custom brand colors are applied only on the ClassicTabLayout path (older iOS / Android / web).
-function NativeTabLayout() {
+function NativeTabLayout({ unreadCount }: { unreadCount: number }) {
   return (
     <NativeTabs>
       <NativeTabs.Trigger name="index">
@@ -35,6 +37,9 @@ function NativeTabLayout() {
       <NativeTabs.Trigger name="notifications">
         <NativeTabs.Trigger.Icon sf={{ default: 'bell', selected: 'bell.fill' }} />
         <NativeTabs.Trigger.Label>Updates</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Badge hidden={unreadCount === 0}>
+          {String(unreadCount)}
+        </NativeTabs.Trigger.Badge>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="profile">
         <NativeTabs.Trigger.Icon sf={{ default: 'person.crop.circle', selected: 'person.crop.circle.fill' }} />
@@ -44,7 +49,7 @@ function NativeTabLayout() {
   );
 }
 
-function ClassicTabLayout() {
+function ClassicTabLayout({ unreadCount }: { unreadCount: number }) {
   const colors = useColors();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -131,6 +136,7 @@ function ClassicTabLayout() {
         name="notifications"
         options={{
           title: 'Updates',
+          tabBarBadge: unreadCount > 0 ? unreadCount : undefined,
           tabBarIcon: ({ color, focused }) =>
             isIOS ? (
               <SymbolView name="bell" tintColor={color} size={22} />
@@ -156,12 +162,19 @@ function ClassicTabLayout() {
 }
 
 export default function TabLayout() {
-  const { user, loading } = useAuth();
+  const { user, loading, token } = useAuth();
+  const inbox = useQuery({
+    queryKey: pushInboxQueryKey(token),
+    queryFn: () => apiRequest<PushInboxResponse>('/push/inbox?limit=200', { token }),
+    enabled: !!token && user?.role === 'citizen',
+  });
+  const unreadCount = inbox.data?.unread_count ?? 0;
+
   if (loading) return null;
   if (!user) return <Redirect href="/(auth)/login" />;
   if (user.role !== 'citizen') return <Redirect href="/office" />;
   if (isLiquidGlassAvailable()) {
-    return <NativeTabLayout />;
+    return <NativeTabLayout unreadCount={unreadCount} />;
   }
-  return <ClassicTabLayout />;
+  return <ClassicTabLayout unreadCount={unreadCount} />;
 }

@@ -14,14 +14,13 @@ import {
   apiRequest,
   markAllPushNotificationsRead,
   markPushNotificationRead,
+  pushInboxQueryKey,
   type NotificationItem,
   type PushInboxResponse,
   type PushNotification,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useColors } from '@/hooks/useColors';
-
-const inboxQueryKey = (token: string | null) => ['push-inbox', token] as const;
 
 export default function NotificationsScreen() {
   const colors = useColors();
@@ -33,7 +32,7 @@ export default function NotificationsScreen() {
     enabled: !!token,
   });
   const inbox = useQuery({
-    queryKey: inboxQueryKey(token),
+    queryKey: pushInboxQueryKey(token),
     queryFn: () => apiRequest<PushInboxResponse>('/push/inbox?limit=200', { token }),
     enabled: !!token,
   });
@@ -43,7 +42,7 @@ export default function NotificationsScreen() {
       return markPushNotificationRead(id, token);
     },
     onSuccess: (_result, id) => {
-      queryClient.setQueryData<PushInboxResponse>(inboxQueryKey(token), (current) => {
+      queryClient.setQueryData<PushInboxResponse>(pushInboxQueryKey(token), (current) => {
         if (!current) return current;
         const wasUnread = current.notifications.some((item) => item.id === id && !item.read);
         return {
@@ -62,7 +61,7 @@ export default function NotificationsScreen() {
       return markAllPushNotificationsRead(token);
     },
     onSuccess: () => {
-      queryClient.setQueryData<PushInboxResponse>(inboxQueryKey(token), (current) => {
+      queryClient.setQueryData<PushInboxResponse>(pushInboxQueryKey(token), (current) => {
         if (!current) return current;
         return {
           ...current,
