@@ -147,6 +147,7 @@ export type Citizen = {
   id: string;
   name: string;
   role: string;
+  household_id?: string;
   mobile?: string;
   address?: string;
   gender?: string;

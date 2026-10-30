@@ -132,6 +132,26 @@ export default function HomeScreen() {
         </View>
       )}
 
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Open my household and service history"
+        onPress={() => router.push('/my-household')}
+        style={({ pressed }) => ({ opacity: pressed ? 0.84 : 1 })}
+      >
+        <Card style={styles.householdShortcut}>
+          <View style={[styles.householdIcon, { backgroundColor: colors.secondary }]}>
+            <Feather name="home" size={18} color={colors.primary} />
+          </View>
+          <View style={styles.householdText}>
+            <Text style={[styles.householdTitle, { color: colors.foreground }]}>My household</Text>
+            <Text style={[uiStyles.body, { color: colors.mutedForeground }]}>
+              Household members and service history
+            </Text>
+          </View>
+          <Feather name="chevron-right" size={19} color={colors.mutedForeground} />
+        </Card>
+      </Pressable>
+
       <View style={styles.section}>
         <SectionHeading
           title="Your recent issues"
@@ -255,6 +275,10 @@ const styles = StyleSheet.create({
   heroSub: { color: '#DEE5F1', fontFamily: 'Manrope_400Regular', fontSize: 13, lineHeight: 20 },
   heroButton: { backgroundColor: '#FFFFFF', borderColor: '#FFFFFF', alignSelf: 'flex-start', marginTop: 15 },
   heroWatermark: { position: 'absolute', right: -16, top: 29 },
+  householdShortcut: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  householdIcon: { width: 42, height: 42, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  householdText: { flex: 1, gap: 2 },
+  householdTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 15 },
   statsRow: { flexDirection: 'row', gap: 9 },
   stat: { flex: 1, borderWidth: 1, borderRadius: 13, paddingVertical: 13, paddingHorizontal: 10, gap: 5 },
   statValue: { fontFamily: 'Outfit_700Bold', fontSize: 21, marginTop: 2 },

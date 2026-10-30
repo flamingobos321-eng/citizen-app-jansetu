@@ -6,6 +6,12 @@ import { useColors } from '@/hooks/useColors';
 
 const SERVICES = [
   {
+    route: '/my-household',
+    icon: 'home' as const,
+    title: 'My household',
+    description: 'Review your household details, members, and service request history.',
+  },
+  {
     route: '/visits',
     icon: 'calendar' as const,
     title: 'Visits & camps',

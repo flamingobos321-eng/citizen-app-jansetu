@@ -134,6 +134,13 @@ export default function ProfileScreen() {
         <ProfileRow label="Address" value={user?.address} last />
       </Card>
 
+      <ActionButton
+        title="View my household"
+        icon="home"
+        variant="outline"
+        onPress={() => router.push('/my-household')}
+      />
+
       <Card style={styles.notificationCard}>
         <View style={styles.notificationHeading}>
           <View style={[styles.notificationIcon, { backgroundColor: colors.infoBackground }]}>

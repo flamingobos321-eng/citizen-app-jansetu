@@ -106,6 +106,7 @@ function RootLayoutNav() {
       <Stack.Screen name="devworks" options={{ headerShown: false }} />
       <Stack.Screen name="households" options={{ headerShown: false }} />
       <Stack.Screen name="households/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="my-household" options={{ headerShown: false }} />
       <Stack.Screen name="persons/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="campaigns" options={{ headerShown: false }} />
       <Stack.Screen name="campaigns/[id]" options={{ headerShown: false }} />
