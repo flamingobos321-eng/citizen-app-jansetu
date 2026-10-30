@@ -12,7 +12,7 @@ import {
 import { KeyboardAwareScrollViewCompat } from '@/components/KeyboardAwareScrollViewCompat';
 import { ActionButton, BrandMark, ErrorNotice } from '@/components/ui';
 import { RepresentativeIdentity } from '@/components/RepresentativeIdentity';
-import { apiRequest, type Portal } from '@/lib/api';
+import { apiRequest, type Citizen, type Portal } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useColors } from '@/hooks/useColors';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -25,10 +25,13 @@ export default function LoginScreen() {
   const { signIn } = useAuth();
   const [officeCode, setOfficeCode] = useState('');
   const [portal, setPortal] = useState<Portal | null>(null);
+  const [accountMode, setAccountMode] = useState<'citizen' | 'office'>('citizen');
   const [mobile, setMobile] = useState('');
   const [otp, setOtp] = useState('');
   const [demoOtp, setDemoOtp] = useState('');
-  const [step, setStep] = useState<'office' | 'mobile' | 'otp'>('office');
+  const [staffEmail, setStaffEmail] = useState('');
+  const [staffPassword, setStaffPassword] = useState('');
+  const [step, setStep] = useState<'office' | 'mobile' | 'otp' | 'staff'>('office');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
@@ -50,7 +53,7 @@ export default function LoginScreen() {
       const details = await apiRequest<Portal>(`/portals/office/${encodeURIComponent(code)}`);
       setPortal(details);
       setOfficeCode(code);
-      setStep('mobile');
+      setStep(accountMode === 'office' ? 'staff' : 'mobile');
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Office not found. Check the code.');
@@ -153,6 +156,50 @@ export default function LoginScreen() {
     }
   };
 
+  const signInAsOfficeUser = async () => {
+    const email = staffEmail.trim().toLowerCase();
+    if (!email || !staffPassword) {
+      setError('Enter your work email and password.');
+      return;
+    }
+    setLoading(true);
+    dismissError();
+    try {
+      const result = await apiRequest<{ token?: string; user?: Citizen }>('/auth/staff/login', {
+        method: 'POST',
+        body: { email, password: staffPassword, tenant_slug: officeCode },
+      });
+      if (!result.token || !result.user) {
+        setError('The office sign-in response was incomplete. Please try again.');
+        return;
+      }
+      if (!['admin', 'pa', 'politician', 'worker'].includes(result.user.role)) {
+        setError('This account cannot sign in to the mobile office workspace.');
+        return;
+      }
+      await signIn(result.token, result.user);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      router.replace('/office');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not sign in to the office account.');
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const changeAccountMode = (mode: 'citizen' | 'office') => {
+    setAccountMode(mode);
+    setStep('office');
+    setPortal(null);
+    setMobile('');
+    setOtp('');
+    setDemoOtp('');
+    setStaffEmail('');
+    setStaffPassword('');
+    dismissError();
+  };
+
   const officeName =
     portal?.politician_name || portal?.constituency_name || 'JanSetu citizen services';
   const markColor = portal?.theme_color || colors.primary;
@@ -175,7 +222,7 @@ export default function LoginScreen() {
           <View>
             <Text style={[styles.brandName, { color: colors.primary }]}>JANSETU</Text>
             <Text style={[styles.brandCaption, { color: colors.mutedForeground }]}>
-              Citizen services
+              {accountMode === 'citizen' ? 'Citizen services' : 'Office team'}
             </Text>
           </View>
         </View>
@@ -186,17 +233,23 @@ export default function LoginScreen() {
           </Text>
           <Text style={[styles.title, { color: colors.foreground }]}>
             {step === 'office'
-              ? 'Welcome to JanSetu'
+              ? accountMode === 'citizen' ? 'Welcome to JanSetu' : 'Office team sign-in'
               : step === 'mobile'
                 ? 'Sign in to your office'
-                : 'Verify your number'}
+                : step === 'staff'
+                  ? 'Sign in to your office'
+                  : 'Verify your number'}
           </Text>
           <Text style={[styles.description, { color: colors.mutedForeground }]}>
             {step === 'office'
-              ? 'Enter your office code to access the right constituency services.'
+              ? accountMode === 'citizen'
+                ? 'Enter your office code to access the right constituency services.'
+                : 'Enter your office code to access your office account.'
               : step === 'mobile'
                 ? `Continue with ${officeName}.`
-                : `We sent a one-time code to +91 ${mobile}.`}
+                : step === 'staff'
+                  ? `Continue with ${officeName}.`
+                  : `We sent a one-time code to +91 ${mobile}.`}
           </Text>
         </View>
 
@@ -285,6 +338,77 @@ export default function LoginScreen() {
             </>
           ) : null}
 
+          {step === 'staff' ? (
+            <>
+              <Pressable
+                onPress={() => {
+                  setStep('office');
+                  setPortal(null);
+                  setStaffPassword('');
+                  dismissError();
+                }}
+                style={styles.backLink}
+              >
+                <Feather name="arrow-left" size={16} color={colors.primary} />
+                <Text style={[styles.backText, { color: colors.primary }]}>
+                  Office {portal?.office_code || officeCode} · Change
+                </Text>
+              </Pressable>
+              <RepresentativeIdentity
+                name={portal?.politician_name || officeName}
+                subtitle={portal?.constituency_name || `Office ${portal?.office_code || officeCode}`}
+                label="OFFICE TEAM"
+                accentColor={markColor}
+                style={[styles.officePreview, { backgroundColor: colors.secondary }]}
+              />
+              <FieldLabel label="Work email" />
+              <TextInput
+                value={staffEmail}
+                onChangeText={(value) => {
+                  setStaffEmail(value);
+                  dismissError();
+                }}
+                placeholder="name@office.in"
+                placeholderTextColor={colors.mutedForeground}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+                textContentType="emailAddress"
+                autoComplete="email"
+                returnKeyType="next"
+                style={[styles.input, { borderColor: colors.input, color: colors.foreground }]}
+                accessibilityLabel="Office team email"
+                testID="staff-email-input"
+              />
+              <FieldLabel label="Password" />
+              <TextInput
+                value={staffPassword}
+                onChangeText={(value) => {
+                  setStaffPassword(value);
+                  dismissError();
+                }}
+                placeholder="Enter your password"
+                placeholderTextColor={colors.mutedForeground}
+                secureTextEntry
+                autoCapitalize="none"
+                textContentType="password"
+                autoComplete="current-password"
+                returnKeyType="go"
+                onSubmitEditing={() => void signInAsOfficeUser()}
+                style={[styles.input, { borderColor: colors.input, color: colors.foreground, marginTop: 12 }]}
+                accessibilityLabel="Office team password"
+                testID="staff-password-input"
+              />
+              <ActionButton
+                title="Sign in"
+                icon="log-in"
+                onPress={() => void signInAsOfficeUser()}
+                loading={loading}
+                style={{ marginTop: 16 }}
+              />
+            </>
+          ) : null}
+
           {step === 'otp' ? (
             <>
               <Pressable
@@ -356,11 +480,24 @@ export default function LoginScreen() {
         </View>
 
         <View style={styles.privacyRow}>
-          <Feather name="lock" size={14} color={colors.mutedForeground} />
+          <Feather name={accountMode === 'citizen' ? 'lock' : 'shield'} size={14} color={colors.mutedForeground} />
           <Text style={[styles.privacyText, { color: colors.mutedForeground }]}>
-            Your number is used only to verify your citizen account.
+            {accountMode === 'citizen'
+              ? 'Your number is used only to verify your citizen account.'
+              : 'Office access is limited to your constituency account.'}
           </Text>
         </View>
+        <Pressable
+          onPress={() => changeAccountMode(accountMode === 'citizen' ? 'office' : 'citizen')}
+          accessibilityRole="button"
+          style={styles.modeSwitch}
+        >
+          <Text style={[styles.modeSwitchText, { color: colors.primary }]}>
+            {accountMode === 'citizen'
+              ? 'Representative, admin or staff? Sign in here'
+              : 'Are you a citizen? Use mobile OTP'}
+          </Text>
+        </Pressable>
       </KeyboardAwareScrollViewCompat>
     </View>
   );
@@ -400,4 +537,6 @@ const styles = StyleSheet.create({
   demoCode: { fontFamily: 'Outfit_700Bold', fontSize: 24, letterSpacing: 6, marginTop: 2 },
   privacyRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 7, marginTop: 18 },
   privacyText: { fontFamily: 'Manrope_400Regular', fontSize: 11 },
+  modeSwitch: { alignSelf: 'center', marginTop: 14, paddingVertical: 8, paddingHorizontal: 10 },
+  modeSwitchText: { fontFamily: 'Manrope_700Bold', fontSize: 12, textAlign: 'center' },
 });

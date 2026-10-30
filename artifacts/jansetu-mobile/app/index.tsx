@@ -35,9 +35,6 @@ export default function IndexRoute() {
       </View>
     );
   }
-  return user ? (
-    <Redirect href="/(tabs)" />
-  ) : (
-    <Redirect href="/(auth)/login" />
-  );
+  if (!user) return <Redirect href="/(auth)/login" />;
+  return <Redirect href={user.role === 'citizen' ? '/(tabs)' : '/office'} />;
 }

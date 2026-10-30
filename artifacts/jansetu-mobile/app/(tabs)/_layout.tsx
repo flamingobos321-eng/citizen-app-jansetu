@@ -8,6 +8,8 @@ import { Tabs } from 'expo-router';
 import { NativeTabs } from 'expo-router/native-tabs';
 import { SymbolView } from 'expo-symbols';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Redirect } from 'expo-router';
+import { useAuth } from '@/lib/auth';
 
 // IMPORTANT: iOS 26 uses NativeTabs for native tabs with liquid glass support.
 // NativeTabs intentionally does NOT use custom design tokens — liquid glass
@@ -138,6 +140,10 @@ function ClassicTabLayout() {
 }
 
 export default function TabLayout() {
+  const { user, loading } = useAuth();
+  if (loading) return null;
+  if (!user) return <Redirect href="/(auth)/login" />;
+  if (user.role !== 'citizen') return <Redirect href="/office" />;
   if (isLiquidGlassAvailable()) {
     return <NativeTabLayout />;
   }
