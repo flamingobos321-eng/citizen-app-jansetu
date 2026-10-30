@@ -121,6 +121,10 @@ class _Database:
             {"id": "JS1000", "constituency_name": "North Constituency"},
             {"id": "JS2000", "constituency_name": "South Constituency"},
         ])
+        self.push_notifications = _Collection()
+        self.device_tokens = _Collection([
+            {"user_id": "user-b", "token": "ExpoPushToken[unit-test]"},
+        ])
 
     def __getitem__(self, name):
         return getattr(self, name)
@@ -171,5 +175,73 @@ def test_cross_constituency_invite_links_profiles_without_moving_records():
         assert await family_links.list_family_members(db, db.users.documents[0]) == []
         assert await family_links.list_family_members(db, db.users.documents[1]) == []
         assert db.users.documents == [sender_before, recipient_before]
+
+    asyncio.run(scenario())
+
+
+def test_cross_constituency_invitation_sends_a_family_screen_alert():
+    import os
+
+    os.environ.setdefault("MONGO_URL", "mongodb://127.0.0.1:27017")
+    os.environ.setdefault("DB_NAME", "family_link_unit_test")
+    os.environ.setdefault("JWT_SECRET", "family-link-unit-test-secret")
+    import server
+
+    async def scenario():
+        db = _Database()
+        previous_db = server.db
+        previous_send = server.push_service.send
+        sent_pushes = []
+
+        def capture_send(tokens, title, body, data=None, click_action=None):
+            sent_pushes.append({
+                "tokens": tokens,
+                "title": title,
+                "body": body,
+                "data": data,
+                "click_action": click_action,
+            })
+            return {"success": len(tokens), "failure": 0, "invalid_tokens": []}
+
+        server.db = db
+        server.push_service.send = capture_send
+        server._push_fcm_last_sent.pop(("user-b", "family_invitation"), None)
+        try:
+            result = await server.family_link(
+                server.FamilyLinkRequest(
+                    relation_type="Sister",
+                    mobile="9000000002",
+                    target_name="Ravi",
+                ),
+                {
+                    "id": "user-a",
+                    "person_id": "person-a",
+                    "name": "Asha",
+                    "mobile": "9000000001",
+                    "tenant_id": "JS1000",
+                    "role": "citizen",
+                },
+            )
+        finally:
+            server.db = previous_db
+            server.push_service.send = previous_send
+            server._push_fcm_last_sent.pop(("user-b", "family_invitation"), None)
+
+        assert result["pending"] is True
+        assert len(db.push_notifications.documents) == 1
+        inbox_alert = db.push_notifications.documents[0]
+        assert inbox_alert["user_id"] == "user-b"
+        assert inbox_alert["tenant_id"] == "JS2000"
+        assert inbox_alert["kind"] == "family_invitation"
+        assert server.KIND_TO_CATEGORY["family_invitation"] == "announcements"
+        assert inbox_alert["click_action"] == "/family"
+        assert inbox_alert["data"]["notification_type"] == "family_invitation"
+        assert inbox_alert["data"]["family_invitation_id"] == result["invitation_id"]
+        assert "Asha" in inbox_alert["body"]
+        assert "Sister" in inbox_alert["body"]
+        assert "9000000002" not in inbox_alert["body"]
+        assert len(sent_pushes) == 1
+        assert sent_pushes[0]["tokens"] == ["ExpoPushToken[unit-test]"]
+        assert sent_pushes[0]["click_action"] == "/family"
 
     asyncio.run(scenario())

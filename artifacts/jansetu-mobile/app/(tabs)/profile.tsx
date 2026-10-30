@@ -30,7 +30,7 @@ const NOTIFICATION_CATEGORIES: {
   {
     key: 'announcements',
     label: 'General alerts',
-    description: 'Reminders, events, and other general notifications.',
+    description: 'Reminders, events, family link requests, and other general notifications.',
   },
 ];
 

@@ -61,6 +61,7 @@ function RootLayoutNav() {
   const { user, loading } = useAuth();
   const segments = useSegments();
   const pendingIssueId = React.useRef<string | null>(null);
+  const pendingFamilyInvite = React.useRef(false);
 
   const handleNotificationResponse = React.useCallback((response: Notifications.NotificationResponse) => {
     const data = response.notification.request.content.data ?? {};
@@ -76,15 +77,34 @@ function RootLayoutNav() {
       typeof rawIssueId === 'string' && rawIssueId.trim()
         ? rawIssueId
         : routeMatch?.[1];
-    if (issueId) {
+    const isFamilyInvite =
+      data.notification_type === 'family_invitation' ||
+      typeof data.family_invitation_id === 'string' ||
+      clickAction.split('?')[0].endsWith('/family');
+    if (isFamilyInvite) {
+      if (!loading && user) {
+        router.push('/family');
+      } else {
+        pendingFamilyInvite.current = true;
+      }
+    } else if (issueId) {
       try {
-        pendingIssueId.current = decodeURIComponent(issueId);
+        const decodedIssueId = decodeURIComponent(issueId);
+        if (!loading && user) {
+          router.push(`/issues/${encodeURIComponent(decodedIssueId)}`);
+        } else {
+          pendingIssueId.current = decodedIssueId;
+        }
       } catch {
-        pendingIssueId.current = issueId;
+        if (!loading && user) {
+          router.push(`/issues/${encodeURIComponent(issueId)}`);
+        } else {
+          pendingIssueId.current = issueId;
+        }
       }
     }
     void Notifications.clearLastNotificationResponseAsync();
-  }, []);
+  }, [loading, user]);
 
   useEffect(() => {
     if (Platform.OS === 'web') return undefined;
@@ -98,6 +118,11 @@ function RootLayoutNav() {
   }, [handleNotificationResponse]);
 
   useEffect(() => {
+    if (!loading && user && pendingFamilyInvite.current) {
+      pendingFamilyInvite.current = false;
+      router.push('/family');
+      return;
+    }
     if (!loading && user && pendingIssueId.current) {
       const issueId = pendingIssueId.current;
       pendingIssueId.current = null;

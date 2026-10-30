@@ -87,11 +87,11 @@ export default function NotificationsScreen() {
       <PageHeader
         eyebrow="FROM YOUR OFFICE"
         title="Updates"
-        subtitle="Issue alerts and announcements from your representative's office."
+        subtitle="Issue updates, family link requests, and office announcements."
       />
       <View style={styles.section}>
         <View style={styles.headingRow}>
-          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Issue alerts</Text>
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Alerts</Text>
           {inbox.data?.unread_count ? (
             <View style={styles.alertActions}>
               <View style={[styles.unreadCount, { backgroundColor: colors.infoBackground }]}>
@@ -101,7 +101,7 @@ export default function NotificationsScreen() {
               </View>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Mark all issue alerts as read"
+                accessibilityLabel="Mark all alerts as read"
                 accessibilityState={{ disabled: markAllRead.isPending }}
                 disabled={markAllRead.isPending}
                 onPress={() => markAllRead.mutate()}
@@ -125,12 +125,12 @@ export default function NotificationsScreen() {
         {inbox.isLoading ? (
           <View style={styles.loading}>
             <Text style={{ color: colors.mutedForeground, fontFamily: 'Manrope_500Medium' }}>
-              Loading issue alerts…
+              Loading alerts…
             </Text>
           </View>
         ) : inbox.isError ? (
           <ErrorNotice
-            message={inbox.error instanceof Error ? inbox.error.message : 'Could not load issue alerts.'}
+            message={inbox.error instanceof Error ? inbox.error.message : 'Could not load alerts.'}
             onRetry={() => void inbox.refetch()}
           />
         ) : inbox.data?.notifications.length ? (
@@ -141,6 +141,10 @@ export default function NotificationsScreen() {
                 item={item}
                 onPress={() => {
                   if (!item.read) markRead.mutate(item.id);
+                  if (isFamilyLinkNotification(item)) {
+                    router.push('/family');
+                    return;
+                  }
                   const issueId = getIssueId(item);
                   if (issueId) router.push(`/issues/${encodeURIComponent(issueId)}`);
                 }}
@@ -150,7 +154,7 @@ export default function NotificationsScreen() {
         ) : (
           <Card style={styles.emptyFeed}>
             <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
-              Issue progress alerts will appear here.
+              Issue and family alerts will appear here.
             </Text>
           </Card>
         )}
@@ -164,7 +168,7 @@ export default function NotificationsScreen() {
         ) : null}
         {markAllRead.isError ? (
           <ErrorNotice
-            message="Issue alerts could not be marked as read. Please try again."
+            message="Alerts could not be marked as read. Please try again."
             onRetry={() => markAllRead.mutate()}
           />
         ) : null}
@@ -214,10 +218,11 @@ function PushNotificationCard({
 }) {
   const colors = useColors();
   const issueId = getIssueId(item);
+  const familyLinkRequest = isFamilyLinkNotification(item);
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${item.read ? '' : 'Unread alert. '}${item.title}${issueId ? '. Open issue details.' : ''}`}
+      accessibilityLabel={`${item.read ? '' : 'Unread alert. '}${item.title}${familyLinkRequest ? '. Review family request.' : issueId ? '. Open issue details.' : ''}`}
       accessibilityState={{ selected: !item.read }}
       onPress={onPress}
       testID={`push-notification-${item.id}`}
@@ -231,7 +236,7 @@ function PushNotificationCard({
           ]}
         >
           <Feather
-            name={issueId ? 'file-text' : 'bell'}
+            name={familyLinkRequest ? 'users' : issueId ? 'file-text' : 'bell'}
             size={16}
             color={item.read ? colors.mutedForeground : colors.info}
           />
@@ -250,7 +255,12 @@ function PushNotificationCard({
           </View>
           <Text style={[styles.title, { color: colors.foreground }]}>{item.title}</Text>
           <Text style={[styles.body, { color: colors.mutedForeground }]}>{item.body}</Text>
-          {issueId ? (
+          {familyLinkRequest ? (
+            <View style={styles.openIssue}>
+              <Text style={[styles.openIssueText, { color: colors.primary }]}>Review family request</Text>
+              <Feather name="arrow-up-right" size={13} color={colors.primary} />
+            </View>
+          ) : issueId ? (
             <View style={styles.openIssue}>
               <Text style={[styles.openIssueText, { color: colors.primary }]}>View issue</Text>
               <Feather name="arrow-up-right" size={13} color={colors.primary} />
@@ -293,6 +303,14 @@ function getIssueId(item: PushNotification): string | null {
   } catch {
     return routeMatch[1];
   }
+}
+
+function isFamilyLinkNotification(item: PushNotification): boolean {
+  return (
+    item.data?.notification_type === 'family_invitation' ||
+    typeof item.data?.family_invitation_id === 'string' ||
+    item.click_action === '/family'
+  );
 }
 
 const styles = StyleSheet.create({

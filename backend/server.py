@@ -4354,6 +4354,7 @@ async def family_link(payload: FamilyLinkRequest, user: dict = Depends(get_curre
         {"mobile": mobile, "role": "citizen", "is_active": {"$ne": False}},
         {"_id": 0, "id": 1, "person_id": 1},
     ).to_list(20)
+    target_user_id = None
     for other_active in other_active_rows:
         other_person_id = (
             other_active.get("person_id")
@@ -4361,6 +4362,8 @@ async def family_link(payload: FamilyLinkRequest, user: dict = Depends(get_curre
         )
         if other_person_id == person_id:
             raise HTTPException(409, "You cannot link your account to itself")
+        if target_user_id is None and other_active["id"] != user["id"]:
+            target_user_id = other_active["id"]
 
     target = await db.users.find_one({
         "mobile": mobile, "role": "citizen",
@@ -4428,6 +4431,26 @@ async def family_link(payload: FamilyLinkRequest, user: dict = Depends(get_curre
         marriage_anniversary=payload.marriage_anniversary,
     ).model_dump()
     await db.family_invitations.insert_one(inv)
+    if target_user_id:
+        try:
+            await _push_to_user(
+                target_user_id,
+                title="Family link request",
+                body=(
+                    f"{user.get('name') or 'A citizen'} invited you to connect "
+                    f"as their {payload.relation_type}. Review it in Family Members."
+                ),
+                kind="family_invitation",
+                data={
+                    "notification_type": "family_invitation",
+                    "family_invitation_id": inv["id"],
+                },
+                click_action="/family",
+            )
+        except Exception:
+            # The invitation remains valid even if the push provider is
+            # temporarily unavailable.
+            logger.exception("family invitation notification failed for %s", inv["id"])
     return {"linked": False, "invitation_id": inv["id"], "pending": True}
 
 

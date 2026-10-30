@@ -1219,6 +1219,7 @@ KIND_TO_CATEGORY: dict = {
     "issue": "issue_updates",
     "broadcast": "broadcasts",
     "info": "announcements",
+    "family_invitation": "announcements",
     "celebration": "announcements",
     "reminder": "announcements",
 }
