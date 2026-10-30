@@ -132,6 +132,8 @@ export default function OfficeWorkspaceScreen() {
             <Pressable
               key={issue.id}
               accessibilityRole="button"
+              accessibilityLabel={`${issue.issue_code}: ${issue.title}. Status ${issue.status}. Open issue details.`}
+              accessibilityHint="Opens this issue's details."
               onPress={() => router.push(`/issues/${encodeURIComponent(issue.id)}`)}
               style={({ pressed }) => [
                 styles.issueCard,
@@ -213,14 +215,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   summaryValue: { fontFamily: 'Outfit_700Bold', fontSize: 23 },
-  summaryLabel: { fontFamily: 'Manrope_500Medium', fontSize: 10, marginTop: 2 },
+  summaryLabel: { fontFamily: 'Manrope_500Medium', fontSize: 12, marginTop: 2 },
   sectionHeader: { marginTop: 2 },
   sectionTitle: { fontFamily: 'Outfit_700Bold', fontSize: 20 },
   issueCard: { borderWidth: 1, borderRadius: 14, padding: 14, gap: 12 },
   issueTop: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  issueCode: { fontFamily: 'Manrope_700Bold', fontSize: 10, letterSpacing: 0.7 },
+  issueCode: { fontFamily: 'Manrope_700Bold', fontSize: 11, letterSpacing: 0.6 },
   issueTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 15, lineHeight: 20, marginTop: 3 },
   issueBottom: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  issueMeta: { flex: 1, fontFamily: 'Manrope_500Medium', fontSize: 10 },
-  moreNote: { textAlign: 'center', fontSize: 11 },
+  issueMeta: { flex: 1, fontFamily: 'Manrope_500Medium', fontSize: 12 },
+  moreNote: { textAlign: 'center', fontSize: 12 },
 });

@@ -1,7 +1,7 @@
 import { Feather } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
-import { router, useLocalSearchParams } from 'expo-router';
-import { StyleSheet, Text, View } from 'react-native';
+import { Redirect, router, useLocalSearchParams } from 'expo-router';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   Card,
   ErrorNotice,
@@ -18,7 +18,7 @@ type IssueDetailResponse = { issue: Issue };
 
 export default function IssueDetailScreen() {
   const colors = useColors();
-  const { token } = useAuth();
+  const { token, user, loading: authLoading } = useAuth();
   const { id } = useLocalSearchParams<{ id: string }>();
   const query = useQuery({
     queryKey: ['citizen-issue', id, token],
@@ -27,16 +27,26 @@ export default function IssueDetailScreen() {
   });
   const issue = query.data?.issue;
 
+  const goBack = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace(user?.role === 'citizen' ? '/(tabs)/issues' : '/office');
+  };
+
+  if (authLoading) return null;
+  if (!token) return <Redirect href="/(auth)/login" />;
+
   return (
     <Screen>
       <View style={styles.topline}>
-        <Text
+        <Pressable
           accessibilityRole="button"
-          onPress={() => router.back()}
-          style={[styles.back, { color: colors.primary }]}
+          accessibilityLabel="Go back"
+          onPress={goBack}
+          style={styles.backButton}
         >
-          ‹  Back to issues
-        </Text>
+          <Feather name="chevron-left" size={18} color={colors.primary} />
+          <Text style={[styles.back, { color: colors.primary }]}>Back to issues</Text>
+        </Pressable>
       </View>
       {query.isLoading ? (
         <Card>
@@ -121,11 +131,19 @@ export default function IssueDetailScreen() {
 
 const styles = StyleSheet.create({
   topline: { marginLeft: -2 },
-  back: { fontFamily: 'Manrope_700Bold', fontSize: 13, paddingVertical: 4 },
+  backButton: {
+    minHeight: 44,
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 4,
+  },
+  back: { fontFamily: 'Manrope_700Bold', fontSize: 14 },
   statusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  label: { fontFamily: 'Manrope_700Bold', fontSize: 10, letterSpacing: 1 },
+  label: { fontFamily: 'Manrope_700Bold', fontSize: 11, letterSpacing: 0.8 },
   metaRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  meta: { flex: 1, fontFamily: 'Manrope_500Medium', fontSize: 11, lineHeight: 17 },
+  meta: { flex: 1, fontFamily: 'Manrope_500Medium', fontSize: 12, lineHeight: 18 },
   sectionTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 19, marginTop: 4 },
   timelineItem: { flexDirection: 'row', gap: 12, minHeight: 80 },
   timelineRail: { alignItems: 'center', width: 13 },

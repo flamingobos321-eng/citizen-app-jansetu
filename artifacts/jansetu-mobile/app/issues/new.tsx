@@ -1,11 +1,11 @@
 import { Feather } from '@expo/vector-icons';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { router } from 'expo-router';
+import { Redirect, router } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { useState } from 'react';
-import { Image, Platform } from 'react-native';
+import { ActivityIndicator, Image, Platform } from 'react-native';
 import {
   Pressable,
   StyleSheet,
@@ -32,7 +32,7 @@ const MAX_ISSUE_PHOTOS = 5;
 
 export default function NewIssueScreen() {
   const colors = useColors();
-  const { token } = useAuth();
+  const { token, user, loading: authLoading } = useAuth();
   const [category, setCategory] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -48,6 +48,7 @@ export default function NewIssueScreen() {
   const categories = useQuery({
     queryKey: ['issue-categories'],
     queryFn: () => apiRequest<CategoryResponse>('/meta/categories'),
+    enabled: !!token && user?.role === 'citizen',
   });
   const submitIssue = useMutation({
     mutationFn: async () => {
@@ -192,10 +193,19 @@ export default function NewIssueScreen() {
     submitIssue.mutate();
   };
 
+  const goBack = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/(tabs)/issues');
+  };
+
+  if (authLoading) return null;
+  if (!token) return <Redirect href="/(auth)/login" />;
+  if (user?.role !== 'citizen') return <Redirect href="/office" />;
+
   return (
     <Screen>
       <Pressable
-        onPress={() => router.back()}
+        onPress={goBack}
         accessibilityRole="button"
         accessibilityLabel="Go back"
         style={styles.backButton}
@@ -382,19 +392,27 @@ export default function NewIssueScreen() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={location ? 'Update issue location' : 'Add issue location'}
+          accessibilityHint="Adds your current location to this issue report."
           onPress={() => void captureLocation()}
           disabled={locationLoading}
+          style={({ pressed }) => [
+            styles.locationAction,
+            { backgroundColor: colors.secondary, opacity: pressed ? 0.75 : 1 },
+          ]}
         >
           {locationLoading ? (
-            <Text style={{ color: colors.primary, fontFamily: 'Manrope_700Bold', fontSize: 12 }}>
-              …
-            </Text>
+            <ActivityIndicator size="small" color={colors.primary} />
           ) : (
-            <Feather
-              name={location ? 'check-circle' : 'crosshair'}
-              size={20}
-              color={location ? colors.success : colors.primary}
-            />
+            <>
+              <Feather
+                name={location ? 'check-circle' : 'crosshair'}
+                size={16}
+                color={location ? colors.success : colors.primary}
+              />
+              <Text style={[styles.locationActionText, { color: colors.primary }]}>
+                {location ? 'Update' : 'Add'}
+              </Text>
+            </>
           )}
         </Pressable>
       </Card>
@@ -421,7 +439,7 @@ const styles = StyleSheet.create({
   category: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
   categoryText: { fontFamily: 'Manrope_600SemiBold', fontSize: 12 },
   photoHeading: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  photoCount: { fontFamily: 'Manrope_600SemiBold', fontSize: 11 },
+  photoCount: { fontFamily: 'Manrope_600SemiBold', fontSize: 12 },
   photoActions: { flexDirection: 'row', gap: 9 },
   photoAction: { flex: 1, paddingHorizontal: 8 },
   photoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 9 },
@@ -429,10 +447,21 @@ const styles = StyleSheet.create({
   photoImage: { width: 76, height: 76, borderRadius: 10 },
   removePhoto: { position: 'absolute', top: 4, right: 4, width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   description: { minHeight: 128, paddingTop: 14 },
-  counter: { fontFamily: 'Manrope_500Medium', fontSize: 10, textAlign: 'right' },
+  counter: { fontFamily: 'Manrope_500Medium', fontSize: 11, textAlign: 'right' },
   locationCard: { flexDirection: 'row', alignItems: 'center', gap: 11 },
+  locationAction: {
+    minWidth: 62,
+    minHeight: 44,
+    borderRadius: 12,
+    paddingHorizontal: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  locationActionText: { fontFamily: 'Manrope_700Bold', fontSize: 12 },
   locationIcon: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   locationTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 14 },
-  locationText: { fontFamily: 'Manrope_400Regular', fontSize: 11, lineHeight: 16, marginTop: 3 },
-  privacy: { fontFamily: 'Manrope_400Regular', fontSize: 11, lineHeight: 17, textAlign: 'center', marginTop: -5 },
+  locationText: { fontFamily: 'Manrope_400Regular', fontSize: 12, lineHeight: 17, marginTop: 3 },
+  privacy: { fontFamily: 'Manrope_400Regular', fontSize: 12, lineHeight: 18, textAlign: 'center', marginTop: -5 },
 });

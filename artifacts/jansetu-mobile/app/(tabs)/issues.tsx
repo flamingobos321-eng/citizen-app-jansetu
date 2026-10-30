@@ -74,7 +74,10 @@ function IssueCard({ issue }: { issue: Issue }) {
   const colors = useColors();
   return (
     <Pressable
-      onPress={() => router.push(`/issues/${issue.id}`)}
+      accessibilityRole="button"
+      accessibilityLabel={`${issue.issue_code}: ${issue.title}. Status ${issue.status}. Open issue details.`}
+      accessibilityHint="Opens this issue's details."
+      onPress={() => router.push(`/issues/${encodeURIComponent(issue.id)}`)}
       style={({ pressed }) => [
         styles.card,
         { borderColor: colors.border, backgroundColor: colors.card, opacity: pressed ? 0.82 : 1 },
@@ -103,8 +106,8 @@ const styles = StyleSheet.create({
   loading: { minHeight: 180, alignItems: 'center', justifyContent: 'center' },
   card: { borderWidth: 1, borderRadius: 14, padding: 15, gap: 13 },
   cardTop: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  code: { fontFamily: 'Manrope_700Bold', fontSize: 10, letterSpacing: 0.8 },
+  code: { fontFamily: 'Manrope_700Bold', fontSize: 11, letterSpacing: 0.6 },
   title: { fontFamily: 'Outfit_600SemiBold', fontSize: 16, lineHeight: 21, marginTop: 3 },
   cardBottom: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  meta: { fontFamily: 'Manrope_500Medium', fontSize: 11, flex: 1 },
+  meta: { fontFamily: 'Manrope_500Medium', fontSize: 12, flex: 1 },
 });
