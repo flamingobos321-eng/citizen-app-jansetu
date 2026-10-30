@@ -133,6 +133,12 @@ export async function uploadIssuePhoto(
   });
 }
 
+export function authenticatedFileUrl(path: string): string | null {
+  if (!API_BASE_URL || !path) return null;
+  const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+  return `${API_BASE_URL}/files/${encodedPath}`;
+}
+
 export type Portal = {
   office_code?: string;
   slug?: string;
@@ -180,6 +186,7 @@ export type Issue = {
     at?: string;
     status?: string;
   } | null;
+  photos?: string[];
   timeline?: Array<{ status: string; at: string; by?: string; note?: string }>;
 };
 

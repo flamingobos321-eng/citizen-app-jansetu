@@ -3,7 +3,17 @@ import * as ImagePicker from 'expo-image-picker';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { Alert, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Modal,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import {
   ActionButton,
   Card,
@@ -13,11 +23,74 @@ import {
   StatusBadge,
   uiStyles,
 } from '@/components/ui';
-import { apiRequest, uploadIssuePhoto, type Issue } from '@/lib/api';
+import {
+  apiRequest,
+  authenticatedFileUrl,
+  uploadIssuePhoto,
+  type Issue,
+} from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useColors } from '@/hooks/useColors';
 
 type IssueDetailResponse = { issue: Issue };
+
+function IssuePhotoThumbnail({
+  path,
+  index,
+  token,
+  onPress,
+}: {
+  path: string;
+  index: number;
+  token: string | null;
+  onPress: () => void;
+}) {
+  const colors = useColors();
+  const photoUrl = authenticatedFileUrl(path);
+  const [loading, setLoading] = useState(Boolean(photoUrl && token));
+  const [unavailable, setUnavailable] = useState(!photoUrl || !token);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open issue photo ${index + 1}`}
+      testID={`issue-photo-${index}`}
+      onPress={onPress}
+      style={[
+        styles.photoThumbnail,
+        { backgroundColor: colors.muted, borderColor: colors.border },
+      ]}
+    >
+      {!unavailable && photoUrl && token ? (
+        <>
+          <Image
+            source={{ uri: photoUrl, headers: { Authorization: `Bearer ${token}` } }}
+            style={styles.photoImage}
+            resizeMode="cover"
+            onLoadStart={() => setLoading(true)}
+            onLoadEnd={() => setLoading(false)}
+            onError={() => {
+              setLoading(false);
+              setUnavailable(true);
+            }}
+          />
+          {loading ? (
+            <View style={styles.thumbnailLoading}>
+              <ActivityIndicator size="small" color={colors.primary} />
+            </View>
+          ) : null}
+        </>
+      ) : (
+        <View style={styles.photoUnavailable}>
+          <Feather name="alert-circle" size={18} color={colors.mutedForeground} />
+          <Text style={[styles.unavailableText, { color: colors.mutedForeground }]}>
+            Unavailable
+          </Text>
+        </View>
+      )}
+    </Pressable>
+  );
+}
 type Worker = { id: string; name: string; designation?: string; mobile?: string };
 const WORKFLOW_STATUSES = ['Under Review', 'In Progress', 'Resolved'];
 const MAX_COMPLETION_PHOTOS = 5;
@@ -27,6 +100,9 @@ export default function IssueDetailScreen() {
   const queryClient = useQueryClient();
   const { token, user, loading: authLoading } = useAuth();
   const { id } = useLocalSearchParams<{ id: string }>();
+  const [selectedPhoto, setSelectedPhoto] = useState<string | null>(null);
+  const [selectedPhotoUnavailable, setSelectedPhotoUnavailable] = useState(false);
+  const [selectedPhotoLoading, setSelectedPhotoLoading] = useState(false);
   const query = useQuery({
     queryKey: ['citizen-issue', id, token],
     queryFn: () => apiRequest<IssueDetailResponse>(`/issues/${encodeURIComponent(id)}`, { token }),
@@ -199,6 +275,10 @@ export default function IssueDetailScreen() {
 
   if (authLoading) return null;
   if (!token) return <Redirect href="/(auth)/login" />;
+  const photos = Array.isArray(issue?.photos)
+    ? issue.photos.filter((photo): photo is string => typeof photo === 'string' && photo.length > 0)
+    : [];
+  const selectedPhotoUrl = selectedPhoto ? authenticatedFileUrl(selectedPhoto) : null;
 
   return (
     <Screen>
@@ -246,6 +326,36 @@ export default function IssueDetailScreen() {
               </View>
             ) : null}
           </Card>
+
+          {photos.length > 0 ? (
+            <>
+              <View style={styles.photoHeading}>
+                <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
+                  Your photos
+                </Text>
+                <Text style={[styles.photoCount, { color: colors.mutedForeground }]}>
+                  {photos.length}
+                </Text>
+              </View>
+              <View style={styles.photoGrid}>
+                {photos.map((photo, index) => {
+                  return (
+                    <IssuePhotoThumbnail
+                      key={`${photo}-${index}`}
+                      path={photo}
+                      index={index}
+                      token={token}
+                      onPress={() => {
+                        setSelectedPhoto(photo);
+                        setSelectedPhotoUnavailable(false);
+                        setSelectedPhotoLoading(Boolean(authenticatedFileUrl(photo) && token));
+                      }}
+                    />
+                  );
+                })}
+              </View>
+            </>
+          ) : null}
 
           <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Progress history</Text>
           {issue.timeline?.length ? (
@@ -534,6 +644,60 @@ export default function IssueDetailScreen() {
           ) : null}
         </>
       ) : null}
+      <Modal
+        visible={selectedPhoto !== null}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setSelectedPhoto(null)}
+      >
+        <View style={[styles.viewer, { backgroundColor: colors.foreground }]}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close photo"
+            testID="close-issue-photo"
+            onPress={() => {
+              setSelectedPhoto(null);
+              setSelectedPhotoUnavailable(false);
+            }}
+            style={styles.closeViewer}
+          >
+            <Feather name="x" size={24} color={colors.background} />
+          </Pressable>
+          {selectedPhotoUnavailable || !selectedPhotoUrl || !token ? (
+            <View style={styles.viewerUnavailable}>
+              <Feather name="alert-circle" size={28} color={colors.background} />
+              <Text style={[styles.viewerMessage, { color: colors.background }]}>
+                This photo is unavailable.
+              </Text>
+            </View>
+          ) : (
+            <>
+              {selectedPhotoLoading ? (
+                <ActivityIndicator
+                  size="large"
+                  color={colors.background}
+                  style={styles.viewerLoading}
+                />
+              ) : null}
+              <Image
+                source={{
+                  uri: selectedPhotoUrl,
+                  headers: { Authorization: `Bearer ${token}` },
+                }}
+                style={styles.fullPhoto}
+                resizeMode="contain"
+                onLoadStart={() => setSelectedPhotoLoading(true)}
+                onLoadEnd={() => setSelectedPhotoLoading(false)}
+                onError={() => {
+                  setSelectedPhotoLoading(false);
+                  setSelectedPhotoUnavailable(true);
+                }}
+              />
+            </>
+          )}
+        </View>
+      </Modal>
     </Screen>
   );
 }
@@ -554,6 +718,36 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   meta: { flex: 1, fontFamily: 'Manrope_500Medium', fontSize: 12, lineHeight: 18 },
   sectionTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 19, marginTop: 4 },
+  photoHeading: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
+  photoCount: { fontFamily: 'Manrope_600SemiBold', fontSize: 12 },
+  photoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  photoThumbnail: {
+    width: 92,
+    height: 92,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+  },
+  photoImage: { width: '100%', height: '100%' },
+  thumbnailLoading: {
+    ...StyleSheet.absoluteFill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoUnavailable: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4 },
+  unavailableText: { fontFamily: 'Manrope_600SemiBold', fontSize: 9 },
+  viewer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  closeViewer: {
+    position: 'absolute',
+    zIndex: 1,
+    top: 54,
+    right: 20,
+    padding: 10,
+  },
+  fullPhoto: { width: '100%', height: '82%' },
+  viewerUnavailable: { alignItems: 'center', gap: 12, padding: 24 },
+  viewerMessage: { fontFamily: 'Manrope_600SemiBold', fontSize: 15 },
+  viewerLoading: { ...StyleSheet.absoluteFill, zIndex: 1 },
   timelineItem: { flexDirection: 'row', gap: 12, minHeight: 80 },
   timelineRail: { alignItems: 'center', width: 13 },
   timelineDot: { width: 10, height: 10, borderRadius: 5, marginTop: 18 },
