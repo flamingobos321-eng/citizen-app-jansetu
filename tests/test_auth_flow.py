@@ -406,6 +406,9 @@ def _make_db_mock():
             raise StopAsyncIteration
 
     class _DB:
+        def __init__(self):
+            self._store = _store
+
         def __getattr__(self, name):
             return _Col(name)
 
@@ -427,7 +430,9 @@ def client():
     with patch.object(server, "db", fake_db):
         # Also patch push_service so startup doesn't error
         with patch.object(server, "init_storage", MagicMock()):
-            yield TestClient(server.app, raise_server_exceptions=False)
+            test_client = TestClient(server.app, raise_server_exceptions=False)
+            test_client.fake_db = fake_db
+            yield test_client
 
 
 # ===========================================================================
@@ -727,6 +732,107 @@ class TestCitizenRegister:
 
 class TestMobileCitizenJourney:
     """Mobile API contracts run only against the in-memory test database."""
+
+    def _citizen_token(self, client):
+        requested = client.post(
+            "/api/auth/citizen/request-otp",
+            json={"mobile": _DEMO_CITIZEN["mobile"], "tenant_slug": "JS1045"},
+        )
+        assert requested.status_code == 200, requested.text
+        verified = client.post(
+            "/api/auth/citizen/verify-otp",
+            json={
+                "mobile": _DEMO_CITIZEN["mobile"],
+                "otp": requested.json()["demo_otp"],
+                "tenant_slug": "JS1045",
+            },
+        )
+        assert verified.status_code == 200, verified.text
+        return verified.json()["token"]
+
+    def test_authenticated_photo_upload_path_is_saved_on_issue(self, client):
+        import server
+
+        photo_bytes = b"\xff\xd8\xff\xdb-test-image"
+        token = self._citizen_token(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        stored_path = "jansetu/uploads/uid-citizen-001/stored-evidence.jpg"
+
+        with patch.object(
+            server,
+            "put_object",
+            new=MagicMock(return_value={"path": stored_path}),
+        ) as put_object:
+            uploaded = client.post(
+                "/api/files/upload",
+                headers=headers,
+                files={"file": ("evidence.jpg", photo_bytes, "image/jpeg")},
+            )
+
+        assert uploaded.status_code == 200, uploaded.text
+        assert uploaded.json()["path"] == stored_path
+        put_object.assert_called_once()
+        upload_args = put_object.call_args.args
+        assert upload_args[1:] == (photo_bytes, "image/jpeg")
+        assert upload_args[0].startswith("jansetu/uploads/uid-citizen-001/")
+
+        file_record = next(
+            record
+            for record in client.fake_db._store["files"].values()
+            if record["storage_path"] == stored_path
+        )
+        assert file_record["content_type"] == "image/jpeg"
+        assert file_record["uploaded_by"] == "uid-citizen-001"
+
+        submitted = client.post(
+            "/api/issues",
+            headers=headers,
+            json={
+                "category": "Roads",
+                "title": "Pothole near school",
+                "description": "The road surface is damaged near the school entrance.",
+                "photos": [uploaded.json()["path"]],
+                "gps_lat": None,
+                "gps_lng": None,
+                "location_address": "",
+            },
+        )
+        assert submitted.status_code == 200, submitted.text
+        issue_id = submitted.json()["id"]
+        assert client.fake_db._store["issues"][issue_id]["photos"] == [stored_path]
+
+    def test_photo_upload_requires_citizen_authentication(self, client):
+        import server
+
+        with patch.object(
+            server,
+            "put_object",
+            new=MagicMock(return_value={"path": "ignored"}),
+        ) as put_object:
+            response = client.post(
+                "/api/files/upload",
+                files={"file": ("evidence.jpg", b"image", "image/jpeg")},
+            )
+
+        assert response.status_code == 401
+        put_object.assert_not_called()
+
+    def test_mobile_photo_upload_failure_stops_issue_submission_and_is_shown(self):
+        from pathlib import Path
+
+        mobile_root = Path(__file__).parents[1] / "artifacts" / "jansetu-mobile"
+        screen = (mobile_root / "app" / "issues" / "new.tsx").read_text()
+        mutation = screen.split("mutationFn: async () => {", 1)[1].split(
+            "onSuccess:", 1
+        )[0]
+
+        upload_wait = mutation.index("await Promise.all(")
+        upload_call = mutation.index("await uploadIssuePhoto(")
+        issue_submission = mutation.index("apiRequest<CreatedIssue>('/issues'")
+        assert upload_wait < upload_call < issue_submission
+        assert "throw new Error(`Could not upload ${name}: ${detail}`)" in mutation
+        assert "setFormError(error instanceof Error ? error.message" in screen
+        assert "{formError ? <ErrorNotice message={formError} /> : null}" in screen
 
     def test_office_otp_issue_timeline_and_announcements(self, client):
         import server
