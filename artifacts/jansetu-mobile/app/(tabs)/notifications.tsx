@@ -1,7 +1,7 @@
 import { Feather } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
-import { Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import {
   Card,
   EmptyState,
@@ -12,6 +12,7 @@ import {
 } from '@/components/ui';
 import {
   apiRequest,
+  markAllPushNotificationsRead,
   markPushNotificationRead,
   type NotificationItem,
   type PushInboxResponse,
@@ -55,6 +56,22 @@ export default function NotificationsScreen() {
       });
     },
   });
+  const markAllRead = useMutation({
+    mutationFn: () => {
+      if (!token) throw new Error('Sign in again to clear your issue alerts.');
+      return markAllPushNotificationsRead(token);
+    },
+    onSuccess: () => {
+      queryClient.setQueryData<PushInboxResponse>(inboxQueryKey(token), (current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          unread_count: 0,
+          notifications: current.notifications.map((item) => ({ ...item, read: true })),
+        };
+      });
+    },
+  });
 
   const refresh = () => Promise.all([inbox.refetch(), announcements.refetch()]);
 
@@ -77,10 +94,32 @@ export default function NotificationsScreen() {
         <View style={styles.headingRow}>
           <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Issue alerts</Text>
           {inbox.data?.unread_count ? (
-            <View style={[styles.unreadCount, { backgroundColor: colors.infoBackground }]}>
-              <Text style={[styles.unreadCountText, { color: colors.info }]}>
-                {inbox.data.unread_count} unread
-              </Text>
+            <View style={styles.alertActions}>
+              <View style={[styles.unreadCount, { backgroundColor: colors.infoBackground }]}>
+                <Text style={[styles.unreadCountText, { color: colors.info }]}>
+                  {inbox.data.unread_count} unread
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Mark all issue alerts as read"
+                accessibilityState={{ disabled: markAllRead.isPending }}
+                disabled={markAllRead.isPending}
+                onPress={() => markAllRead.mutate()}
+                testID="mark-all-issue-alerts-read"
+                style={({ pressed }) => [
+                  styles.markAllReadButton,
+                  { opacity: markAllRead.isPending ? 0.6 : pressed ? 0.7 : 1 },
+                ]}
+              >
+                {markAllRead.isPending ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <Text style={[styles.markAllReadText, { color: colors.primary }]}>
+                    Mark all read
+                  </Text>
+                )}
+              </Pressable>
             </View>
           ) : null}
         </View>
@@ -122,6 +161,12 @@ export default function NotificationsScreen() {
             onRetry={() => {
               if (markRead.variables) markRead.mutate(markRead.variables);
             }}
+          />
+        ) : null}
+        {markAllRead.isError ? (
+          <ErrorNotice
+            message="Issue alerts could not be marked as read. Please try again."
+            onRetry={() => markAllRead.mutate()}
           />
         ) : null}
       </View>
@@ -255,9 +300,12 @@ const styles = StyleSheet.create({
   loading: { minHeight: 180, alignItems: 'center', justifyContent: 'center' },
   section: { gap: 11 },
   headingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  alertActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sectionTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 18 },
   unreadCount: { borderRadius: 20, paddingHorizontal: 10, paddingVertical: 5 },
   unreadCountText: { fontFamily: 'Manrope_700Bold', fontSize: 11 },
+  markAllReadButton: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 4 },
+  markAllReadText: { fontFamily: 'Manrope_700Bold', fontSize: 12 },
   card: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   emptyFeed: { paddingVertical: 17 },
   emptyText: { fontFamily: 'Manrope_400Regular', fontSize: 13, lineHeight: 19 },

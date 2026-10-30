@@ -249,6 +249,13 @@ export async function markPushNotificationRead(id: string, authToken: string) {
   );
 }
 
+export async function markAllPushNotificationsRead(authToken: string) {
+  return apiRequest<{ updated: number }>('/push/inbox/read-all', {
+    method: 'POST',
+    token: authToken,
+  });
+}
+
 export async function updateIssueNotificationPreference(
   enabled: boolean,
   authToken: string,
