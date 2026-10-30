@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: family
+    description: Citizen family links and invitations
 paths:
   /healthz:
     get:
@@ -24,6 +26,122 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /family/members:
+    get:
+      operationId: getFamilyMembers
+      tags: [family]
+      summary: List linked family members
+      responses:
+        "200":
+          description: Family links visible to the authenticated citizen
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FamilyMember"
+  /family/invitations:
+    get:
+      operationId: getFamilyInvitations
+      tags: [family]
+      summary: List family invitations
+      responses:
+        "200":
+          description: Incoming and outgoing family invitations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FamilyInvitations"
+  /family/link:
+    post:
+      operationId: sendFamilyLink
+      tags: [family]
+      summary: Link or invite a family member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FamilyLinkRequest"
+      responses:
+        "200":
+          description: Family link created or invitation sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FamilyLinkResult"
+  /family/invitations/{inv_id}/accept:
+    post:
+      operationId: acceptFamilyInvitation
+      tags: [family]
+      summary: Accept a family invitation
+      parameters:
+        - name: inv_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invitation accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FamilyInvitationActionResult"
+  /family/invitations/{inv_id}/decline:
+    post:
+      operationId: declineFamilyInvitation
+      tags: [family]
+      summary: Decline a family invitation
+      parameters:
+        - name: inv_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invitation declined
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FamilyActionResult"
+  /family/invitations/{inv_id}/cancel:
+    post:
+      operationId: cancelFamilyInvitation
+      tags: [family]
+      summary: Cancel a pending family invitation
+      parameters:
+        - name: inv_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invitation cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FamilyActionResult"
+  /family/relationships/{relationship_id}:
+    delete:
+      operationId: removeFamilyRelationship
+      tags: [family]
+      summary: Remove a family link
+      parameters:
+        - name: relationship_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Family link removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FamilyActionResult"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +151,120 @@ components:
           type: string
       required:
         - status
+    FamilyMember:
+      type: object
+      required:
+        - id
+        - relation
+        - cross_constituency
+      properties:
+        id:
+          type: string
+        other_name:
+          type: [string, "null"]
+        other_mobile:
+          type: [string, "null"]
+        relation:
+          type: string
+        other_constituency:
+          type: [string, "null"]
+        cross_constituency:
+          type: boolean
+    IncomingFamilyInvitation:
+      type: object
+      required:
+        - id
+        - relation_type
+      properties:
+        id:
+          type: string
+        from_user_name:
+          type: [string, "null"]
+        from_user_mobile:
+          type: [string, "null"]
+        from_constituency_name:
+          type: [string, "null"]
+        relation_type:
+          type: string
+    OutgoingFamilyInvitation:
+      type: object
+      required:
+        - id
+        - target_mobile
+        - relation_type
+      properties:
+        id:
+          type: string
+        target_name:
+          type: [string, "null"]
+        target_mobile:
+          type: string
+        relation_type:
+          type: string
+    FamilyInvitations:
+      type: object
+      required:
+        - incoming
+        - outgoing
+      properties:
+        incoming:
+          type: array
+          items:
+            $ref: "#/components/schemas/IncomingFamilyInvitation"
+        outgoing:
+          type: array
+          items:
+            $ref: "#/components/schemas/OutgoingFamilyInvitation"
+    FamilyLinkRequest:
+      type: object
+      required:
+        - relation_type
+        - mobile
+      properties:
+        relation_type:
+          type: string
+        mobile:
+          type: string
+        target_name:
+          type: [string, "null"]
+        marriage_anniversary:
+          type: [string, "null"]
+    FamilyLinkResult:
+      type: object
+      required:
+        - linked
+      properties:
+        linked:
+          type: boolean
+        pending:
+          type: [boolean, "null"]
+        invitation_id:
+          type: [string, "null"]
+        relationship_id:
+          type: [string, "null"]
+        target:
+          type: [object, "null"]
+          properties:
+            name:
+              type: [string, "null"]
+    FamilyInvitationActionResult:
+      type: object
+      required:
+        - ok
+        - relationship_id
+        - cross_constituency
+      properties:
+        ok:
+          type: boolean
+        relationship_id:
+          type: string
+        cross_constituency:
+          type: boolean
+    FamilyActionResult:
+      type: object
+      required:
+        - ok
+      properties:
+        ok:
+          type: boolean
 

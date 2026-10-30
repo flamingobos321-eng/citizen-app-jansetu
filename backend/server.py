@@ -49,6 +49,7 @@ from models import (
 from storage_util import put_object, get_object, init_storage, APP_NAME
 import v2_dualwrite as v2dw
 import v2_transfer as v2tr
+import family_links as family_link_service
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -4335,16 +4336,50 @@ def _inverse_relation(rel: str, target_gender: Optional[str]) -> str:
 async def family_link(payload: FamilyLinkRequest, user: dict = Depends(get_current_user)):
     """Citizen initiates a family link by mobile.
     - If mobile is registered in same tenant → create Relationship immediately.
-    - Else → create Pending FamilyInvitation, do NOT create a citizen account.
+    - Else → create a Pending FamilyInvitation, do NOT create a citizen account.
+      A recipient in another constituency must accept before a global link exists.
     """
     if user.get("role") != "citizen":
         raise HTTPException(403, "Only citizens can link family members")
+    if payload.relation_type not in RELATION_TYPES:
+        raise HTTPException(400, "Invalid relationship type")
     tid = user.get("tenant_id")
+    mobile = payload.mobile.strip()
+    person_id = user.get("person_id") or await v2dw.ensure_person_for_user(db, user)
+    if not person_id:
+        raise HTTPException(400, "Could not verify your citizen profile")
+    # Prevent a citizen from inviting another active login that resolves to the
+    # same Person after a previous account transfer.
+    other_active_rows = await db.users.find(
+        {"mobile": mobile, "role": "citizen", "is_active": {"$ne": False}},
+        {"_id": 0, "id": 1, "person_id": 1},
+    ).to_list(20)
+    for other_active in other_active_rows:
+        other_person_id = (
+            other_active.get("person_id")
+            or await v2dw._get_mapped_person_id(db, other_active["id"])
+        )
+        if other_person_id == person_id:
+            raise HTTPException(409, "You cannot link your account to itself")
+
     target = await db.users.find_one({
-        "mobile": payload.mobile.strip(), "role": "citizen",
+        "mobile": mobile, "role": "citizen",
         "tenant_id": tid, "is_active": True,
     }, {"_id": 0, "password_hash": 0})
     if target:
+        target_person_id = target.get("person_id") or await v2dw.ensure_person_for_user(db, target)
+        if target["id"] == user["id"] or target_person_id == person_id:
+            raise HTTPException(409, "You cannot link your account to itself")
+        if target_person_id:
+            existing_global = await db.relationships_v2.find_one({
+                "status": "active",
+                "$or": [
+                    {"from_person_id": person_id, "to_person_id": target_person_id},
+                    {"from_person_id": target_person_id, "to_person_id": person_id},
+                ],
+            })
+            if existing_global:
+                raise HTTPException(409, "This family member is already linked")
         # Create V1 relationship
         rel_doc = {
             "id": str(uuid.uuid4()),
@@ -4354,6 +4389,15 @@ async def family_link(payload: FamilyLinkRequest, user: dict = Depends(get_curre
             "type": payload.relation_type,
             "created_at": now_iso(),
         }
+        existing = await db.relationships.find_one({
+            "tenant_id": tid,
+            "$or": [
+                {"person_a": user["id"], "person_b": target["id"]},
+                {"person_a": target["id"], "person_b": user["id"]},
+            ],
+        })
+        if existing:
+            raise HTTPException(409, "This family member is already linked")
         await db.relationships.insert_one(rel_doc)
         # V2 mirror
         try:
@@ -4366,14 +4410,19 @@ async def family_link(payload: FamilyLinkRequest, user: dict = Depends(get_curre
                 {"id": {"$in": [user["id"], target["id"]]}},
                 {"$set": {"marriage_anniversary": payload.marriage_anniversary}},
             )
-        return {"linked": True, "target": target, "relationship_id": rel_doc["id"]}
+        return {
+            "linked": True,
+            "target": {"name": target.get("name")},
+            "relationship_id": rel_doc["id"],
+        }
 
-    # Not registered → pending invitation
+    # Not registered in this constituency → pending invitation. This also
+    # supports relatives who already have an account in another constituency.
     inv = FamilyInvitation(
         tenant_id=tid,
         from_user_id=user["id"],
-        from_person_id=user.get("person_id") or "",
-        target_mobile=payload.mobile.strip(),
+        from_person_id=person_id,
+        target_mobile=mobile,
         target_name=payload.target_name,
         relation_type=payload.relation_type,
         marriage_anniversary=payload.marriage_anniversary,
@@ -4384,50 +4433,13 @@ async def family_link(payload: FamilyLinkRequest, user: dict = Depends(get_curre
 
 @api.get("/family/members")
 async def list_family_members(user: dict = Depends(get_current_user)):
-    """Return all resolved family members of the current citizen — both
-    directions of `relationships` (person_a→person_b and person_b→person_a).
-    Each item includes the OTHER person's name + mobile + the relation label
-    from the CURRENT user's perspective (uses gender-aware `inverse_relation`
-    when we're on the `person_b` side of the edge)."""
+    """Return linked relatives across constituencies with limited profile data."""
     if user.get("role") != "citizen":
         raise HTTPException(403, "Citizens only")
-    uid = user["id"]
-    tid = user.get("tenant_id")
-    rels = await db.relationships.find(
-        {"tenant_id": tid, "$or": [{"person_a": uid}, {"person_b": uid}]},
-        {"_id": 0},
-    ).to_list(500)
-    other_ids = list({(r["person_b"] if r["person_a"] == uid else r["person_a"]) for r in rels})
-    users_by_id = {}
-    if other_ids:
-        for u in await db.users.find(
-            {"id": {"$in": other_ids}},
-            {"_id": 0, "id": 1, "name": 1, "mobile": 1, "gender": 1, "person_id": 1},
-        ).to_list(len(other_ids)):
-            users_by_id[u["id"]] = u
-    my_gender = user.get("gender")
-    out = []
-    for r in rels:
-        i_am_a = r["person_a"] == uid
-        other_id = r["person_b"] if i_am_a else r["person_a"]
-        other = users_by_id.get(other_id) or {}
-        # Relation FROM me TO other:
-        #   edge stores "person_a is <type> of person_b"
-        #   if I'm person_a → other is my `<type>` (label matches my perspective)
-        #   if I'm person_b → other is the inverse based on MY gender
-        rel_label = r["type"] if i_am_a else inverse_relation(r["type"], my_gender)
-        out.append({
-            "id": r["id"],
-            "other_user_id": other_id,
-            "other_person_id": other.get("person_id"),
-            "other_name": other.get("name"),
-            "other_mobile": other.get("mobile"),
-            "relation": rel_label,
-            "created_at": r.get("created_at"),
-        })
-    # Sort by relation then name for stable UI.
-    out.sort(key=lambda x: ((x.get("relation") or ""), (x.get("other_name") or "")))
-    return out
+    try:
+        return await family_link_service.list_family_members(db, user)
+    except ValueError as exc:
+        raise HTTPException(403, str(exc))
 
 
 @api.get("/family/invitations")
@@ -4436,8 +4448,17 @@ async def list_family_invitations(user: dict = Depends(get_current_user)):
     (target_mobile matches theirs, status=pending). Incoming invitations are
     enriched with the SENDER's name so the invitee sees "<Sender> wants to add
     you as their <Relation>" (not their own name)."""
+    if user.get("role") != "citizen":
+        raise HTTPException(403, "Citizens only")
+    person_id = user.get("person_id") or await v2dw.ensure_person_for_user(db, user)
+    outgoing_filter = {"from_user_id": user["id"]}
+    if person_id:
+        outgoing_filter = {"$or": [
+            {"from_user_id": user["id"]},
+            {"from_person_id": person_id},
+        ]}
     outgoing = await db.family_invitations.find(
-        {"from_user_id": user["id"], "status": "pending"}, {"_id": 0}
+        {"status": "pending", **outgoing_filter}, {"_id": 0}
     ).to_list(200)
     incoming = []
     if user.get("mobile"):
@@ -4452,62 +4473,77 @@ async def list_family_invitations(user: dict = Depends(get_current_user)):
             ).to_list(len(sender_ids))
             name_by_id = {s["id"]: s.get("name") for s in senders}
             mobile_by_id = {s["id"]: s.get("mobile") for s in senders}
+            tenant_ids = list({i.get("tenant_id") for i in incoming if i.get("tenant_id")})
+            portals = await db.portal_configs.find(
+                {"id": {"$in": tenant_ids}},
+                {"_id": 0, "id": 1, "constituency_name": 1, "tenant_name": 1},
+            ).to_list(len(tenant_ids)) if tenant_ids else []
+            constituency_by_id = {
+                p["id"]: p.get("constituency_name") or p.get("tenant_name")
+                for p in portals
+            }
             for inv in incoming:
                 inv["from_user_name"] = name_by_id.get(inv.get("from_user_id"))
                 inv["from_user_mobile"] = mobile_by_id.get(inv.get("from_user_id"))
+                inv["from_constituency_name"] = constituency_by_id.get(inv.get("tenant_id"))
     return {"outgoing": outgoing, "incoming": incoming}
 
 
 @api.post("/family/invitations/{inv_id}/accept")
 async def accept_family_invitation(inv_id: str, user: dict = Depends(get_current_user)):
-    inv = await db.family_invitations.find_one({"id": inv_id, "status": "pending"})
-    if not inv:
-        raise HTTPException(404, "Invitation not found or already resolved")
-    if (user.get("mobile") or "") != inv["target_mobile"]:
-        raise HTTPException(403, "This invitation is for a different mobile")
-    # Create reciprocal relationship
-    rel_doc = {
-        "id": str(uuid.uuid4()),
-        "tenant_id": inv["tenant_id"],
-        "person_a": inv["from_user_id"],
-        "person_b": user["id"],
-        "type": inv["relation_type"],
-        "created_at": now_iso(),
-    }
-    await db.relationships.insert_one(rel_doc)
+    if user.get("role") != "citizen":
+        raise HTTPException(403, "Citizens only")
     try:
-        actor = await db.users.find_one({"id": inv["from_user_id"]})
-        await v2dw.sync_relationship_to_v2(db, rel=rel_doc, actor_user=actor or user)
-    except Exception:
-        pass
-    if inv["relation_type"] in ("Husband", "Wife") and inv.get("marriage_anniversary"):
-        await db.users.update_many(
-            {"id": {"$in": [inv["from_user_id"], user["id"]]}},
-            {"$set": {"marriage_anniversary": inv["marriage_anniversary"]}},
-        )
-    await db.family_invitations.update_one(
-        {"id": inv_id},
-        {"$set": {"status": "linked", "resolved_user_id": user["id"],
-                  "resolved_at": now_iso()}},
-    )
-    return {"ok": True, "relationship_id": rel_doc["id"]}
+        result = await family_link_service.accept_family_invitation(db, inv_id, user)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    return {"ok": True, **result}
 
 
 @api.post("/family/invitations/{inv_id}/decline")
 async def decline_family_invitation(inv_id: str, user: dict = Depends(get_current_user)):
-    await db.family_invitations.update_one(
-        {"id": inv_id, "target_mobile": user.get("mobile") or ""},
-        {"$set": {"status": "declined", "resolved_at": now_iso()}},
+    if user.get("role") != "citizen":
+        raise HTTPException(403, "Citizens only")
+    result = await db.family_invitations.update_one(
+        {"id": inv_id, "target_mobile": user.get("mobile") or "", "status": "pending"},
+        {"$set": {"status": "declined", "resolved_at": now_iso(), "resolved_user_id": user["id"]}},
     )
+    if result.matched_count == 0:
+        raise HTTPException(404, "Invitation not found")
     return {"ok": True}
 
 
 @api.post("/family/invitations/{inv_id}/cancel")
 async def cancel_family_invitation(inv_id: str, user: dict = Depends(get_current_user)):
-    await db.family_invitations.update_one(
-        {"id": inv_id, "from_user_id": user["id"]},
+    if user.get("role") != "citizen":
+        raise HTTPException(403, "Citizens only")
+    person_id = user.get("person_id") or await v2dw.ensure_person_for_user(db, user)
+    sender_filter = {"from_user_id": user["id"]}
+    if person_id:
+        sender_filter = {"$or": [
+            {"from_user_id": user["id"]},
+            {"from_person_id": person_id},
+        ]}
+    result = await db.family_invitations.update_one(
+        {"id": inv_id, "status": "pending", **sender_filter},
         {"$set": {"status": "cancelled", "resolved_at": now_iso()}},
     )
+    if result.matched_count == 0:
+        raise HTTPException(404, "Invitation not found")
+    return {"ok": True}
+
+
+@api.delete("/family/relationships/{relationship_id}")
+async def remove_family_relationship(relationship_id: str, user: dict = Depends(get_current_user)):
+    if user.get("role") != "citizen":
+        raise HTTPException(403, "Citizens only")
+    removed = await family_link_service.remove_family_relationship(db, relationship_id, user)
+    if not removed:
+        raise HTTPException(404, "Family link not found")
     return {"ok": True}
 
 

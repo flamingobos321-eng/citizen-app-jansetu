@@ -1041,6 +1041,8 @@ class FamilyInvitation(BaseModel):
     marriage_anniversary: Optional[str] = None  # captured only for Husband/Wife
     status: Literal["pending", "accepted", "declined", "linked"] = "pending"
     resolved_user_id: Optional[str] = None
+    resolved_person_id: Optional[str] = None
+    relationship_id: Optional[str] = None
     resolved_at: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
