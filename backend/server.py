@@ -2306,7 +2306,14 @@ async def issue_detail(issue_id: str, user: dict = Depends(get_current_user)):
 
 @api.post("/issues/{issue_id}/assign")
 async def assign_issue(issue_id: str, payload: IssueAssign, user: dict = Depends(require_roles("pa", "admin"))):
-    worker = await db.users.find_one(tenant_filter(user, {"id": payload.assigned_to}), {"_id": 0})
+    worker = await db.users.find_one(
+        tenant_filter(user, {
+            "id": payload.assigned_to,
+            "role": "worker",
+            "is_active": {"$ne": False},
+        }),
+        {"_id": 0},
+    )
     if not worker:
         raise HTTPException(404, "Worker not found")
     mobile_part = f" · Mobile: {worker.get('mobile')}" if worker.get("mobile") else ""

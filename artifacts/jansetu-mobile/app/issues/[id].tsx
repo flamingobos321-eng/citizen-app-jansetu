@@ -219,17 +219,33 @@ export default function IssueDetailScreen() {
   const assignIssue = useMutation({
     mutationFn: () => {
       if (!assignTo) throw new Error('Choose a field worker first.');
+      const trimmedDueDate = dueDate.trim();
+      if (trimmedDueDate) {
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmedDueDate);
+        if (!match) throw new Error('Enter the due date as YYYY-MM-DD.');
+        const [, year, month, day] = match;
+        const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+        if (
+          parsed.getUTCFullYear() !== Number(year) ||
+          parsed.getUTCMonth() !== Number(month) - 1 ||
+          parsed.getUTCDate() !== Number(day)
+        ) {
+          throw new Error('Enter a valid calendar date.');
+        }
+      }
       return apiRequest<Issue>(`/issues/${encodeURIComponent(id)}/assign`, {
         method: 'POST',
         token,
         body: {
           assigned_to: assignTo,
-          due_date: dueDate.trim() || null,
+          due_date: trimmedDueDate || null,
           remarks: assignmentNote.trim() || null,
         },
       });
     },
     onSuccess: async () => {
+      setAssignTo('');
+      setDueDate('');
       setAssignmentNote('');
       await refreshIssue();
     },
@@ -437,6 +453,7 @@ export default function IssueDetailScreen() {
                 placeholder="Due date (YYYY-MM-DD, optional)"
                 placeholderTextColor={colors.mutedForeground}
                 accessibilityLabel="Issue due date"
+                testID="issue-assignment-due-date"
                 style={[styles.actionInput, { backgroundColor: colors.card, borderColor: colors.input, color: colors.foreground }]}
               />
               <TextInput
@@ -445,6 +462,7 @@ export default function IssueDetailScreen() {
                 placeholder="Assignment instructions (optional)"
                 placeholderTextColor={colors.mutedForeground}
                 accessibilityLabel="Assignment instructions"
+                testID="issue-assignment-remarks"
                 multiline
                 style={[styles.actionInput, styles.multilineInput, { backgroundColor: colors.card, borderColor: colors.input, color: colors.foreground }]}
               />
@@ -454,6 +472,7 @@ export default function IssueDetailScreen() {
               <ActionButton
                 title="Assign issue"
                 icon="user-plus"
+                testID="assign-issue"
                 onPress={() => assignIssue.mutate()}
                 loading={assignIssue.isPending}
                 disabled={!assignTo || workersQuery.isLoading}
@@ -813,6 +832,7 @@ function WorkerChoices({
             accessibilityRole="button"
             accessibilityState={{ selected: active }}
             accessibilityLabel={`Assign to ${worker.name}${worker.designation ? `, ${worker.designation}` : ''}`}
+            testID={`worker-choice-${worker.id}`}
             onPress={() => onSelect(worker.id)}
             style={[
               styles.workerChoice,

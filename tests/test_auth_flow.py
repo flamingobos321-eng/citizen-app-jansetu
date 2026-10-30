@@ -954,3 +954,129 @@ class TestMobileCitizenJourney:
         assert "setUser(null);" in auth
         assert (mobile_root / "app" / "(tabs)" / "_layout.tsx").is_file()
         assert (mobile_root / "app" / "issues" / "[id].tsx").is_file()
+
+
+def _make_issue_assignment_db(users_by_id, issue):
+    """Build a small async DB mock for tenant-scoped issue assignment tests."""
+    from copy import deepcopy
+
+    users = MagicMock()
+    issues = MagicMock()
+
+    async def find_user(query, projection=None):
+        candidate = users_by_id.get(query.get("id"))
+        if candidate is None:
+            return None
+        for key, expected in query.items():
+            if isinstance(expected, dict) and "$ne" in expected:
+                if candidate.get(key) == expected["$ne"]:
+                    return None
+            elif candidate.get(key) != expected:
+                return None
+        return deepcopy(candidate)
+
+    async def find_issue(query, projection=None):
+        if issue is None:
+            return None
+        if all(issue.get(key) == value for key, value in query.items()):
+            return deepcopy(issue)
+        return None
+
+    async def update_issue(query, update, **kwargs):
+        matches = issue is not None and all(
+            issue.get(key) == value for key, value in query.items()
+        )
+        if matches:
+            issue.update(update.get("$set", {}))
+            issue.setdefault("timeline", []).extend(update.get("$push", {}).values())
+        return MagicMock(matched_count=1 if matches else 0)
+
+    users.find_one = AsyncMock(side_effect=find_user)
+    issues.find_one = AsyncMock(side_effect=find_issue)
+    issues.update_one = AsyncMock(side_effect=update_issue)
+    return MagicMock(users=users, issues=issues)
+
+
+class TestIssueAssignment:
+    """PA/admin issue assignments must stay in-tenant and target field workers."""
+
+    def _request(self, client, assigned_to):
+        import server
+
+        token = server.create_token("uid-pa", "pa", "tenant-001")
+        return client.post(
+            "/api/issues/issue-1/assign",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "assigned_to": assigned_to,
+                "due_date": "2026-11-15",
+                "remarks": "Please inspect the site.",
+            },
+        )
+
+    def test_rejects_assignment_to_non_worker(self, client):
+        import server
+
+        users = {
+            "uid-pa": {"id": "uid-pa", "role": "pa", "tenant_id": "tenant-001", "name": "PA"},
+            "citizen-1": {"id": "citizen-1", "role": "citizen", "tenant_id": "tenant-001", "name": "Citizen"},
+        }
+        db = _make_issue_assignment_db(users, None)
+        with patch.object(server, "db", db):
+            response = self._request(client, "citizen-1")
+
+        assert response.status_code == 404
+        worker_query = db.users.find_one.call_args.args[0]
+        assert worker_query["tenant_id"] == "tenant-001"
+        assert worker_query["role"] == "worker"
+        assert worker_query["is_active"] == {"$ne": False}
+        db.issues.update_one.assert_not_awaited()
+
+    def test_assigns_worker_with_remarks_and_due_date_in_same_tenant(self, client):
+        import server
+
+        users = {
+            "uid-pa": {"id": "uid-pa", "role": "pa", "tenant_id": "tenant-001", "name": "PA"},
+            "worker-1": {
+                "id": "worker-1", "role": "worker", "tenant_id": "tenant-001",
+                "name": "Field Worker", "is_active": True,
+            },
+        }
+        issue = {
+            "id": "issue-1", "tenant_id": "tenant-001", "citizen_id": "citizen-1",
+            "issue_code": "ISS-10001", "title": "Streetlight outage", "timeline": [],
+        }
+        db = _make_issue_assignment_db(users, issue)
+        with patch.object(server, "db", db), patch.object(
+            server, "_push_to_user", new=AsyncMock()
+        ):
+            response = self._request(client, "worker-1")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["assigned_to"] == "worker-1"
+        assert response.json()["due_date"] == "2026-11-15"
+        assert response.json()["remarks"] == "Please inspect the site."
+        worker_query = db.users.find_one.call_args.args[0]
+        assert worker_query["tenant_id"] == "tenant-001"
+        issue_query = db.issues.update_one.call_args.args[0]
+        assert issue_query == {"id": "issue-1", "tenant_id": "tenant-001"}
+
+    def test_rejects_issue_outside_the_admin_tenant(self, client):
+        import server
+
+        users = {
+            "uid-pa": {"id": "uid-pa", "role": "pa", "tenant_id": "tenant-001", "name": "PA"},
+            "worker-1": {
+                "id": "worker-1", "role": "worker", "tenant_id": "tenant-001",
+                "name": "Field Worker", "is_active": True,
+            },
+        }
+        issue = {"id": "issue-1", "tenant_id": "tenant-002", "timeline": []}
+        db = _make_issue_assignment_db(users, issue)
+        with patch.object(server, "db", db):
+            response = self._request(client, "worker-1")
+
+        assert response.status_code == 404
+        assert db.issues.update_one.call_args.args[0] == {
+            "id": "issue-1", "tenant_id": "tenant-001",
+        }
