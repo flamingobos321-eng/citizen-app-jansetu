@@ -76,6 +76,7 @@ export default function NotificationsScreen() {
 
   return (
     <Screen
+      hasTabBar
       refreshControl={
         <RefreshControl
           refreshing={inbox.isRefetching || announcements.isRefetching}

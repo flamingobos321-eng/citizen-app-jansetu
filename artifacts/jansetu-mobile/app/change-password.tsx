@@ -135,7 +135,7 @@ const styles = StyleSheet.create({
   brandIcon: { width: 48, height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   form: { gap: 14 },
   field: { gap: 6 },
-  label: { fontFamily: 'Manrope_700Bold', fontSize: 10, letterSpacing: 0.7, textTransform: 'uppercase' },
+  label: { fontFamily: 'Manrope_700Bold', fontSize: 12, letterSpacing: 0.6, textTransform: 'uppercase' },
   input: { minHeight: 48, borderWidth: 1, borderRadius: 13, paddingHorizontal: 13, fontFamily: 'Manrope_500Medium', fontSize: 14 },
   cancel: { fontFamily: 'Manrope_600SemiBold', fontSize: 12 },
 });

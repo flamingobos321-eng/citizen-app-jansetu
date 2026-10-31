@@ -114,7 +114,7 @@ export default function ProfileScreen() {
   };
 
   return (
-    <Screen>
+    <Screen hasTabBar>
       <PageHeader
         eyebrow="YOUR ACCOUNT"
         title="Profile"

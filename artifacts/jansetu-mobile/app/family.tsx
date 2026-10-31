@@ -480,7 +480,7 @@ const styles = StyleSheet.create({
   formHeadingCopy: { flex: 1, gap: 2 },
   sectionTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 17 },
   body: { fontFamily: 'Manrope_400Regular', fontSize: 12, lineHeight: 17 },
-  fieldLabel: { fontFamily: 'Manrope_700Bold', fontSize: 10, letterSpacing: 0.7, textTransform: 'uppercase' },
+  fieldLabel: { fontFamily: 'Manrope_700Bold', fontSize: 12, letterSpacing: 0.6, textTransform: 'uppercase' },
   relationGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
   relationChip: { minHeight: 36, justifyContent: 'center', borderWidth: 1, borderRadius: 18, paddingHorizontal: 12 },
   relationText: { fontFamily: 'Manrope_600SemiBold', fontSize: 11 },

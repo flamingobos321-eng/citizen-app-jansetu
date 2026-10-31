@@ -62,6 +62,7 @@ export default function HomeScreen() {
 
   return (
     <Screen
+      hasTabBar
       contentStyle={{ gap: 22 }}
       refreshControl={
         <RefreshControl
@@ -270,7 +271,7 @@ const styles = StyleSheet.create({
   avatarText: { color: '#FFFFFF', fontFamily: 'Outfit_700Bold', fontSize: 19 },
   hero: { minHeight: 220, borderRadius: 20, padding: 22, justifyContent: 'space-between', overflow: 'hidden' },
   heroCopy: { maxWidth: 280, gap: 9 },
-  heroEyebrow: { color: '#D5DEEF', fontFamily: 'Manrope_700Bold', fontSize: 9, letterSpacing: 1.4 },
+  heroEyebrow: { color: '#D5DEEF', fontFamily: 'Manrope_700Bold', fontSize: 11, letterSpacing: 1.2 },
   heroTitle: { color: '#FFFFFF', fontFamily: 'Outfit_700Bold', fontSize: 27, lineHeight: 32 },
   heroSub: { color: '#DEE5F1', fontFamily: 'Manrope_400Regular', fontSize: 13, lineHeight: 20 },
   heroButton: { backgroundColor: '#FFFFFF', borderColor: '#FFFFFF', alignSelf: 'flex-start', marginTop: 15 },
@@ -282,12 +283,12 @@ const styles = StyleSheet.create({
   statsRow: { flexDirection: 'row', gap: 9 },
   stat: { flex: 1, borderWidth: 1, borderRadius: 13, paddingVertical: 13, paddingHorizontal: 10, gap: 5 },
   statValue: { fontFamily: 'Outfit_700Bold', fontSize: 21, marginTop: 2 },
-  statLabel: { fontFamily: 'Manrope_500Medium', fontSize: 10 },
+  statLabel: { fontFamily: 'Manrope_500Medium', fontSize: 12 },
   section: { gap: 12 },
   issuePreview: { minHeight: 83, borderWidth: 1, borderRadius: 13, padding: 13, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  issueCode: { fontFamily: 'Manrope_700Bold', fontSize: 9, letterSpacing: 0.6 },
+  issueCode: { fontFamily: 'Manrope_700Bold', fontSize: 11, letterSpacing: 0.5 },
   issueTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 15, marginTop: 2 },
-  issueMeta: { fontFamily: 'Manrope_500Medium', fontSize: 11, marginTop: 1 },
+  issueMeta: { fontFamily: 'Manrope_500Medium', fontSize: 12, marginTop: 1 },
   updateCard: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   updateIcon: { width: 40, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   updateTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 15, marginBottom: 3 },

@@ -526,7 +526,7 @@ const styles = StyleSheet.create({
   sectionTitle: { flex: 1, fontFamily: 'Outfit_600SemiBold', fontSize: 17 },
   count: { fontFamily: 'Manrope_600SemiBold', fontSize: 12 },
   field: { gap: 5 },
-  label: { fontFamily: 'Manrope_700Bold', fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase' },
+  label: { fontFamily: 'Manrope_700Bold', fontSize: 12, letterSpacing: 0.5, textTransform: 'uppercase' },
   input: { minHeight: 44, borderWidth: 1, borderRadius: 12, paddingHorizontal: 11, fontFamily: 'Manrope_500Medium', fontSize: 14 },
   multiline: { minHeight: 84, paddingTop: 10, textAlignVertical: 'top' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },

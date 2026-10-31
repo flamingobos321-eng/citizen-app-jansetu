@@ -146,11 +146,11 @@ const styles = StyleSheet.create({
   summaryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   metricCard: { width: '31%', alignItems: 'center', justifyContent: 'center', gap: 2, paddingVertical: 11 },
   metricValue: { fontFamily: 'Outfit_700Bold', fontSize: 20 },
-  metricLabel: { fontFamily: 'Manrope_500Medium', fontSize: 10, textAlign: 'center' },
+  metricLabel: { fontFamily: 'Manrope_500Medium', fontSize: 12, textAlign: 'center' },
   sectionTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 18 },
   reportCard: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   iconBox: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   reportCopy: { flex: 1, gap: 3 },
   reportTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 14 },
-  reportDescription: { fontFamily: 'Manrope_400Regular', fontSize: 11, lineHeight: 16 },
+  reportDescription: { fontFamily: 'Manrope_400Regular', fontSize: 12, lineHeight: 18 },
 });

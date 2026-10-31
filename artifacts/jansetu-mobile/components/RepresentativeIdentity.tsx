@@ -64,7 +64,7 @@ const styles = StyleSheet.create({
   portrait: { width: 58, height: 58, borderRadius: 16 },
   placeholder: { width: 58, height: 58, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   copy: { flex: 1, gap: 3 },
-  eyebrow: { fontFamily: 'Manrope_700Bold', fontSize: 9, letterSpacing: 1 },
+  eyebrow: { fontFamily: 'Manrope_700Bold', fontSize: 11, letterSpacing: 0.8 },
   name: { fontFamily: 'Outfit_600SemiBold', fontSize: 16, lineHeight: 20 },
-  subtitle: { fontFamily: 'Manrope_500Medium', fontSize: 11, lineHeight: 16 },
+  subtitle: { fontFamily: 'Manrope_500Medium', fontSize: 12, lineHeight: 18 },
 });

@@ -24,10 +24,12 @@ export function Screen({
   contentStyle,
   refreshControl,
   keyboardAware = false,
+  hasTabBar = false,
 }: React.PropsWithChildren<{
   contentStyle?: StyleProp<ViewStyle>;
   refreshControl?: ReactElement;
   keyboardAware?: boolean;
+  hasTabBar?: boolean;
 }>) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -37,7 +39,8 @@ export function Screen({
       paddingTop:
         (Platform.OS === 'web' ? Math.max(insets.top, 67) : insets.top) + 14,
       paddingBottom:
-        (Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 18)) + 110,
+        (Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 18)) +
+        (hasTabBar ? (Platform.OS === 'web' ? 84 : 96) : 24),
     },
     contentStyle,
   ];
@@ -338,7 +341,7 @@ export const uiStyles = StyleSheet.create({
   cardTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 17 },
   inputLabel: {
     fontFamily: 'Manrope_700Bold',
-    fontSize: 11,
+    fontSize: 12,
     letterSpacing: 1,
     textTransform: 'uppercase',
   },
@@ -366,7 +369,7 @@ const styles = StyleSheet.create({
   },
   eyebrow: {
     fontFamily: 'Manrope_700Bold',
-    fontSize: 10,
+    fontSize: 11,
     letterSpacing: 1.4,
     marginBottom: 5,
   },
@@ -391,7 +394,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   badge: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20, alignSelf: 'flex-start' },
-  badgeText: { fontFamily: 'Manrope_700Bold', fontSize: 11 },
+  badgeText: { fontFamily: 'Manrope_700Bold', fontSize: 12 },
   emptyState: { borderWidth: 1, borderRadius: 14, alignItems: 'center', padding: 24, gap: 8 },
   emptyIcon: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginBottom: 3 },
   body: { fontFamily: 'Manrope_400Regular', fontSize: 14, lineHeight: 21 },

@@ -570,7 +570,7 @@ const styles = StyleSheet.create({
   sectionTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 17 },
   panelHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   field: { gap: 5 },
-  label: { fontFamily: 'Manrope_700Bold', fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase' },
+  label: { fontFamily: 'Manrope_700Bold', fontSize: 12, letterSpacing: 0.5, textTransform: 'uppercase' },
   input: { minHeight: 44, borderWidth: 1, borderRadius: 12, paddingHorizontal: 11, fontFamily: 'Manrope_500Medium', fontSize: 14 },
   choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, paddingVertical: 3 },
   choice: { borderWidth: 1, borderRadius: 18, paddingHorizontal: 11, paddingVertical: 8 },

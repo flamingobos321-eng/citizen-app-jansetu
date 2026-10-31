@@ -201,7 +201,7 @@ const styles = StyleSheet.create({
   metricsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   metric: { width: '31%', flexGrow: 1, alignItems: 'center', gap: 3, paddingVertical: 11, paddingHorizontal: 5 },
   metricValue: { fontFamily: 'Outfit_700Bold', fontSize: 20 },
-  metricLabel: { fontFamily: 'Manrope_500Medium', fontSize: 10, textAlign: 'center' },
+  metricLabel: { fontFamily: 'Manrope_500Medium', fontSize: 12, textAlign: 'center' },
   section: { gap: 9 },
   sectionHeading: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sectionTitle: { flex: 1, fontFamily: 'Outfit_600SemiBold', fontSize: 17 },
@@ -209,7 +209,7 @@ const styles = StyleSheet.create({
   personCard: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   personCopy: { flex: 1, gap: 3 },
   personName: { fontFamily: 'Outfit_600SemiBold', fontSize: 14 },
-  body: { fontFamily: 'Manrope_400Regular', fontSize: 11, lineHeight: 16 },
+  body: { fontFamily: 'Manrope_400Regular', fontSize: 12, lineHeight: 18 },
   contactActions: { flexDirection: 'row', gap: 7 },
   contactButton: { width: 38, height: 38, borderWidth: 1, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
 });

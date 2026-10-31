@@ -29,7 +29,7 @@ export default function ServicesScreen() {
   const colors = useColors();
 
   return (
-    <Screen contentStyle={{ gap: 16 }}>
+    <Screen hasTabBar contentStyle={{ gap: 16 }}>
       <PageHeader
         eyebrow="YOUR CONSTITUENCY"
         title="Services"

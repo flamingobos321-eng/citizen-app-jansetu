@@ -26,6 +26,7 @@ export default function IssuesScreen() {
 
   return (
     <Screen
+      hasTabBar
       refreshControl={
         <RefreshControl
           refreshing={query.isRefetching}

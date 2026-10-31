@@ -483,8 +483,10 @@ export default function LoginScreen() {
           <Feather name={accountMode === 'citizen' ? 'lock' : 'shield'} size={14} color={colors.mutedForeground} />
           <Text style={[styles.privacyText, { color: colors.mutedForeground }]}>
             {accountMode === 'citizen'
-              ? 'Your number is used only to verify your citizen account.'
-              : 'Office access is limited to your constituency account.'}
+              ? step === 'office'
+                ? 'Citizen accounts are verified using a one-time mobile code.'
+                : 'Your mobile number is used only to verify your citizen account.'
+              : 'Use the work email and password issued by your JanSetu office.'}
           </Text>
         </View>
         <Pressable
@@ -515,13 +517,13 @@ const styles = StyleSheet.create({
   content: { flexGrow: 1, paddingHorizontal: 22, justifyContent: 'center' },
   brandRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 37 },
   brandName: { fontFamily: 'Outfit_700Bold', fontSize: 18, letterSpacing: 1.1 },
-  brandCaption: { fontFamily: 'Manrope_500Medium', fontSize: 11, marginTop: 2 },
+  brandCaption: { fontFamily: 'Manrope_500Medium', fontSize: 12, marginTop: 2 },
   intro: { marginBottom: 23 },
-  eyebrow: { fontFamily: 'Manrope_700Bold', fontSize: 10, letterSpacing: 1.2, marginBottom: 8 },
+  eyebrow: { fontFamily: 'Manrope_700Bold', fontSize: 11, letterSpacing: 1.1, marginBottom: 8 },
   title: { fontFamily: 'Outfit_700Bold', fontSize: 31, lineHeight: 37 },
   description: { fontFamily: 'Manrope_400Regular', fontSize: 14, lineHeight: 21, marginTop: 8 },
   formCard: { borderWidth: 1, borderRadius: 18, padding: 18 },
-  fieldLabel: { fontFamily: 'Manrope_700Bold', fontSize: 11, letterSpacing: 0.9, textTransform: 'uppercase', marginBottom: 8 },
+  fieldLabel: { fontFamily: 'Manrope_700Bold', fontSize: 12, letterSpacing: 0.7, textTransform: 'uppercase', marginBottom: 8 },
   input: { minHeight: 52, borderWidth: 1, borderRadius: 10, paddingHorizontal: 14, fontFamily: 'Manrope_500Medium', fontSize: 15 },
   otpInput: { fontFamily: 'Outfit_600SemiBold', fontSize: 26, letterSpacing: 12, textAlign: 'center' },
   phoneInput: { minHeight: 52, borderWidth: 1, borderRadius: 10, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14 },
@@ -533,10 +535,10 @@ const styles = StyleSheet.create({
   infoBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, borderRadius: 10, padding: 12, marginTop: 15 },
   infoText: { flex: 1, fontFamily: 'Manrope_500Medium', fontSize: 12, lineHeight: 18 },
   demoBox: { alignItems: 'center', borderWidth: 1, borderRadius: 10, padding: 11, marginTop: 12 },
-  demoLabel: { fontFamily: 'Manrope_700Bold', fontSize: 9, letterSpacing: 1.3 },
+  demoLabel: { fontFamily: 'Manrope_700Bold', fontSize: 11, letterSpacing: 1.1 },
   demoCode: { fontFamily: 'Outfit_700Bold', fontSize: 24, letterSpacing: 6, marginTop: 2 },
   privacyRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 7, marginTop: 18 },
-  privacyText: { fontFamily: 'Manrope_400Regular', fontSize: 11 },
+  privacyText: { fontFamily: 'Manrope_400Regular', fontSize: 12, lineHeight: 17 },
   modeSwitch: { alignSelf: 'center', marginTop: 14, paddingVertical: 8, paddingHorizontal: 10 },
   modeSwitchText: { fontFamily: 'Manrope_700Bold', fontSize: 12, textAlign: 'center' },
 });

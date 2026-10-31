@@ -179,6 +179,6 @@ const styles = StyleSheet.create({
   memberName: { fontFamily: 'Outfit_600SemiBold', fontSize: 14 },
   memberMeta: { fontFamily: 'Manrope_400Regular', fontSize: 11, lineHeight: 16 },
   issueCard: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  issueCode: { fontFamily: 'Manrope_600SemiBold', fontSize: 10, letterSpacing: 0.4 },
+  issueCode: { fontFamily: 'Manrope_600SemiBold', fontSize: 12, letterSpacing: 0.3 },
   benefitCard: { flexDirection: 'row', alignItems: 'center', gap: 10 },
 });
