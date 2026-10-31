@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import { Redirect, router } from 'expo-router';
 import { useState, type ReactNode } from 'react';
-import { Alert, Platform, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   ActionButton,
   Card,
@@ -16,6 +16,7 @@ import {
 import { apiRequest, type Issue } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useColors } from '@/hooks/useColors';
+import { filterOfficeIssues, getOfficeIssueStatuses } from '@/lib/issueQueue';
 
 const OFFICE_ROLES = ['admin', 'pa', 'politician', 'worker'];
 const ROLE_LABELS: Record<string, string> = {
@@ -35,6 +36,8 @@ type OfficeDashboardStats = {
 export default function OfficeWorkspaceScreen() {
   const colors = useColors();
   const [visibleIssueCount, setVisibleIssueCount] = useState(30);
+  const [issueSearch, setIssueSearch] = useState('');
+  const [issueStatus, setIssueStatus] = useState<string | null>(null);
   const { user, token, loading, signOut } = useAuth();
   const issuesQuery = useQuery({
     queryKey: ['office-issues', token, user?.role],
@@ -60,6 +63,14 @@ export default function OfficeWorkspaceScreen() {
   }
 
   const issues = issuesQuery.data || [];
+  const filteredIssues = filterOfficeIssues(issues, issueSearch, issueStatus);
+  const statusOptions = getOfficeIssueStatuses(issues);
+  const hasFilters = issueSearch.length > 0 || issueStatus !== null;
+  const clearFilters = () => {
+    setIssueSearch('');
+    setIssueStatus(null);
+    setVisibleIssueCount(30);
+  };
   const activeCount = issues.filter((issue) => !['Resolved', 'Closed'].includes(issue.status)).length;
   const inProgressCount = issues.filter((issue) => issue.status === 'In Progress').length;
   const resolvedCount = issues.filter((issue) => issue.status === 'Resolved').length;
@@ -80,6 +91,7 @@ export default function OfficeWorkspaceScreen() {
 
   return (
     <Screen
+      keyboardAware
       contentStyle={{ gap: 18 }}
       refreshControl={
         <RefreshControl
@@ -235,6 +247,89 @@ export default function OfficeWorkspaceScreen() {
         </View>
       </View>
 
+      <View style={styles.queueFilters}>
+        <Text style={[styles.filterLabel, { color: colors.foreground }]}>Search issues</Text>
+        <View style={[styles.searchField, { backgroundColor: colors.card, borderColor: colors.input }]}>
+          <Feather name="search" size={18} color={colors.mutedForeground} />
+          <TextInput
+            value={issueSearch}
+            onChangeText={(value) => {
+              setIssueSearch(value);
+              setVisibleIssueCount(30);
+            }}
+            placeholder="Search by issue code or title"
+            placeholderTextColor={colors.mutedForeground}
+            accessibilityLabel="Search issues by code or title"
+            testID="office-issue-search"
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="search"
+            style={[styles.searchInput, { color: colors.foreground }]}
+          />
+          {issueSearch.length > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Clear issue search"
+              testID="clear-office-issue-search"
+              onPress={() => {
+                setIssueSearch('');
+                setVisibleIssueCount(30);
+              }}
+              style={styles.clearSearch}
+            >
+              <Feather name="x" size={18} color={colors.primary} />
+            </Pressable>
+          ) : null}
+        </View>
+        <Text style={[styles.filterLabel, { color: colors.foreground }]}>Status</Text>
+        <View style={styles.statusChoices}>
+          {[null, ...statusOptions].map((status) => (
+            <Pressable
+              key={status ?? 'all-statuses'}
+              accessibilityRole="button"
+              accessibilityLabel={`Filter issues: ${status ?? 'All statuses'}`}
+              accessibilityState={{ selected: issueStatus === status }}
+              onPress={() => {
+                setIssueStatus(status);
+                setVisibleIssueCount(30);
+              }}
+              style={[
+                styles.statusChoice,
+                {
+                  backgroundColor: issueStatus === status ? colors.primary : colors.card,
+                  borderColor: issueStatus === status ? colors.primary : colors.border,
+                },
+              ]}
+            >
+              <Text style={[
+                styles.statusChoiceText,
+                { color: issueStatus === status ? colors.primaryForeground : colors.foreground },
+              ]}>
+                {status ?? 'All statuses'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        {hasFilters ? (
+          <ActionButton
+            title="Clear filters"
+            icon="x"
+            variant="quiet"
+            onPress={clearFilters}
+            testID="clear-office-issue-filters"
+          />
+        ) : null}
+        {!issuesQuery.isLoading && !issuesQuery.isError ? (
+          <Text
+            accessibilityLiveRegion="polite"
+            style={[uiStyles.body, { color: colors.mutedForeground }]}
+          >
+            Showing {Math.min(visibleIssueCount, filteredIssues.length)} of {filteredIssues.length}
+            {hasFilters ? ` matching issues (${issues.length} in your queue)` : ' issues'}
+          </Text>
+        ) : null}
+      </View>
+
       {issuesQuery.isLoading ? (
         <Card>
           <Text style={[uiStyles.body, { color: colors.mutedForeground }]}>
@@ -250,9 +345,9 @@ export default function OfficeWorkspaceScreen() {
           }
           onRetry={() => void issuesQuery.refetch()}
         />
-      ) : issues.length ? (
+      ) : filteredIssues.length ? (
         <View style={{ gap: 10 }}>
-          {issues.slice(0, visibleIssueCount).map((issue) => (
+          {filteredIssues.slice(0, visibleIssueCount).map((issue) => (
             <Pressable
               key={issue.id}
               accessibilityRole="button"
@@ -287,15 +382,21 @@ export default function OfficeWorkspaceScreen() {
               </View>
             </Pressable>
           ))}
-          {issues.length > visibleIssueCount ? (
+          {filteredIssues.length > visibleIssueCount ? (
             <ActionButton
-              title={`Show more issues (${issues.length - visibleIssueCount} remaining)`}
+              title={`Show more issues (${filteredIssues.length - visibleIssueCount} remaining)`}
               icon="chevron-down"
               variant="outline"
               onPress={() => setVisibleIssueCount((count) => count + 30)}
             />
           ) : null}
         </View>
+      ) : issues.length && hasFilters ? (
+        <EmptyState
+          icon="search"
+          title="No matching issues"
+          body="Try a different issue code, title, or status. Clear filters to see your full queue."
+        />
       ) : (
         <EmptyState
           icon="check-circle"
@@ -438,6 +539,14 @@ const styles = StyleSheet.create({
   summaryLabel: { fontFamily: 'Manrope_500Medium', fontSize: 12, marginTop: 2 },
   sectionHeader: { marginTop: 3 },
   sectionTitle: { fontFamily: 'Outfit_700Bold', fontSize: 20 },
+  queueFilters: { gap: 10 },
+  filterLabel: { fontFamily: 'Manrope_700Bold', fontSize: 12 },
+  searchField: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderRadius: 12, paddingLeft: 12 },
+  searchInput: { flex: 1, minWidth: 0, minHeight: 50, paddingHorizontal: 10, fontFamily: 'Manrope_500Medium', fontSize: 14 },
+  clearSearch: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  statusChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  statusChoice: { minHeight: 44, borderWidth: 1, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 12, justifyContent: 'center' },
+  statusChoiceText: { fontFamily: 'Manrope_600SemiBold', fontSize: 12 },
   issueCard: { borderWidth: 1, borderRadius: 14, padding: 14, gap: 12 },
   issueTop: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   issueCode: { fontFamily: 'Manrope_700Bold', fontSize: 11, letterSpacing: 0.6 },
