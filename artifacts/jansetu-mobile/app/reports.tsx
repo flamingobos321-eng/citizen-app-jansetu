@@ -142,7 +142,7 @@ function SummaryMetric({ label, value }: { label: string; value: number }) {
 }
 
 const styles = StyleSheet.create({
-  backButton: { width: 42, height: 42, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  backButton: { width: 44, height: 44, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   summaryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   metricCard: { width: '31%', alignItems: 'center', justifyContent: 'center', gap: 2, paddingVertical: 11 },
   metricValue: { fontFamily: 'Outfit_700Bold', fontSize: 20 },

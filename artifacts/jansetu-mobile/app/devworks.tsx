@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
-import {
+import { BackButton,
   ActionButton,
   Card,
   EmptyState,
@@ -148,6 +148,12 @@ export default function DevelopmentWorksScreen() {
           isCitizen
             ? 'Track approved projects and progress in your constituency.'
             : 'Manage project status, approval, and progress updates.'
+        }
+        right={
+          <BackButton
+            fallback={isCitizen ? '/(tabs)/services' : '/office'}
+            label={isCitizen ? 'Back to services' : 'Back to office'}
+          />
         }
       />
 

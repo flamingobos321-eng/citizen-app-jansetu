@@ -387,7 +387,7 @@ function formatDate(value?: string) {
 }
 
 const styles = StyleSheet.create({
-  backButton: { width: 42, height: 42, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  backButton: { width: 44, height: 44, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   section: { gap: 9 },
   sectionHeading: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sectionTitle: { flex: 1, fontFamily: 'Outfit_600SemiBold', fontSize: 17 },

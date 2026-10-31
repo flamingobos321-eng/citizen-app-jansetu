@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
-import {
+import { BackButton,
   ActionButton,
   EmptyState,
   ErrorNotice,
@@ -39,6 +39,7 @@ export default function IssuesScreen() {
         eyebrow="CIVIC REQUESTS"
         title="Your issues"
         subtitle="Track every report from submission to resolution."
+        right={<BackButton mode="home" fallback="/(tabs)" label="Go to Home" />}
       />
       <ActionButton
         title="Raise a new issue"

@@ -78,7 +78,7 @@ export default function MyHouseholdScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Back to profile"
-            onPress={() => router.back()}
+            onPress={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/profile'))}
             style={[styles.backButton, { borderColor: colors.border }]}
           >
             <Feather name="arrow-left" size={17} color={colors.primary} />
@@ -259,8 +259,8 @@ function formatDate(value?: string) {
 
 const styles = StyleSheet.create({
   backButton: {
-    width: 42,
-    height: 42,
+    width: 44,
+    height: 44,
     borderWidth: 1,
     borderRadius: 13,
     alignItems: 'center',

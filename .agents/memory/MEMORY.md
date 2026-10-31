@@ -3,3 +3,4 @@
 - [GitHub source of truth](git-source-of-truth.md) — JanSetu is developed in Replit, pushed to GitHub, then pulled and deployed on its isolated VPS project.
 - [Mobile role parity](mobile-role-parity.md) — JanSetu mobile should cover citizen and office roles in planned phases.
 - [Cross-constituency family links](family-links.md) — keep family relationships global while each person's account and service records stay constituency-local.
+- [Mobile UI review](mobile-ui-review.md) — check signed-in readability and back navigation; a working login preview alone is insufficient.

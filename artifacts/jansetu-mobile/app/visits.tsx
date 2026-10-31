@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
-import {
+import { BackButton,
   ActionButton,
   Card,
   EmptyState,
@@ -120,6 +120,12 @@ export default function VisitsScreen() {
           isCitizen
             ? 'See upcoming public meetings and services in your constituency.'
             : 'Schedule, review, and publish office visits and camps.'
+        }
+        right={
+          <BackButton
+            fallback={isCitizen ? '/(tabs)/services' : '/office'}
+            label={isCitizen ? 'Back to services' : 'Back to office'}
+          />
         }
       />
 

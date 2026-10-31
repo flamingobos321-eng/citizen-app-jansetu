@@ -1,6 +1,7 @@
 import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import React, { type ReactElement } from 'react';
+import { router, type Href } from 'expo-router';
 import {
   ActivityIndicator,
   Image,
@@ -141,10 +142,12 @@ export function ActionButton({
   disabled = false,
   style,
   testID,
+  accessibilityLabel,
 }: {
   title: string;
   onPress: () => void;
-  variant?: 'primary' | 'outline' | 'quiet' | 'danger';
+  variant?: 'primary' | 'inverse' | 'outline' | 'quiet' | 'danger';
+  accessibilityLabel?: string;
   icon?: keyof typeof Feather.glyphMap;
   loading?: boolean;
   disabled?: boolean;
@@ -157,16 +160,20 @@ export function ActionButton({
       ? colors.primary
       : variant === 'danger'
         ? colors.destructive
-        : variant === 'outline'
+        : variant === 'outline' || variant === 'inverse'
           ? colors.card
           : 'transparent';
   const foregroundColor =
     variant === 'primary' || variant === 'danger'
       ? colors.primaryForeground
-      : colors.foreground;
+      : variant === 'inverse'
+        ? colors.primary
+        : colors.foreground;
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel ?? title}
+      accessibilityState={{ disabled: disabled || loading, busy: loading }}
       onPress={() => {
         if (disabled || loading) return;
         void Haptics.selectionAsync();
@@ -178,7 +185,7 @@ export function ActionButton({
         styles.button,
         {
           backgroundColor,
-          borderColor: variant === 'outline' ? colors.border : backgroundColor,
+          borderColor: variant === 'outline' ? colors.border : variant === 'inverse' ? colors.card : backgroundColor,
           opacity: disabled || loading ? 0.55 : pressed ? 0.85 : 1,
         },
         style,
@@ -189,7 +196,7 @@ export function ActionButton({
       ) : (
         <>
           {icon ? <Feather name={icon} size={17} color={foregroundColor} /> : null}
-          <Text style={[styles.buttonText, { color: foregroundColor }]}>{title}</Text>
+          <Text style={[styles.buttonText, { color: foregroundColor, flexShrink: 1 }]}>{title}</Text>
         </>
       )}
     </Pressable>
@@ -220,6 +227,47 @@ export function IconButton({
       ]}
     >
       <Feather name={name} size={19} color={colors.foreground} />
+    </Pressable>
+  );
+}
+
+/**
+ * Shared Back / Home control. Uses history when available, otherwise replaces
+ * to a safe fallback so direct entry never loops or lands on login.
+ * Pass mode="home" on top-level tabs to always jump to the dashboard.
+ * Does not use auth context; callers pass a role-appropriate fallback.
+ */
+export function BackButton({
+  fallback,
+  label = 'Go back',
+  mode = 'back',
+  style,
+  testID,
+}: {
+  fallback: Href;
+  label?: string;
+  mode?: 'back' | 'home';
+  style?: StyleProp<ViewStyle>;
+  testID?: string;
+}) {
+  const colors = useColors();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      testID={testID}
+      hitSlop={4}
+      onPress={() => {
+        if (mode === 'back' && router.canGoBack()) router.back();
+        else router.replace(fallback);
+      }}
+      style={({ pressed }) => [
+        styles.backButton,
+        { borderColor: colors.border, backgroundColor: colors.card, opacity: pressed ? 0.7 : 1 },
+        style,
+      ]}
+    >
+      <Feather name={mode === 'home' ? 'home' : 'arrow-left'} size={18} color={colors.primary} />
     </Pressable>
   );
 }
@@ -289,7 +337,12 @@ export function ErrorNotice({
       <View style={{ flex: 1 }}>
         <Text style={[styles.body, { color: '#991B1B' }]}>{message}</Text>
         {onRetry ? (
-          <Pressable onPress={onRetry} style={{ marginTop: 9 }}>
+          <Pressable
+            onPress={onRetry}
+            accessibilityRole="button"
+            accessibilityLabel="Try again"
+            style={{ marginTop: 4, minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start' }}
+          >
             <Text style={{ color: colors.primary, fontFamily: 'Manrope_700Bold' }}>
               Try again
             </Text>
@@ -326,7 +379,12 @@ export function SectionHeading({
     <View style={styles.sectionHeading}>
       <Text style={[styles.sectionTitle, { color: colors.foreground }]}>{title}</Text>
       {action && onAction ? (
-        <Pressable onPress={onAction} accessibilityRole="button">
+        <Pressable
+          onPress={onAction}
+          accessibilityRole="button"
+          accessibilityLabel={`${action}: ${title}`}
+          style={{ minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'flex-end' }}
+        >
           <Text style={{ color: colors.primary, fontFamily: 'Manrope_700Bold' }}>
             {action}
           </Text>
@@ -387,6 +445,14 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   buttonText: { fontFamily: 'Manrope_700Bold', fontSize: 14 },
+  backButton: {
+    width: 44,
+    height: 44,
+    borderWidth: 1,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   iconButton: {
     width: 44,
     height: 44,

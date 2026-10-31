@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
-import {
+import { BackButton,
   Card,
   EmptyState,
   ErrorNotice,
@@ -89,6 +89,7 @@ export default function NotificationsScreen() {
         eyebrow="FROM YOUR OFFICE"
         title="Updates"
         subtitle="Issue updates, family link requests, and office announcements."
+        right={<BackButton mode="home" fallback="/(tabs)" label="Go to Home" />}
       />
       <View style={styles.section}>
         <View style={styles.headingRow}>

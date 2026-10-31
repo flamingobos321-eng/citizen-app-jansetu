@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import { Alert, Linking, Platform, StyleSheet, Switch, Text, View } from 'react-native';
-import { ActionButton, Card, ErrorNotice, PageHeader, Screen } from '@/components/ui';
+import { BackButton, ActionButton, Card, ErrorNotice, PageHeader, Screen } from '@/components/ui';
 import { apiRequest, type CitizenStats, type NotificationCategory, type NotificationPreferences } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useColors } from '@/hooks/useColors';
@@ -119,6 +119,7 @@ export default function ProfileScreen() {
         eyebrow="YOUR ACCOUNT"
         title="Profile"
         subtitle="Your citizen details and service activity."
+        right={<BackButton mode="home" fallback="/(tabs)" label="Go to Home" />}
       />
       <Card style={styles.identityCard}>
         <View style={[styles.avatar, { backgroundColor: colors.primary }]}>

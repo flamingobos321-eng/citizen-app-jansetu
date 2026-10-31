@@ -88,8 +88,12 @@ export default function ChangePasswordScreen() {
         {!user.must_change_password ? (
           <Pressable
             accessibilityRole="button"
-            onPress={() => router.back()}
-            style={({ pressed }) => ({ alignItems: 'center', paddingVertical: 8, opacity: pressed ? 0.7 : 1 })}
+            accessibilityLabel="Cancel password change"
+            onPress={() => {
+              if (router.canGoBack()) router.back();
+              else router.replace(user.role === 'citizen' ? '/(tabs)/profile' : '/office');
+            }}
+            style={({ pressed }) => ({ alignItems: 'center', justifyContent: 'center', minHeight: 44, paddingVertical: 8, opacity: pressed ? 0.7 : 1 })}
           >
             <Text style={[styles.cancel, { color: colors.mutedForeground }]}>Cancel</Text>
           </Pressable>

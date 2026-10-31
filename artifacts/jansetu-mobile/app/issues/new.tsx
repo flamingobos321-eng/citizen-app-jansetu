@@ -434,7 +434,7 @@ export default function NewIssueScreen() {
 }
 
 const styles = StyleSheet.create({
-  backButton: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', marginLeft: -9 },
+  backButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', marginLeft: -9 },
   categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   category: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
   categoryText: { fontFamily: 'Manrope_600SemiBold', fontSize: 12 },

@@ -473,7 +473,7 @@ function SmallAction({
 }
 
 const styles = StyleSheet.create({
-  backButton: { width: 42, height: 42, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  backButton: { width: 44, height: 44, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   formCard: { gap: 11 },
   formHeading: { flexDirection: 'row', gap: 11, alignItems: 'center', marginBottom: 3 },
   formIcon: { width: 42, height: 42, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },

@@ -128,7 +128,7 @@ export default function HouseholdsScreen() {
 }
 
 const styles = StyleSheet.create({
-  backButton: { width: 42, height: 42, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  backButton: { width: 44, height: 44, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   searchCard: { flexDirection: 'row', gap: 9, alignItems: 'center' },
   searchInput: { flex: 1, height: 46, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, fontFamily: 'Manrope_500Medium', fontSize: 14 },
   searchButton: { width: 46, height: 46, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },

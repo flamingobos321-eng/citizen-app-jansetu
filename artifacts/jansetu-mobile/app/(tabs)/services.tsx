@@ -1,7 +1,7 @@
 import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { Card, PageHeader, Screen, uiStyles } from '@/components/ui';
+import { BackButton, Card, PageHeader, Screen, uiStyles } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
 
 const SERVICES = [
@@ -34,6 +34,7 @@ export default function ServicesScreen() {
         eyebrow="YOUR CONSTITUENCY"
         title="Services"
         subtitle="Local programs and public projects from your office."
+        right={<BackButton mode="home" fallback="/(tabs)" label="Go to Home" />}
       />
       {SERVICES.map((service) => (
         <Pressable

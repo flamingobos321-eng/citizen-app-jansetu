@@ -560,7 +560,7 @@ function capitalize(value: string) {
 }
 
 const styles = StyleSheet.create({
-  backButton: { width: 42, height: 42, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  backButton: { width: 44, height: 44, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   section: { gap: 12 },
   tabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
   tab: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10 },

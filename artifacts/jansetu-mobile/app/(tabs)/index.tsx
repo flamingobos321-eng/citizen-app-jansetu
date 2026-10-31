@@ -93,6 +93,7 @@ export default function HomeScreen() {
       ) : representative.data?.politician_name ? (
         <Card>
           <RepresentativeIdentity
+            label="YOUR LOCAL LEADER"
             name={representative.data.politician_name}
             subtitle={
               representative.data.designation ||
@@ -106,7 +107,7 @@ export default function HomeScreen() {
       <View style={[styles.hero, { backgroundColor: colors.primary }]}>
         <View style={styles.heroCopy}>
           <Text style={styles.heroEyebrow}>YOUR VOICE, YOUR COMMUNITY</Text>
-          <Text style={styles.heroTitle}>A better neighborhood starts here.</Text>
+          <Text style={styles.heroTitle}>A better place to live starts here.</Text>
           <Text style={styles.heroSub}>
             Report a local issue and follow it through to resolution.
           </Text>
@@ -114,6 +115,8 @@ export default function HomeScreen() {
         <ActionButton
           title="Raise an issue"
           icon="plus"
+          variant="inverse"
+          accessibilityLabel="Raise a new issue"
           onPress={() => router.push('/issues/new')}
           style={styles.heroButton}
         />
@@ -249,6 +252,8 @@ function IssuePreview({ issue }: { issue: Issue }) {
   return (
     <Pressable
       onPress={() => router.push(`/issues/${issue.id}`)}
+      accessibilityRole="button"
+      accessibilityLabel={`Open issue ${issue.issue_code}: ${issue.title}, ${issue.status}`}
       style={({ pressed }) => [
         styles.issuePreview,
         { borderColor: colors.border, backgroundColor: colors.card, opacity: pressed ? 0.85 : 1 },
@@ -274,7 +279,7 @@ const styles = StyleSheet.create({
   heroEyebrow: { color: '#D5DEEF', fontFamily: 'Manrope_700Bold', fontSize: 11, letterSpacing: 1.2 },
   heroTitle: { color: '#FFFFFF', fontFamily: 'Outfit_700Bold', fontSize: 27, lineHeight: 32 },
   heroSub: { color: '#DEE5F1', fontFamily: 'Manrope_400Regular', fontSize: 13, lineHeight: 20 },
-  heroButton: { backgroundColor: '#FFFFFF', borderColor: '#FFFFFF', alignSelf: 'flex-start', marginTop: 15 },
+  heroButton: { alignSelf: 'flex-start', marginTop: 15 },
   heroWatermark: { position: 'absolute', right: -16, top: 29 },
   householdShortcut: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   householdIcon: { width: 42, height: 42, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },

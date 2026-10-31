@@ -271,7 +271,7 @@ function EditField({
 }
 
 const styles = StyleSheet.create({
-  backButton: { width: 42, height: 42, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  backButton: { width: 44, height: 44, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   transferCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderWidth: 1 },
   identityRow: { flexDirection: 'row', alignItems: 'center', gap: 11 },
   personIcon: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
