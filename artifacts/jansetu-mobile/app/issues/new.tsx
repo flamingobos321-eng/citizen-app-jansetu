@@ -203,7 +203,7 @@ export default function NewIssueScreen() {
   if (user?.role !== 'citizen') return <Redirect href="/office" />;
 
   return (
-    <Screen>
+    <Screen keyboardAware>
       <Pressable
         onPress={goBack}
         accessibilityRole="button"
@@ -273,7 +273,7 @@ export default function NewIssueScreen() {
             setTitle(value);
             setFormError('');
           }}
-          placeholder="For example, pothole near the market"
+          placeholder="Pothole near market"
           placeholderTextColor={colors.mutedForeground}
           style={[uiStyles.textInput, { borderColor: colors.input, color: colors.foreground, backgroundColor: colors.card }]}
           maxLength={100}
@@ -436,7 +436,7 @@ export default function NewIssueScreen() {
 const styles = StyleSheet.create({
   backButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', marginLeft: -9 },
   categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  category: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
+  category: { minHeight: 44, justifyContent: 'center', borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
   categoryText: { fontFamily: 'Manrope_600SemiBold', fontSize: 12 },
   photoHeading: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   photoCount: { fontFamily: 'Manrope_600SemiBold', fontSize: 12 },

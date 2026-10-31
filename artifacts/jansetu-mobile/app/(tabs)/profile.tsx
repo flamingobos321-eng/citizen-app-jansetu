@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Alert, Linking, Platform, StyleSheet, Switch, Text, View } from 'react-native';
+import { Alert, Linking, Platform, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { BackButton, ActionButton, Card, ErrorNotice, PageHeader, Screen } from '@/components/ui';
 import { apiRequest, type CitizenStats, type NotificationCategory, type NotificationPreferences } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -97,7 +97,7 @@ export default function ProfileScreen() {
   };
 
   const confirmSignOut = () => {
-    if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
       if (window.confirm('Sign out of JanSetu?')) {
         void signOut().then(() => router.replace('/(auth)/login'));
       }
@@ -158,26 +158,27 @@ export default function ProfileScreen() {
         <ProfileRow label="Address" value={user?.address} last />
       </Card>
 
-      <ActionButton
-        title="View my household"
-        icon="home"
-        variant="outline"
-        onPress={() => router.push('/my-household')}
-      />
-
-      <ActionButton
-        title="Manage family links"
-        icon="users"
-        variant="outline"
-        onPress={() => router.push('/family')}
-      />
-
-      <ActionButton
-        title="Change password"
-        icon="lock"
-        variant="outline"
-        onPress={() => router.push('/change-password')}
-      />
+      <Card style={styles.groupCard}>
+        <Text style={[styles.groupTitle, { color: colors.foreground }]}>Account & family</Text>
+        <ActionButton
+          title="View my household"
+          icon="home"
+          variant="outline"
+          onPress={() => router.push('/my-household')}
+        />
+        <ActionButton
+          title="Manage family links"
+          icon="users"
+          variant="outline"
+          onPress={() => router.push('/family')}
+        />
+        <ActionButton
+          title="Change password"
+          icon="lock"
+          variant="outline"
+          onPress={() => router.push('/change-password')}
+        />
+      </Card>
 
       <Card style={styles.notificationCard}>
         <View style={styles.notificationHeading}>
@@ -224,13 +225,14 @@ export default function ProfileScreen() {
               {notificationError}
             </Text>
             {notificationError.includes('device settings') ? (
-              <Text
+              <Pressable
                 accessibilityRole="button"
+                accessibilityLabel="Open device notification settings"
                 onPress={openNotificationSettings}
-                style={[styles.settingsLink, { color: colors.primary }]}
+                style={styles.settingsButton}
               >
-                Settings
-              </Text>
+                <Text style={[styles.settingsLink, { color: colors.primary }]}>Settings</Text>
+              </Pressable>
             ) : null}
           </View>
         ) : Platform.OS === 'web' ? (
@@ -243,12 +245,16 @@ export default function ProfileScreen() {
         ) : null}
       </Card>
 
-      <ActionButton
-        title="Sign out"
-        icon="log-out"
-        variant="outline"
-        onPress={confirmSignOut}
-      />
+      <View style={[styles.signOutGroup, { borderTopColor: colors.border }]}>
+        <ActionButton
+          title="Sign out"
+          icon="log-out"
+          variant="outline"
+          onPress={confirmSignOut}
+          accessibilityLabel="Sign out of JanSetu"
+          testID="profile-sign-out"
+        />
+      </View>
       <Text style={[styles.footer, { color: colors.mutedForeground }]}>
         JanSetu citizen app
       </Text>
@@ -311,6 +317,10 @@ const styles = StyleSheet.create({
   notificationTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 15 },
   notificationBody: { fontFamily: 'Manrope_400Regular', fontSize: 12, lineHeight: 18, marginTop: 3 },
   notificationFeedback: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  settingsButton: { minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center' },
+  groupCard: { gap: 10 },
+  groupTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 17, marginBottom: 2 },
+  signOutGroup: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 18, marginTop: 4 },
   settingsLink: { fontFamily: 'Manrope_700Bold', fontSize: 12 },
   footer: { fontFamily: 'Manrope_500Medium', fontSize: 12, textAlign: 'center', marginTop: 2 },
 });

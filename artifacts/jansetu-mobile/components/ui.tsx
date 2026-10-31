@@ -97,7 +97,7 @@ export function PageHeader({
   const colors = useColors();
   return (
     <View style={styles.pageHeader}>
-      <View style={{ flex: 1 }}>
+      <View style={styles.pageHeaderText}>
         {eyebrow ? (
           <Text style={[styles.eyebrow, { color: colors.mutedForeground }]}>
             {eyebrow.toUpperCase()}
@@ -110,7 +110,7 @@ export function PageHeader({
           </Text>
         ) : null}
       </View>
-      {right}
+      {right ? <View style={styles.pageHeaderRight}>{right}</View> : null}
     </View>
   );
 }
@@ -420,11 +420,13 @@ const styles = StyleSheet.create({
   screenContent: { paddingHorizontal: 20, gap: 19 },
   pageHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 12,
     marginBottom: 2,
   },
+  pageHeaderText: { flex: 1, minWidth: 0 },
+  pageHeaderRight: { flexShrink: 0, flexDirection: 'row', alignItems: 'center', gap: 8 },
   eyebrow: {
     fontFamily: 'Manrope_700Bold',
     fontSize: 11,

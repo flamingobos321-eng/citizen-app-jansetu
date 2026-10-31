@@ -136,6 +136,7 @@ export default function DevelopmentWorksScreen() {
 
   return (
     <Screen
+      keyboardAware
       contentStyle={{ gap: 16 }}
       refreshControl={
         <RefreshControl refreshing={worksQuery.isRefetching} onRefresh={() => void refresh()} tintColor={colors.primary} />

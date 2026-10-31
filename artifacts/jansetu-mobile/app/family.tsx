@@ -1,7 +1,7 @@
 import { Feather } from '@expo/vector-icons';
 import { Redirect, router } from 'expo-router';
 import { useState } from 'react';
-import { Alert, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Platform, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import {
   getGetFamilyInvitationsQueryKey,
   getGetFamilyMembersQueryKey,
@@ -155,9 +155,16 @@ export default function FamilyScreen() {
     if (action === 'cancel') cancelInvitation.mutate({ invId: id });
   };
   const removeFamilyLink = (member: ApiFamilyMember) => {
+    const removeMessage = `This will unlink ${member.other_name || 'this family member'} for both accounts. It will not move or delete household or service records.`;
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined' && window.confirm(`Remove family link?\n\n${removeMessage}`)) {
+        removeRelationship.mutate({ relationshipId: member.id });
+      }
+      return;
+    }
     Alert.alert(
       'Remove family link?',
-      `This will unlink ${member.other_name || 'this family member'} for both accounts. It will not move or delete household or service records.`,
+      removeMessage,
       [
         { text: 'Keep link', style: 'cancel' },
         {
@@ -482,8 +489,8 @@ const styles = StyleSheet.create({
   body: { fontFamily: 'Manrope_400Regular', fontSize: 12, lineHeight: 17 },
   fieldLabel: { fontFamily: 'Manrope_700Bold', fontSize: 12, letterSpacing: 0.6, textTransform: 'uppercase' },
   relationGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
-  relationChip: { minHeight: 36, justifyContent: 'center', borderWidth: 1, borderRadius: 18, paddingHorizontal: 12 },
-  relationText: { fontFamily: 'Manrope_600SemiBold', fontSize: 11 },
+  relationChip: { minHeight: 44, justifyContent: 'center', borderWidth: 1, borderRadius: 18, paddingHorizontal: 12 },
+  relationText: { fontFamily: 'Manrope_600SemiBold', fontSize: 13 },
   input: { minHeight: 46, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, fontFamily: 'Manrope_500Medium', fontSize: 14 },
   success: { fontFamily: 'Manrope_600SemiBold', fontSize: 12, lineHeight: 17 },
   section: { gap: 9 },
@@ -495,6 +502,6 @@ const styles = StyleSheet.create({
   invitationCard: { gap: 11 },
   invitationCopy: { gap: 3 },
   actionRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
-  smallAction: { minHeight: 38, justifyContent: 'center', borderWidth: 1, borderRadius: 11, paddingHorizontal: 12 },
+  smallAction: { minHeight: 44, justifyContent: 'center', borderWidth: 1, borderRadius: 11, paddingHorizontal: 12 },
   smallActionText: { fontFamily: 'Manrope_700Bold', fontSize: 12 },
 });

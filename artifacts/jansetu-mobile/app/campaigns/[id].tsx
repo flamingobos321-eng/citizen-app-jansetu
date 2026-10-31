@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { ActionButton, Card, EmptyState, ErrorNotice, PageHeader, Screen, StatusBadge } from '@/components/ui';
+import { ActionButton, BackButton, Card, EmptyState, ErrorNotice, PageHeader, Screen, StatusBadge } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
 import { apiRequest, uploadIssuePhoto } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -202,15 +202,13 @@ export default function CampaignDetailScreen() {
   };
 
   return (
-    <Screen contentStyle={{ gap: 14 }}>
+    <Screen keyboardAware contentStyle={{ gap: 14 }}>
       <PageHeader
         eyebrow={isWorker ? 'FIELD CAMPAIGN' : 'OFFICE CAMPAIGN'}
         title={campaign?.name || 'Campaign'}
         subtitle={campaign ? campaign.campaign_type.replace(/_/g, ' ') : 'Loading campaign details'}
         right={
-          <Pressable accessibilityRole="button" accessibilityLabel="Back to campaigns" onPress={() => router.replace('/campaigns')} style={[styles.backButton, { borderColor: colors.border }]}>
-            <Feather name="arrow-left" size={17} color={colors.primary} />
-          </Pressable>
+          <BackButton fallback="/campaigns" label="Back to campaigns" testID="campaign-detail-back" />
         }
       />
       {campaignQuery.isError ? (
@@ -715,9 +713,8 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
-  backButton: { width: 44, height: 44, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
-  tabRow: { flexDirection: 'row', gap: 7 },
-  tab: { flex: 1, minHeight: 42, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderRadius: 11 },
+  tabRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
+  tab: { flexGrow: 1, minHeight: 44, paddingHorizontal: 12, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderRadius: 11 },
   statusRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   sectionTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 17 },
   body: { fontFamily: 'Manrope_400Regular', fontSize: 13, lineHeight: 19 },

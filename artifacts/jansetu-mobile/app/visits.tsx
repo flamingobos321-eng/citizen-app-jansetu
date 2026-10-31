@@ -104,6 +104,7 @@ export default function VisitsScreen() {
 
   return (
     <Screen
+      keyboardAware
       contentStyle={{ gap: 16 }}
       refreshControl={
         <RefreshControl

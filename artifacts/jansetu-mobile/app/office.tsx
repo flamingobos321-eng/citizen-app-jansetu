@@ -2,7 +2,7 @@ import { Feather } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import { Redirect, router } from 'expo-router';
 import { useState, type ReactNode } from 'react';
-import { Alert, Platform, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, type StyleProp, type ViewStyle, Platform, Pressable, RefreshControl, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import {
   ActionButton,
   Card,
@@ -35,6 +35,8 @@ type OfficeDashboardStats = {
 
 export default function OfficeWorkspaceScreen() {
   const colors = useColors();
+  const { width } = useWindowDimensions();
+  const tileStyle = width < 340 ? styles.featureLinkFull : styles.featureLinkHalf;
   const [visibleIssueCount, setVisibleIssueCount] = useState(30);
   const [issueSearch, setIssueSearch] = useState('');
   const [issueStatus, setIssueStatus] = useState<string | null>(null);
@@ -53,11 +55,26 @@ export default function OfficeWorkspaceScreen() {
   if (loading) return null;
   if (!user) return <Redirect href="/(auth)/login" />;
   if (user.role === 'citizen') return <Redirect href="/(tabs)" />;
+  const handleSignOut = () => {
+    const finishSignOut = () => {
+      void signOut().then(() => router.replace('/(auth)/login'));
+    };
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      if (window.confirm('Sign out of JanSetu?')) finishSignOut();
+      return;
+    }
+    Alert.alert('Sign out?', 'You can sign back in with your office account.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Sign out', style: 'destructive', onPress: finishSignOut },
+    ]);
+  };
+
   if (!OFFICE_ROLES.includes(user.role)) {
     return (
       <Screen>
         <PageHeader eyebrow="JANSETU" title="Office access unavailable" />
         <ErrorNotice message="This account does not have access to the mobile office workspace. Use the web portal for platform administration." />
+        <ActionButton title="Sign out" icon="log-out" variant="outline" onPress={handleSignOut} testID="office-denied-sign-out" />
       </Screen>
     );
   }
@@ -75,20 +92,6 @@ export default function OfficeWorkspaceScreen() {
   const inProgressCount = issues.filter((issue) => issue.status === 'In Progress').length;
   const resolvedCount = issues.filter((issue) => issue.status === 'Resolved').length;
 
-  const handleSignOut = () => {
-    const finishSignOut = () => {
-      void signOut().then(() => router.replace('/(auth)/login'));
-    };
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      if (window.confirm('Sign out of JanSetu?')) finishSignOut();
-      return;
-    }
-    Alert.alert('Sign out?', 'You can sign back in with your office account.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign out', style: 'destructive', onPress: finishSignOut },
-    ]);
-  };
-
   return (
     <Screen
       keyboardAware
@@ -101,7 +104,6 @@ export default function OfficeWorkspaceScreen() {
         />
       }
     >
-      <View style={styles.headerRow}>
         <PageHeader
           eyebrow="OFFICE WORKSPACE"
           title={`Namaste, ${user.name?.split(' ')[0] || 'team'}`}
@@ -117,7 +119,6 @@ export default function OfficeWorkspaceScreen() {
             </Pressable>
           }
         />
-      </View>
 
       <View style={styles.statsRow}>
         <Summary label={user.role === 'worker' ? 'Assigned' : 'Active'} value={activeCount} />
@@ -152,24 +153,28 @@ export default function OfficeWorkspaceScreen() {
         <>
           <ToolGroup title="People & community" icon="users">
             <FeatureLink
+              tileStyle={tileStyle}
               icon="users"
               title="Citizens & households"
               subtitle="Families and service history"
               onPress={() => router.push('/households')}
             />
             <FeatureLink
+              tileStyle={tileStyle}
               icon="calendar"
               title="Visits & camps"
               subtitle="Schedule and approve visits"
               onPress={() => router.push('/visits')}
             />
             <FeatureLink
+              tileStyle={tileStyle}
               icon="gift"
               title="Celebrations"
               subtitle="Important community dates"
               onPress={() => router.push('/celebrations')}
             />
             <FeatureLink
+              tileStyle={tileStyle}
               icon="users"
               title="Karyakartas"
               subtitle="Volunteers and party workers"
@@ -178,12 +183,14 @@ export default function OfficeWorkspaceScreen() {
           </ToolGroup>
           <ToolGroup title="Constituency work" icon="map">
             <FeatureLink
+              tileStyle={tileStyle}
               icon="tool"
               title="Development works"
               subtitle="Local project progress"
               onPress={() => router.push('/devworks')}
             />
             <FeatureLink
+              tileStyle={tileStyle}
               icon="flag"
               title="Campaigns"
               subtitle="Field operations and surveys"
@@ -192,12 +199,14 @@ export default function OfficeWorkspaceScreen() {
           </ToolGroup>
           <ToolGroup title="Updates & reporting" icon="bar-chart-2">
             <FeatureLink
+              tileStyle={tileStyle}
               icon="bell"
               title="Notifications"
               subtitle="Announcements and citizen updates"
               onPress={() => router.push('/office-notifications')}
             />
             <FeatureLink
+              tileStyle={tileStyle}
               icon="bar-chart-2"
               title="Reports & exports"
               subtitle="Constituency totals and CSVs"
@@ -207,6 +216,7 @@ export default function OfficeWorkspaceScreen() {
           {user.role === 'admin' || user.role === 'pa' ? (
             <ToolGroup title="Office setup" icon="settings">
               <FeatureLink
+              tileStyle={tileStyle}
                 icon="settings"
                 title={user.role === 'admin' ? 'Administration' : 'Caste & religion'}
                 subtitle={user.role === 'admin' ? 'Accounts and constituency setup' : 'Citizen profile lists'}
@@ -218,6 +228,7 @@ export default function OfficeWorkspaceScreen() {
       ) : (
         <ToolGroup title="Fieldwork" icon="flag">
           <FeatureLink
+              tileStyle={tileStyle}
             icon="flag"
             title="My campaigns"
             subtitle="Assigned fieldwork and campaign tasks"
@@ -227,6 +238,7 @@ export default function OfficeWorkspaceScreen() {
       )}
       <ToolGroup title="Account" icon="lock">
         <FeatureLink
+              tileStyle={tileStyle}
           icon="lock"
           title="Change password"
           subtitle="Update your account password"
@@ -437,11 +449,13 @@ function FeatureLink({
   title,
   subtitle,
   onPress,
+  tileStyle,
 }: {
   icon: keyof typeof Feather.glyphMap;
   title: string;
   subtitle: string;
   onPress: () => void;
+  tileStyle: StyleProp<ViewStyle>;
 }) {
   const colors = useColors();
   return (
@@ -452,6 +466,7 @@ function FeatureLink({
       onPress={onPress}
       style={({ pressed }) => [
         styles.featureLink,
+        tileStyle,
         { borderColor: colors.border, backgroundColor: colors.card, opacity: pressed ? 0.82 : 1 },
       ]}
     >
@@ -493,19 +508,17 @@ function ToolGroup({
 }
 
 const styles = StyleSheet.create({
-  headerRow: { flexDirection: 'row', alignItems: 'flex-start' },
   signOutButton: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     borderWidth: 1,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 4,
   },
   statsRow: { flexDirection: 'row', gap: 9 },
   overviewGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 9 },
-  overviewCard: { width: '48%', minHeight: 68, borderWidth: 1, borderRadius: 14, padding: 11, justifyContent: 'center' },
+  overviewCard: { flexBasis: '46%', flexGrow: 1, minHeight: 68, borderWidth: 1, borderRadius: 14, padding: 11, justifyContent: 'center' },
   overviewValue: { fontFamily: 'Outfit_700Bold', fontSize: 20 },
   overviewLabel: { fontFamily: 'Manrope_500Medium', fontSize: 12, marginTop: 2 },
   toolsHeading: { gap: 2, marginTop: 1 },
@@ -515,18 +528,18 @@ const styles = StyleSheet.create({
   groupTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 15 },
   toolGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 9 },
   featureLink: {
-    width: '48%',
-    minHeight: 122,
     borderWidth: 1,
     borderRadius: 14,
     padding: 12,
     justifyContent: 'space-between',
     gap: 6,
   },
+  featureLinkHalf: { flexBasis: '46%', flexGrow: 1 },
+  featureLinkFull: { width: '100%' },
   featureTopline: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   featureIcon: { width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
   featureTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 14, lineHeight: 18 },
-  featureSubtitle: { fontFamily: 'Manrope_400Regular', fontSize: 11, lineHeight: 15 },
+  featureSubtitle: { fontFamily: 'Manrope_400Regular', fontSize: 13, lineHeight: 18 },
   summary: {
     flex: 1,
     minHeight: 75,

@@ -77,7 +77,7 @@ export default function MyHouseholdScreen() {
         right={
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Back to profile"
+            accessibilityLabel="Go back"
             onPress={() => (router.canGoBack() ? router.back() : router.replace('/(tabs)/profile'))}
             style={[styles.backButton, { borderColor: colors.border }]}
           >

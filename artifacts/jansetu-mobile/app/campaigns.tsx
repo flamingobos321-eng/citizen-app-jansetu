@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect, router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
-import { ActionButton, Card, EmptyState, ErrorNotice, PageHeader, Screen, StatusBadge } from '@/components/ui';
+import { ActionButton, BackButton, Card, EmptyState, ErrorNotice, PageHeader, Screen, StatusBadge } from '@/components/ui';
 import { useColors } from '@/hooks/useColors';
 import { apiRequest } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -127,6 +127,7 @@ export default function CampaignsScreen() {
 
   return (
     <Screen
+      keyboardAware
       contentStyle={{ gap: 14 }}
       refreshControl={
         <RefreshControl refreshing={campaignsQuery.isRefetching} onRefresh={() => void campaignsQuery.refetch()} tintColor={colors.primary} />
@@ -136,17 +137,17 @@ export default function CampaignsScreen() {
         eyebrow={user?.role === 'worker' ? 'FIELD WORKSPACE' : 'OFFICE WORKSPACE'}
         title={user?.role === 'worker' ? 'My campaigns' : 'Campaigns'}
         subtitle={user?.role === 'worker' ? 'Campaigns and field tasks assigned to you.' : 'Field operations, surveys, and community data collection.'}
-        right={
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={isStaff ? (showCreate ? 'Close campaign form' : 'Create campaign') : 'Back to office'}
-            onPress={() => isStaff ? setShowCreate((value) => !value) : router.replace('/office')}
-            style={[styles.headerButton, { borderColor: colors.border }]}
-          >
-            <Feather name={isStaff ? (showCreate ? 'x' : 'plus') : 'arrow-left'} size={18} color={colors.primary} />
-          </Pressable>
-        }
+        right={<BackButton fallback="/office" label="Back to office" testID="campaigns-back" />}
       />
+      {isStaff ? (
+        <ActionButton
+          title={showCreate ? 'Close campaign form' : 'New campaign'}
+          icon={showCreate ? 'x' : 'plus'}
+          variant={showCreate ? 'outline' : 'primary'}
+          onPress={() => setShowCreate((value) => !value)}
+          testID="toggle-create-campaign"
+        />
+      ) : null}
 
       {statsQuery.data ? (
         <View style={styles.statsRow}>
@@ -298,7 +299,6 @@ function Chips({ options, selected, onSelect, labels = {} }: { options: string[]
 }
 
 const styles = StyleSheet.create({
-  headerButton: { width: 42, height: 42, borderWidth: 1, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   statsRow: { flexDirection: 'row', gap: 8 },
   statValue: { fontFamily: 'Outfit_700Bold', fontSize: 20 },
   sectionTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 18 },

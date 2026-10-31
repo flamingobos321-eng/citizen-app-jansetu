@@ -92,7 +92,7 @@ export default function PersonProfileScreen() {
   };
 
   return (
-    <Screen contentStyle={{ gap: 14 }}>
+    <Screen keyboardAware contentStyle={{ gap: 14 }}>
       <PageHeader
         eyebrow="PERSON PROFILE"
         title={person?.name || 'Citizen'}

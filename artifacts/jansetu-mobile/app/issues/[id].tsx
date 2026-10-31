@@ -302,7 +302,7 @@ export default function IssueDetailScreen() {
   const selectedPhotoUrl = selectedPhoto ? authenticatedFileUrl(selectedPhoto) : null;
 
   return (
-    <Screen>
+    <Screen keyboardAware>
       <View style={styles.topline}>
         <Pressable
           accessibilityRole="button"
