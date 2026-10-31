@@ -17,6 +17,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
 import { KeyboardAwareScrollViewCompat } from '@/components/KeyboardAwareScrollViewCompat';
+import { screenTopPadding } from '@/lib/screenInsets';
 
 const brandIcon = require('../assets/images/icon.png');
 
@@ -37,8 +38,7 @@ export function Screen({
   const contentContainerStyle = [
     styles.screenContent,
     {
-      paddingTop:
-        (Platform.OS === 'web' ? Math.max(insets.top, 67) : insets.top) + 14,
+      paddingTop: screenTopPadding(Platform.OS, insets.top),
       paddingBottom:
         (Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 18)) +
         (hasTabBar ? (Platform.OS === 'web' ? 84 : 96) : 24),
