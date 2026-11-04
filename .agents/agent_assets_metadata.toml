@@ -14,3 +14,17 @@ mtime_ms = 1793807819061
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:8d357184-36b8-488d-9e00-0dccd44544d1/942807a7-44a6-4dd4-81e2-728df3fcd689/aadb164d-b95b-47f3-baa8-1ff995d0f9a3"
 storage_version_token = "1793807835196843"
 content_type = "application/pdf"
+
+[[outputs]]
+id = "UNLRsMRIaVEt2Sw66AT-M"
+uri = "file://generated-artifacts/JanSetu-Complete-A4-Presentation.pdf"
+type = "pdf"
+title = "JanSetu — Complete Product Presentation (A4 PDF)"
+description = "Updated 24-page portrait PDF in JanSetu’s website colours, with real product screenshots and expanded coverage of electoral rolls, voter records, family linking, representative portals and office tools. Contact numbers only; no pricing, website or email."
+logical_id = "5507c3ea-1517-4d8e-a554-86de36518ae6"
+content_hash = "sha256:3d67a6d91e11a8344e92c0fb8b73887e516bfc577041cefb15a1a97f7d33355a"
+size = 2479336
+mtime_ms = 1793808830009
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:8d357184-36b8-488d-9e00-0dccd44544d1/5507c3ea-1517-4d8e-a554-86de36518ae6/a0637008-a0aa-46fa-8f37-3498bd860f93"
+storage_version_token = "1793808842067197"
+content_type = "application/pdf"
