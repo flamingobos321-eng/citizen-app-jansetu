@@ -4,7 +4,7 @@
     "position": 1,
     "filepath": "src/pages/slides/Cover.tsx",
     "title": "JanSetu",
-    "description": "JanSetu",
+    "description": "Cover with website screenshot",
     "speakerNotes": ""
   },
   {
@@ -12,7 +12,7 @@
     "position": 2,
     "filepath": "src/pages/slides/Requests.tsx",
     "title": "Every citizen request deserves a clear next step",
-    "description": "Every citizen request deserves a clear next step",
+    "description": "Problem",
     "speakerNotes": ""
   },
   {
@@ -20,7 +20,7 @@
     "position": 3,
     "filepath": "src/pages/slides/Workspace.tsx",
     "title": "One connected workspace",
-    "description": "One connected workspace",
+    "description": "Overview",
     "speakerNotes": ""
   },
   {
@@ -28,103 +28,167 @@
     "position": 4,
     "filepath": "src/pages/slides/People.tsx",
     "title": "Built around people and their responsibilities",
-    "description": "Built around people and their responsibilities",
+    "description": "Roles",
+    "speakerNotes": ""
+  },
+  {
+    "id": "316069e1-c6f6-4fd9-8d90-f2166a2169e5",
+    "position": 5,
+    "filepath": "src/pages/slides/RepresentativePortal.tsx",
+    "title": "A separate webpage for every representative",
+    "description": "Representative portal screenshot",
     "speakerNotes": ""
   },
   {
     "id": "229cdec7-a17d-4735-bcc2-02a24c1352e3",
-    "position": 5,
+    "position": 6,
     "filepath": "src/pages/slides/Citizens.tsx",
     "title": "A simpler experience for citizens",
-    "description": "A simpler experience for citizens",
+    "description": "Citizen dashboard screenshot",
     "speakerNotes": ""
   },
   {
     "id": "d61beeee-1329-4211-ad68-a834757f8f00",
-    "position": 6,
+    "position": 7,
     "filepath": "src/pages/slides/Resolution.tsx",
     "title": "From request to resolution",
-    "description": "From request to resolution",
+    "description": "Workflow with report screenshot",
     "speakerNotes": ""
   },
   {
     "id": "bd1da4a5-4a5c-4560-804e-ee6dd0b831a3",
-    "position": 7,
+    "position": 8,
     "filepath": "src/pages/slides/OfficeTeams.tsx",
     "title": "Give office teams a clearer working day",
-    "description": "Give office teams a clearer working day",
+    "description": "Office",
     "speakerNotes": ""
   },
   {
     "id": "de46f920-9a21-4e76-8ce2-ad37a1c55821",
-    "position": 8,
+    "position": 9,
     "filepath": "src/pages/slides/Representatives.tsx",
     "title": "Help representatives stay informed",
-    "description": "Help representatives stay informed",
+    "description": "Reps",
     "speakerNotes": ""
   },
   {
     "id": "4825cdf2-fa29-4b51-b968-8aca8c238c9f",
-    "position": 9,
+    "position": 10,
     "filepath": "src/pages/slides/Staff.tsx",
     "title": "Support staff in the office and in the field",
-    "description": "Support staff in the office and in the field",
+    "description": "Staff",
+    "speakerNotes": ""
+  },
+  {
+    "id": "6d04e27b-4fd9-4cd2-bad6-4aa26c231a38",
+    "position": 11,
+    "filepath": "src/pages/slides/OfficeSetup.tsx",
+    "title": "Configure the office around its responsibilities",
+    "description": "Admin config",
+    "speakerNotes": ""
+  },
+  {
+    "id": "b7bab898-002e-41a7-94b3-f427f9c1c2b5",
+    "position": 12,
+    "filepath": "src/pages/slides/ElectoralRolls.tsx",
+    "title": "Turn electoral rolls into usable records",
+    "description": "Imports",
+    "speakerNotes": ""
+  },
+  {
+    "id": "42c35ba1-d54f-4635-a201-44152a4bfe3d",
+    "position": 13,
+    "filepath": "src/pages/slides/VoterDatabase.tsx",
+    "title": "Review and maintain the voter database",
+    "description": "Voter DB",
+    "speakerNotes": ""
+  },
+  {
+    "id": "c54c9f7d-db9b-4854-9b9d-6f60582dfd7a",
+    "position": 14,
+    "filepath": "src/pages/slides/VoterClaim.tsx",
+    "title": "Help citizens find their existing voter record",
+    "description": "Claim screenshot",
     "speakerNotes": ""
   },
   {
     "id": "4c733dfe-9b41-41a0-844d-e146a0d6a849",
-    "position": 10,
+    "position": 15,
     "filepath": "src/pages/slides/Families.tsx",
     "title": "Families remain connected",
-    "description": "Families remain connected",
+    "description": "Family dialog screenshot",
+    "speakerNotes": ""
+  },
+  {
+    "id": "e4901342-57f1-471a-814a-eaf3c90ac8b9",
+    "position": 16,
+    "filepath": "src/pages/slides/Households.tsx",
+    "title": "Understand the household and its service history",
+    "description": "Households",
+    "speakerNotes": ""
+  },
+  {
+    "id": "aa1c719e-9dd8-4588-b216-145a89100e76",
+    "position": 17,
+    "filepath": "src/pages/slides/VisitsWorks.tsx",
+    "title": "Plan visits and track development work",
+    "description": "Visits",
     "speakerNotes": ""
   },
   {
     "id": "79f49de0-f063-428f-88bf-0fbc883d207e",
-    "position": 11,
+    "position": 18,
     "filepath": "src/pages/slides/Outreach.tsx",
     "title": "Coordinate outreach and local work",
-    "description": "Coordinate outreach and local work",
+    "description": "Campaigns",
+    "speakerNotes": ""
+  },
+  {
+    "id": "d6abe57a-68d0-4c34-94e6-e2df921309f3",
+    "position": 19,
+    "filepath": "src/pages/slides/Reports.tsx",
+    "title": "Make reports and community follow-up practical",
+    "description": "Reports",
     "speakerNotes": ""
   },
   {
     "id": "b84f2dfe-ff35-4d64-a806-182b89a7ef2f",
-    "position": 12,
+    "position": 20,
     "filepath": "src/pages/slides/Informed.tsx",
     "title": "Keep citizens informed",
-    "description": "Keep citizens informed",
+    "description": "Updates",
     "speakerNotes": ""
   },
   {
     "id": "cd56b554-4ab5-4fbb-879e-34e99b6657e6",
-    "position": 13,
+    "position": 21,
     "filepath": "src/pages/slides/WebMobile.tsx",
     "title": "Web and mobile, with a shared purpose",
-    "description": "Web and mobile, with a shared purpose",
+    "description": "Platforms",
     "speakerNotes": ""
   },
   {
     "id": "d97ea67d-18ad-4479-858c-07c1bf8b5b54",
-    "position": 14,
+    "position": 22,
     "filepath": "src/pages/slides/Trust.tsx",
     "title": "Trust is part of the service",
-    "description": "Trust is part of the service",
+    "description": "Trust",
     "speakerNotes": ""
   },
   {
     "id": "bae6c332-0ce7-4f43-974f-d50860c6c762",
-    "position": 15,
+    "position": 23,
     "filepath": "src/pages/slides/Rollout.tsx",
     "title": "Begin with a focused office rollout",
-    "description": "Begin with a focused office rollout",
+    "description": "Rollout",
     "speakerNotes": ""
   },
   {
     "id": "bce1357e-58c4-4c11-a658-2ce65ad0fb40",
-    "position": 16,
+    "position": 24,
     "filepath": "src/pages/slides/Close.tsx",
     "title": "Bring your constituency office together",
-    "description": "Bring your constituency office together",
+    "description": "Close",
     "speakerNotes": ""
   }
 ]

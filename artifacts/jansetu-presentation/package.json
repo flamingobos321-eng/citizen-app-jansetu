@@ -21,6 +21,7 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "pdf-lib": "^1.17.1",
+    "playwright-core": "^1.64.1",
     "prosemirror-commands": "1.7.1",
     "prosemirror-history": "1.5.0",
     "prosemirror-inputrules": "1.5.1",

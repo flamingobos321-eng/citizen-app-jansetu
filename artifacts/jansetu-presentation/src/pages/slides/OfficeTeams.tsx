@@ -1,31 +1,19 @@
 export default function OfficeTeams() {
   return (
-    <div className="w-screen h-screen overflow-hidden relative bg-[#d9dfe3] flex justify-center">
+    <div className="w-screen h-screen overflow-hidden relative bg-[#E5E7EB] flex justify-center">
       <div className="relative h-screen w-[70.7070707vh] bg-bg overflow-hidden font-body text-text">
-        <div className="absolute inset-x-0 top-0 h-[44vh] bg-accent"></div>
-        <div className="relative px-[6vh] pt-[8vh]">
-          <div className="h-[0.6vh] w-[9vh] bg-white"></div>
-          <h1 className="mt-[2.4vh] font-display font-semibold text-[5.4vh] leading-[1.06] text-white" style={{textWrap:"balance"}}>Give office teams a clearer working day</h1>
+        <div className="relative px-[6vh] pt-[7vh]">
+          <p className="text-[1.6vh] font-semibold tracking-[0.14em] uppercase text-accent">Office teams</p>
+          <h1 className="mt-[1.4vh] font-display font-semibold text-[4.6vh] leading-[1.08] tracking-tight text-primary" style={{textWrap:"balance"}}>Give office teams a clearer working day</h1>
         </div>
-        <div className="absolute left-[6vh] right-[6vh] top-[34vh] grid grid-cols-2 gap-[2.4vh]">
-          <div className="bg-white px-[2.4vh] py-[2.6vh] shadow-[0_0.6vh_2vh_rgba(15,42,68,0.08)] flex flex-col gap-[1.6vh]">
-            <svg viewBox="0 0 24 24" className="text-accent shrink-0" style={{width:"3.6vh",height:"3.6vh"}} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12h12M12 6l6 6-6 6"/></svg>
-            <p className="text-[2.2vh] leading-snug text-text">View incoming and pending issues</p>
-          </div>
-          <div className="bg-white px-[2.4vh] py-[2.6vh] shadow-[0_0.6vh_2vh_rgba(15,42,68,0.08)] flex flex-col gap-[1.6vh]">
-            <svg viewBox="0 0 24 24" className="text-accent shrink-0" style={{width:"3.6vh",height:"3.6vh"}} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>
-            <p className="text-[2.2vh] leading-snug text-text">Find cases by keyword and status</p>
-          </div>
-          <div className="bg-white px-[2.4vh] py-[2.6vh] shadow-[0_0.6vh_2vh_rgba(15,42,68,0.08)] flex flex-col gap-[1.6vh]">
-            <svg viewBox="0 0 24 24" className="text-accent shrink-0" style={{width:"3.6vh",height:"3.6vh"}} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="5" width="16" height="14" rx="1"/><path d="M4 10h16"/></svg>
-            <p className="text-[2.2vh] leading-snug text-text">Coordinate responsibility across the team</p>
-          </div>
-          <div className="bg-white px-[2.4vh] py-[2.6vh] shadow-[0_0.6vh_2vh_rgba(15,42,68,0.08)] flex flex-col gap-[1.6vh]">
-            <svg viewBox="0 0 24 24" className="text-accent shrink-0" style={{width:"3.6vh",height:"3.6vh"}} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="9" r="3"/><path d="M3 19c0-3 3-5 6-5s6 2 6 5M16 7a3 3 0 010 6M21 19c0-2-1-4-3-4.5"/></svg>
-            <p className="text-[2.2vh] leading-snug text-text">Keep progress updates with the case</p>
-          </div>
+        <div className="absolute left-[6vh] top-[27vh] w-[14vh] h-[14vh] rounded-[3vh] bg-primary flex items-center justify-center"><svg viewBox="0 0 24 24" style={{width:"8vh",height:"8vh"}} fill="none" stroke="white" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/></svg></div>
+        <div className="absolute inset-x-0 bottom-0 h-[52vh] bg-accent rounded-tl-[8vh] px-[6vh] pt-[5vh]">
+            <div className="flex items-start gap-[1.6vh] py-[1.8vh] border-b border-white/30"><span className="mt-[0.9vh] shrink-0 w-[1.2vh] h-[1.2vh] rounded-full bg-white"></span><p className="text-[2.3vh] leading-snug text-white font-medium">View incoming and pending issues</p></div>
+            <div className="flex items-start gap-[1.6vh] py-[1.8vh] border-b border-white/30"><span className="mt-[0.9vh] shrink-0 w-[1.2vh] h-[1.2vh] rounded-full bg-white"></span><p className="text-[2.3vh] leading-snug text-white font-medium">Find cases by keyword and status</p></div>
+            <div className="flex items-start gap-[1.6vh] py-[1.8vh] border-b border-white/30"><span className="mt-[0.9vh] shrink-0 w-[1.2vh] h-[1.2vh] rounded-full bg-white"></span><p className="text-[2.3vh] leading-snug text-white font-medium">Coordinate responsibility across the team</p></div>
+            <div className="flex items-start gap-[1.6vh] py-[1.8vh] border-b border-white/30"><span className="mt-[0.9vh] shrink-0 w-[1.2vh] h-[1.2vh] rounded-full bg-white"></span><p className="text-[2.3vh] leading-snug text-white font-medium">Keep progress updates with the case</p></div>
         </div>
-        <div className="absolute left-[6vh] right-[6vh] bottom-[3.6vh] flex justify-between items-center font-body text-[1.5vh] tracking-[0.14em] uppercase text-muted"><span>JanSetu</span><span>07</span></div>
+        <div className="absolute left-[6vh] right-[6vh] bottom-[3.4vh] flex justify-between items-center text-[1.5vh] tracking-[0.12em] uppercase text-white/60"><span className="font-display font-semibold">JanSetu</span><span>08</span></div>
       </div>
     </div>
   );
