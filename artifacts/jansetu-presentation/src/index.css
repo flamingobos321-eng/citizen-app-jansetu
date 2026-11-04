@@ -11,12 +11,11 @@
 }
 
 :root {
-  /* Replace these with brand colors */
   --slide-primary: #0A1128;
-  --slide-accent: #10B981;
-  --slide-bg: #F9FAFB;
+  --slide-accent: #2563EB;
+  --slide-bg: #F6F8FC;
   --slide-text: #0A1128;
-  --slide-muted: #6B7280;
+  --slide-muted: #657084;
   --font-display-family: 'Outfit', sans-serif;
   --font-body-family: 'Manrope', sans-serif;
   color-scheme: light;
@@ -39,6 +38,132 @@ body {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+}
+
+.panel-stage {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(ellipse at 50% 50%, rgba(37, 99, 235, 0.08), transparent 52%),
+    #e9edf5;
+}
+
+.page-panel {
+  position: relative;
+  width: 70.707vh;
+  height: 100vh;
+  overflow: hidden;
+  padding: 5.4vh 5.2vh;
+  background: #f6f8fc;
+  color: #0a1128;
+  box-shadow: 0 0 5vh rgba(10, 17, 40, 0.16);
+  font-family: var(--font-body-family);
+}
+
+.page-panel--blue {
+  background: #e8f0ff;
+}
+
+.page-panel--cobalt {
+  background: #2563eb;
+  color: #f6f8fc;
+}
+
+.page-panel--navy {
+  background: #0a1128;
+  color: #f6f8fc;
+}
+
+.page-topline {
+  color: #2563eb;
+  font-family: var(--font-body-family);
+  font-size: 1.5vw;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.page-panel--cobalt .page-topline,
+.page-panel--navy .page-topline {
+  color: #c9dbff;
+}
+
+.page-title {
+  margin-top: 2.2vh;
+  font-family: var(--font-display-family);
+  font-size: 3.35vw;
+  font-weight: 700;
+  letter-spacing: -0.045em;
+  line-height: 0.99;
+  text-wrap: balance;
+}
+
+.page-copy {
+  font-size: 2vw;
+  font-weight: 500;
+  line-height: 1.34;
+  text-wrap: pretty;
+}
+
+.page-detail {
+  color: #657084;
+  font-size: 1.5vw;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.page-panel--cobalt .page-detail,
+.page-panel--navy .page-detail {
+  color: #d8e5ff;
+}
+
+.phone-shot {
+  display: block;
+  height: 55vh;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
+  border-radius: 2.4vh;
+  box-shadow: 0 1.6vh 3.2vh rgba(10, 17, 40, 0.22);
+}
+
+.phone-shot--large {
+  height: 62vh;
+}
+
+.phone-shot--compact {
+  height: 39vh;
+}
+
+.phone-shot--medium {
+  height: 45vh;
+}
+
+.phone-shot--short {
+  height: 30vh;
+}
+
+.portrait-image {
+  display: block;
+  width: 27vh;
+  height: 27vh;
+  border-radius: 3vh;
+  object-fit: cover;
+}
+
+.page-rule {
+  width: 100%;
+  height: 1px;
+  background: rgba(10, 17, 40, 0.16);
+}
+
+.page-panel--cobalt .page-rule,
+.page-panel--navy .page-rule {
+  background: rgba(246, 248, 252, 0.32);
 }
 
 .slide-viewer {

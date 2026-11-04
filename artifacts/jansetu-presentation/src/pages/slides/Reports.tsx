@@ -1,20 +1,28 @@
+import PagePanel from "../../components/PagePanel";
+
 export default function Reports() {
   return (
-    <div className="w-screen h-screen overflow-hidden relative bg-[#E5E7EB] flex justify-center">
-      <div className="relative h-screen w-[70.7070707vh] bg-bg overflow-hidden font-body text-text">
-        <div className="relative px-[6vh] pt-[7vh]">
-          <p className="text-[1.6vh] font-semibold tracking-[0.14em] uppercase text-accent">Reports & reminders</p>
-          <h1 className="mt-[1.4vh] font-display font-semibold text-[4.6vh] leading-[1.08] tracking-tight text-primary" style={{textWrap:"balance"}}>Make reports and community follow-up practical</h1>
+    <PagePanel tone="blue" eyebrow="FROM RECORDS TO A WORKING VIEW" title="See what needs attention nearby.">
+      <div className="mt-[4vh]">
+        <div className="flex items-center justify-between gap-[2vh]">
+          <span className="font-display text-[3.3vw] font-bold">Issue MIS</span>
+          <span className="page-detail">Status &amp; follow-up</span>
         </div>
-        <div className="absolute left-[6vh] top-[27vh] w-[14vh] h-[14vh] rounded-[3vh] bg-primary flex items-center justify-center"><svg viewBox="0 0 24 24" style={{width:"8vh",height:"8vh"}} fill="none" stroke="white" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></div>
-        <div className="absolute inset-x-0 bottom-0 h-[52vh] bg-accent rounded-tl-[8vh] px-[6vh] pt-[5vh]">
-            <div className="flex items-start gap-[1.6vh] py-[1.8vh] border-b border-white/30"><span className="mt-[0.9vh] shrink-0 w-[1.2vh] h-[1.2vh] rounded-full bg-white"></span><p className="text-[2.3vh] leading-snug text-white font-medium">Export citizen, household, complaint and development-work CSV reports</p></div>
-            <div className="flex items-start gap-[1.6vh] py-[1.8vh] border-b border-white/30"><span className="mt-[0.9vh] shrink-0 w-[1.2vh] h-[1.2vh] rounded-full bg-white"></span><p className="text-[2.3vh] leading-snug text-white font-medium">Review complaint status and team activity</p></div>
-            <div className="flex items-start gap-[1.6vh] py-[1.8vh] border-b border-white/30"><span className="mt-[0.9vh] shrink-0 w-[1.2vh] h-[1.2vh] rounded-full bg-white"></span><p className="text-[2.3vh] leading-snug text-white font-medium">View birthday and anniversary reminders</p></div>
-            <div className="flex items-start gap-[1.6vh] py-[1.8vh] border-b border-white/30"><span className="mt-[0.9vh] shrink-0 w-[1.2vh] h-[1.2vh] rounded-full bg-white"></span><p className="text-[2.3vh] leading-snug text-white font-medium">Use campaign responses and analytics for office review</p></div>
+        <div className="page-rule my-[1.7vh]" />
+        <div className="flex items-center justify-between gap-[2vh]">
+          <span className="font-display text-[3.3vw] font-bold">Households</span>
+          <span className="page-detail">People &amp; service records</span>
         </div>
-        <div className="absolute left-[6vh] right-[6vh] bottom-[3.4vh] flex justify-between items-center text-[1.5vh] tracking-[0.12em] uppercase text-white/60"><span className="font-display font-semibold">JanSetu</span><span>19</span></div>
+        <div className="page-rule my-[1.7vh]" />
+        <div className="flex items-center justify-between gap-[2vh]">
+          <span className="font-display text-[3.3vw] font-bold">Wards</span>
+          <span className="page-detail">Area-level reporting</span>
+        </div>
       </div>
-    </div>
+      <div className="mt-[3vh] rounded-[2vh] bg-[#2563eb] px-[2.4vh] py-[2vh] text-[#f6f8fc]">
+        <p className="font-display text-[2.8vw] font-bold">Export to CSV</p>
+        <p className="page-detail mt-[0.8vh] text-[#d8e5ff]">Citizens · households · issues · public works</p>
+      </div>
+    </PagePanel>
   );
 }
