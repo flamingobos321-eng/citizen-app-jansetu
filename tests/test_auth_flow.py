@@ -750,6 +750,20 @@ class TestMobileCitizenJourney:
         assert verified.status_code == 200, verified.text
         return verified.json()["token"]
 
+    def test_citizen_can_view_only_own_household_not_office_directory(self, client):
+        token = self._citizen_token(client)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        own_household = client.get("/api/households/hh-001", headers=headers)
+        assert own_household.status_code == 200, own_household.text
+        assert own_household.json()["household"]["id"] == "hh-001"
+        assert isinstance(own_household.json()["members"], list)
+        assert isinstance(own_household.json()["issues"], list)
+        assert isinstance(own_household.json()["benefits"], list)
+
+        assert client.get("/api/households", headers=headers).status_code == 403
+        assert client.get("/api/households/another-household", headers=headers).status_code == 403
+
     def test_authenticated_photo_upload_path_is_saved_on_issue(self, client):
         import server
 

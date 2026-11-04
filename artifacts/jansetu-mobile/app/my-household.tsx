@@ -36,6 +36,13 @@ type HouseholdRecord = {
   };
   members: Array<{ id: string; name: string; gender?: string }>;
   issues: HouseholdIssue[];
+  benefits: Array<{
+    id: string;
+    title: string;
+    category: string;
+    status: string;
+    location?: string;
+  }>;
   stats: { total: number; resolved: number; pending: number };
 };
 
@@ -177,6 +184,36 @@ export default function MyHouseholdScreen() {
 
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
+              Approved development benefits
+            </Text>
+            {householdQuery.data.benefits.length ? (
+              householdQuery.data.benefits.map((benefit) => (
+                <Card key={benefit.id} style={styles.benefitCard}>
+                  <View style={[styles.memberIcon, { backgroundColor: colors.secondary }]}>
+                    <Feather name="award" size={16} color={colors.primary} />
+                  </View>
+                  <View style={styles.memberCopy}>
+                    <Text style={[styles.memberName, { color: colors.foreground }]}>
+                      {benefit.title}
+                    </Text>
+                    <Text style={[styles.memberMeta, { color: colors.mutedForeground }]}>
+                      {[benefit.category, benefit.location].filter(Boolean).join(' · ')}
+                    </Text>
+                  </View>
+                  <StatusBadge status={benefit.status} />
+                </Card>
+              ))
+            ) : (
+              <EmptyState
+                icon="award"
+                title="No approved benefits recorded"
+                body="Approved local development projects will appear here."
+              />
+            )}
+          </View>
+
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
               Household service history
             </Text>
             {householdQuery.data.issues.length ? (
@@ -279,6 +316,7 @@ const styles = StyleSheet.create({
   section: { gap: 9 },
   sectionTitle: { fontFamily: 'Outfit_600SemiBold', fontSize: 17 },
   memberCard: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  benefitCard: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   memberIcon: { width: 38, height: 38, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   memberCopy: { flex: 1, gap: 2 },
   memberName: { fontFamily: 'Outfit_600SemiBold', fontSize: 14 },
