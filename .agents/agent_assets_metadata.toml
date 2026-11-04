@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "YcjAMfz4vGxYVeQ5Ly_d1"
+uri = "file://generated-artifacts/JanSetu-A4-Presentation.pdf"
+type = "pdf"
+title = "JanSetu Presentation — A4 Portrait (PDF)"
+description = "16 designed pages introducing JanSetu. No pricing, website or email. Includes 8767289541 and 8483888585."
+logical_id = "942807a7-44a6-4dd4-81e2-728df3fcd689"
+content_hash = "sha256:c39ebc1796780573e5c44103b34b1f72a749b15f5e6c8089191d63d396148a69"
+size = 1169249
+mtime_ms = 1793807819061
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:8d357184-36b8-488d-9e00-0dccd44544d1/942807a7-44a6-4dd4-81e2-728df3fcd689/aadb164d-b95b-47f3-baa8-1ff995d0f9a3"
+storage_version_token = "1793807835196843"
+content_type = "application/pdf"
