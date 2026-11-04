@@ -4,19 +4,11 @@ const base = import.meta.env.BASE_URL;
 
 export default function Informed() {
   return (
-    <PagePanel eyebrow="Targeted Notifications" title="Keep citizens informed about what matters nearby.">
-      <div className="mt-[3vh] flex items-center gap-[4vh]">
-        <div className="flex-1">
-          <p className="page-copy">Publish announcements for selected wards, villages or the whole constituency.</p>
-          <p className="page-copy mt-[3vh]">Send visit notifications to the communities selected for a camp, inspection or representative visit.</p>
-          <p className="page-detail mt-[3vh]">Area-targeted public service communication.</p>
-        </div>
-        <img
-          src={`${base}mobile-screens/citizen-services.png`}
-          crossOrigin="anonymous"
-          className="phone-shot phone-shot--medium rounded-[2.4vh]"
-          alt="JanSetu mobile app services screen"
-        />
+    <PagePanel eyebrow="One mobile app" page="14" title="One app, citizen and office views">
+      <p className="page-copy mt-[2vh]">Citizens see profile, family and requests. Office users sign in separately for role tools.</p>
+      <div className="mt-auto flex justify-between">
+        <div><img src={`${base}mobile-screens/citizen-profile.png`} crossOrigin="anonymous" className="phone-shot h-[42vh]" alt="Citizen profile screen" /><p className="page-detail mt-[1vh]">Citizen profile</p></div>
+        <div><img src={`${base}mobile-screens/office-signin.png`} crossOrigin="anonymous" className="phone-shot h-[42vh]" alt="Office sign-in screen" /><p className="page-detail mt-[1vh]">Office sign-in</p></div>
       </div>
     </PagePanel>
   );

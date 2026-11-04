@@ -9,8 +9,8 @@ description: Why portrait presentation handouts retain a landscape editor frame.
 
 **How to apply:** Treat the landscape editor gutters as non-deliverable space. Verify the final PDF's portrait page dimensions, page count and content separately. A standard viewer export is not automatically the A4 handout.
 
-**Product presentation requirement:** Lead with problems solved for representatives and their teams, not a feature catalogue. Use actual mobile app screens and the approved demo portrait, without website screenshots or technical screenshot captions. Use navy/cobalt/light neutrals, not the rejected green/teal palette.
+**Product presentation requirement:** Explain what JanSetu is before its features, then show problems solved for representatives and teams. Use actual mobile screens and the demo portrait, without website screenshots or technical captions. Use the user's selected black and warm grey palette.
 
-**Why:** The user rejected generic feature-list presentations, desktop website imagery with “website screenshot” labels, and the green accent.
+**Why:** The user rejected generic feature-list presentations, unclear explanations of JanSetu, desktop website imagery with “website screenshot” labels, green accents and then blue. They explicitly chose “Black & warm grey.”
 
 **How to apply:** Tell the voter-record → mobile verification → household/family → service-history → team follow-up/reporting story. Cover Person 360, transfers, area-targeted visits/notices and karyakarta birthdays. Verify claims, hide private citizen details, and never invent authenticated office screenshots, live voter location or populated records.

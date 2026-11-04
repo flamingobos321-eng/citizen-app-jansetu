@@ -1,25 +1,13 @@
 import PagePanel from "../../components/PagePanel";
 
-const base = import.meta.env.BASE_URL;
-
 export default function ElectoralRolls() {
   return (
-    <PagePanel tone="cobalt" eyebrow="Citizen CRM" title="Build the citizen record once.">
-      <p className="page-copy mt-[3vh]">
-        Separate person records from electoral PDFs. English / Marathi detection; office + EPIC dedupe.
-      </p>
-      <p className="page-copy mt-[2vh]">
-        Find by name, relative, house or EPIC. Verify their best current mobile by OTP.
-      </p>
-      <div className="mt-[2.5vh] flex justify-center">
-        <img
-          src={`${base}mobile-screens/citizen-profile.png`}
-          crossOrigin="anonymous"
-          className="phone-shot phone-shot--short rounded-[2.4vh]"
-          alt="JanSetu mobile app citizen profile screen"
-        />
+    <PagePanel tone="dark" eyebrow="Citizen CRM" page="03" title="Citizen CRM and electoral-roll imports">
+      <p className="page-copy mt-[2.4vh]">English and Marathi roll PDFs are imported, and duplicate EPIC entries within the constituency are detected.</p>
+      <p className="page-copy mt-[1.6vh]">Citizens claim their entry and confirm a current mobile by OTP.</p>
+      <div className="mt-auto">
+        <div className="row"><span className="row-key">Search</span><span className="row-val">EPIC, name, house, relative</span></div>
       </div>
-      <p className="page-detail absolute bottom-[5.5vh] left-[5.2vh]">Activation is citizen-led, mobile-verified.</p>
     </PagePanel>
   );
 }

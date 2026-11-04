@@ -4,21 +4,16 @@ const base = import.meta.env.BASE_URL;
 
 export default function Families() {
   return (
-    <PagePanel tone="blue" eyebrow="Household Management · Family Relationships" title="Connect family records without guessing.">
-      <div className="mt-[3vh] flex items-center gap-[4vh]">
+    <PagePanel tone="dark" eyebrow="Household Management" page="05" title="Households and family relationships">
+      <div className="mt-[2vh] flex gap-[3vh]">
         <div className="flex-1">
-          <p className="page-copy">Households: grouped by recorded address.</p>
-          <p className="page-copy mt-[3vh]">Family links: separate, explicit, consent-based.</p>
-          <p className="page-detail mt-[3vh]">Approved links stay with the citizen.</p>
+          <p className="page-copy">Group household members by recorded address, with a family head.</p>
+          <p className="page-copy mt-[1.6vh]">Family relationships are separate links, not inferred from voter rolls.</p>
+          <p className="page-copy mt-[1.6vh]">Cross-constituency links need acceptance. Each person's records stay with their own office.</p>
         </div>
-        <img
-          src={`${base}mobile-screens/citizen-family.png`}
-          crossOrigin="anonymous"
-          className="phone-shot phone-shot--medium rounded-[2.4vh]"
-          alt="JanSetu mobile app family screen"
-        />
+        <img src={`${base}mobile-screens/citizen-family.png`} crossOrigin="anonymous" className="phone-shot h-[34vh] self-start" alt="JanSetu family screen" />
       </div>
-      <p className="page-detail absolute bottom-[5.5vh] left-[5.2vh]">Relationships are never inferred from voter rolls.</p>
+      <div className="page-foot"><span>Family screen</span><span>Links by choice</span></div>
     </PagePanel>
   );
 }

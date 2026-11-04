@@ -1,5 +1,4 @@
-import representativePortrait from "@assets/ChatGPT_Image_Jun_25,_2026,_01_47_47_PM_1793809540409.png";
-import PagePanel from "../../components/PagePanel";
+import portrait from "@assets/ChatGPT_Image_Jun_25,_2026,_01_47_47_PM_1793809540409.png";
 
 const base = import.meta.env.BASE_URL;
 
@@ -7,36 +6,22 @@ export default function Cover() {
   return (
     <div className="w-screen h-screen overflow-hidden relative">
       <div className="panel-stage">
-        <main className="page-panel page-panel--navy">
-          <div className="page-topline">A clearer view of every constituency</div>
-          <h1 className="mt-[3vh] font-display text-[5.1vw] font-bold leading-[0.96] tracking-[-0.05em] text-wrap-balance">
-            <span className="block">Local service.</span>
-            <span className="block">Connected.</span>
-          </h1>
-          <p className="page-copy mt-[2vh] max-w-[55vh] text-[#d8e5ff]">
-            A practical view of people, requests and follow-through.
-          </p>
-          <div className="mt-[3vh] flex items-end justify-center gap-[3vh]">
-            <div className="flex flex-col items-center gap-[1.4vh]">
-              <img
-                src={representativePortrait}
-                crossOrigin="anonymous"
-                className="portrait-image"
-                alt="Demo representative portrait"
-              />
-              <span className="page-detail text-center">Demo representative</span>
-            </div>
-            <div className="flex flex-col items-center gap-[1.4vh]">
-              <img
-                src={`${base}mobile-screens/citizen-home.png`}
-                crossOrigin="anonymous"
-                className="phone-shot phone-shot--compact rounded-[2.4vh]"
-                alt="JanSetu mobile app home screen"
-              />
-              <span className="page-detail text-center">JanSetu mobile app</span>
-            </div>
+        <main className="page-panel page-panel--dark">
+          <div className="page-head">
+            <span>Constituency office system</span>
+            <span>01</span>
           </div>
-          <div className="page-rule absolute bottom-[5.4vh] left-[5.2vh] w-[calc(100%-10.4vh)]" />
+          <h1 className="mt-[3vh] font-display text-[5.6vw] font-extrabold leading-[0.9] tracking-[-0.04em]">JANSETU</h1>
+          <p className="mt-[2.4vh] font-display text-[2vw] font-semibold leading-[1.15] text-[#F5F3EF]">A mobile-first workspace connecting voter records, citizens, families and constituency-office services.</p>
+          <p className="page-copy mt-[2vh]">Who a citizen is, their household, what they asked for, and who is following it up.</p>
+          <div className="mt-[2.4vh] flex items-end gap-[2.4vh]">
+            <img src={portrait} crossOrigin="anonymous" className="h-[30vh] w-[24vh] rounded-[1.6vh] object-cover object-top" alt="Representative" />
+            <img src={`${base}mobile-screens/citizen-home.png`} crossOrigin="anonymous" className="phone-shot h-[30vh]" alt="JanSetu citizen home screen" />
+          </div>
+          <div className="page-foot">
+            <span>Representative</span>
+            <span>Citizen home screen</span>
+          </div>
         </main>
       </div>
     </div>

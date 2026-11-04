@@ -1,23 +1,15 @@
 import PagePanel from "../../components/PagePanel";
 
-const base = import.meta.env.BASE_URL;
-
 export default function OfficeTeams() {
   return (
-    <PagePanel eyebrow="Staff & Worker Management" title="Give each role a useful view and a clear remit.">
-      <div className="mt-[4vh] space-y-[2.8vh]">
-        <p className="page-copy"><strong>Field workers</strong> — visits, campaign forms and tasks.</p>
-        <p className="page-copy"><strong>Office staff &amp; PA</strong> — coordinate requests and assignments.</p>
-        <p className="page-copy"><strong>Politician &amp; admin</strong> — review constituency work and access.</p>
-      </div>
-      <div className="mt-[3.5vh] flex items-center gap-[3vh]">
-        <img
-          src={`${base}mobile-screens/office-signin.png`}
-          crossOrigin="anonymous"
-          className="phone-shot phone-shot--short rounded-[2.4vh]"
-          alt="JanSetu mobile app office sign-in screen"
-        />
-        <p className="page-detail max-w-[34vh]">Office access starts with sign-in. No authenticated office walkthrough is claimed here.</p>
+    <PagePanel eyebrow="Staff & Worker Management" page="08" title="Staff and worker management">
+      <p className="page-copy mt-[2.4vh]">Assignments, follow-ups, campaign forms, tasks and responses are recorded by role.</p>
+      <div className="mt-auto">
+        <div className="row"><span className="row-key">Representative</span><span className="row-val">Reviews reports</span></div>
+        <div className="row"><span className="row-key">Admin</span><span className="row-val">Manages staff, roles</span></div>
+        <div className="row"><span className="row-key">PA</span><span className="row-val">Assigns, follows up</span></div>
+        <div className="row"><span className="row-key">Worker</span><span className="row-val">Records field progress</span></div>
+        <div className="row"><span className="row-key">Citizen</span><span className="row-val">Raises, tracks requests</span></div>
       </div>
     </PagePanel>
   );

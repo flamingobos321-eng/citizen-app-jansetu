@@ -1,22 +1,12 @@
 import PagePanel from "../../components/PagePanel";
 
-const base = import.meta.env.BASE_URL;
-
 export default function VisitsWorks() {
   return (
-    <PagePanel tone="blue" eyebrow="Visit Management" title="Plan visits. Let selected communities know.">
-      <div className="mt-[3vh] flex items-center gap-[4vh]">
-        <div className="flex-1">
-          <p className="page-copy">Schedule representative visits, public camps and ward inspections.</p>
-          <p className="page-copy mt-[3vh]">Choose wards, villages or the full constituency for announcements and visit notifications.</p>
-          <p className="page-detail mt-[3vh]">Area-based service updates — not individual political persuasion.</p>
-        </div>
-        <img
-          src={`${base}mobile-screens/citizen-services.png`}
-          crossOrigin="anonymous"
-          className="phone-shot phone-shot--medium rounded-[2.4vh]"
-          alt="JanSetu mobile app services screen"
-        />
+    <PagePanel tone="dark" eyebrow="Development Works" page="09" title="Development works, tracked in the open">
+      <p className="page-copy mt-[2.4vh]">Each road, drain or hall is recorded with location, status and completion timeline, so staff answer citizens with facts.</p>
+      <div className="mt-auto">
+        <p className="label mb-[1.4vh]">A work's timeline</p>
+        <p className="font-display text-[2.2vw] font-bold leading-[1.3]">Proposed → Started → In progress → Completed</p>
       </div>
     </PagePanel>
   );

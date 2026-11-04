@@ -1,29 +1,14 @@
 import PagePanel from "../../components/PagePanel";
 
-const base = import.meta.env.BASE_URL;
-
 export default function VoterClaim() {
   return (
-    <PagePanel eyebrow="Person 360" title="One person. One service history.">
-      <div className="mt-[3vh] flex items-start gap-[4vh]">
-        <div className="flex-1">
-          <p className="page-copy">A Person 360 timeline keeps the working context together:</p>
-          <div className="mt-[3vh] space-y-[2.6vh]">
-            <p className="page-copy">Registrations · complaints · contacts</p>
-            <p className="page-copy">Visits · development work · transfers</p>
-            <p className="page-copy">Per-constituency service context</p>
-          </div>
-        </div>
-        <img
-          src={`${base}mobile-screens/citizen-issues.png`}
-          crossOrigin="anonymous"
-          className="phone-shot phone-shot--medium rounded-[2.4vh]"
-          alt="JanSetu mobile app issue history"
-        />
-      </div>
-      <div className="absolute bottom-[5.5vh] left-[5.2vh] right-[5.2vh]">
-        <div className="page-rule" />
-        <p className="page-detail mt-[1.8vh]">An audited constituency transfer preserves history; it does not rewrite it.</p>
+    <PagePanel eyebrow="Person 360" page="04" title="Person 360: one record of service history">
+      <p className="page-copy mt-[2.4vh]">One timeline per citizen, so staff see past requests, outcomes and who handled them.</p>
+      <div className="mt-auto">
+        <div className="row"><span className="row-key">Record</span><span className="row-val">Registration and contact</span></div>
+        <div className="row"><span className="row-key">Service</span><span className="row-val">Complaints and visits</span></div>
+        <div className="row"><span className="row-key">Area</span><span className="row-val">Public works nearby</span></div>
+        <div className="row"><span className="row-key">Moves</span><span className="row-val">Audited transfers</span></div>
       </div>
     </PagePanel>
   );

@@ -3,128 +3,128 @@
     "id": "a6918ba2-9ac0-4950-a89f-b55c8293a879",
     "position": 1,
     "filepath": "src/pages/slides/Cover.tsx",
-    "title": "A clearer view of every constituency",
-    "description": "Portrait and genuine JanSetu mobile app home screen",
+    "title": "JANSETU",
+    "description": "Product definition, representative portrait and citizen home screen",
     "speakerNotes": ""
   },
   {
     "id": "7859a517-d06e-492b-a3cc-640ddca84183",
     "position": 2,
     "filepath": "src/pages/slides/Requests.tsx",
-    "title": "A constituency is more than a queue of requests",
-    "description": "The operational problem",
+    "title": "How JanSetu works",
+    "description": "Connected flow from electoral record to report",
     "speakerNotes": ""
   },
   {
     "id": "b7bab898-002e-41a7-94b3-f427f9c1c2b5",
     "position": 3,
     "filepath": "src/pages/slides/ElectoralRolls.tsx",
-    "title": "Build the citizen record once",
-    "description": "Electoral roll import and citizen mobile-OTP activation",
+    "title": "Citizen CRM and electoral-roll imports",
+    "description": "Search and OTP-verified mobile",
     "speakerNotes": ""
   },
   {
     "id": "c54c9f7d-db9b-4854-9b9d-6f60582dfd7a",
     "position": 4,
     "filepath": "src/pages/slides/VoterClaim.tsx",
-    "title": "One person. One service history.",
-    "description": "Person 360 and constituency transfer history",
+    "title": "Person 360",
+    "description": "Consolidated service history",
     "speakerNotes": ""
   },
   {
     "id": "4c733dfe-9b41-41a0-844d-e146a0d6a849",
     "position": 5,
     "filepath": "src/pages/slides/Families.tsx",
-    "title": "Connect family records without guessing",
-    "description": "Households and consent-based family links",
+    "title": "Household Management and Family Relationships",
+    "description": "Address grouping and consent-based links",
     "speakerNotes": ""
   },
   {
     "id": "42c35ba1-d54f-4635-a201-44152a4bfe3d",
     "position": 6,
     "filepath": "src/pages/slides/VoterDatabase.tsx",
-    "title": "A move changes context, not the record",
-    "description": "Recorded address, area and audited transfers",
+    "title": "Constituency Transfer",
+    "description": "Audited transfers keep history",
     "speakerNotes": ""
   },
   {
     "id": "d61beeee-1329-4211-ad68-a834757f8f00",
     "position": 7,
     "filepath": "src/pages/slides/Resolution.tsx",
-    "title": "Move each request toward a clear next step",
-    "description": "Issue workflow, reassignment, SLA and citizen rating",
+    "title": "Issue Management",
+    "description": "Workflow, ownership, SLA, ratings",
     "speakerNotes": ""
   },
   {
     "id": "bd1da4a5-4a5c-4560-804e-ee6dd0b831a3",
     "position": 8,
     "filepath": "src/pages/slides/OfficeTeams.tsx",
-    "title": "Give each role a useful view and a clear remit",
-    "description": "Role-scoped team work and genuine sign-in app screen",
+    "title": "Staff and Worker Management",
+    "description": "Roles and recorded follow-up",
     "speakerNotes": ""
   },
   {
     "id": "aa1c719e-9dd8-4588-b216-145a89100e76",
     "position": 9,
     "filepath": "src/pages/slides/VisitsWorks.tsx",
-    "title": "Plan visits. Let selected communities know.",
-    "description": "Scheduled camps, inspections and targeted notifications",
+    "title": "Development Works",
+    "description": "Location, status and timeline",
     "speakerNotes": ""
   },
   {
     "id": "79f49de0-f063-428f-88bf-0fbc883d207e",
     "position": 10,
     "filepath": "src/pages/slides/Outreach.tsx",
-    "title": "Make sure Karyakarta birthdays are not missed",
-    "description": "Upcoming celebrations for office follow-up",
+    "title": "Visit Management",
+    "description": "Camps, inspections and area notifications",
     "speakerNotes": ""
   },
   {
     "id": "e4901342-57f1-471a-814a-eaf3c90ac8b9",
     "position": 11,
     "filepath": "src/pages/slides/Households.tsx",
-    "title": "Keep development work visible and understandable",
-    "description": "Public project status, location and timeline",
+    "title": "Targeted Notifications",
+    "description": "Wards, villages, full constituency",
     "speakerNotes": ""
   },
   {
     "id": "d6abe57a-68d0-4c34-94e6-e2df921309f3",
     "position": 12,
     "filepath": "src/pages/slides/Reports.tsx",
-    "title": "See what needs attention nearby",
-    "description": "Issue MIS, household and ward reporting, CSV",
+    "title": "Karyakarta Celebrations",
+    "description": "Birthday and anniversary follow-up",
     "speakerNotes": ""
   },
   {
     "id": "229cdec7-a17d-4735-bcc2-02a24c1352e3",
     "position": 13,
     "filepath": "src/pages/slides/Citizens.tsx",
-    "title": "Useful services, in a real mobile app",
-    "description": "Citizen-facing JanSetu app screen",
+    "title": "Reports and Analytics",
+    "description": "Issue MIS, summaries, CSV",
     "speakerNotes": ""
   },
   {
     "id": "b84f2dfe-ff35-4d64-a806-182b89a7ef2f",
     "position": 14,
     "filepath": "src/pages/slides/Informed.tsx",
-    "title": "Keep citizens informed about what matters nearby",
-    "description": "Area-targeted announcements and visit notifications",
+    "title": "One App, Citizen and Office Views",
+    "description": "Citizen profile and office sign-in",
     "speakerNotes": ""
   },
   {
     "id": "cd56b554-4ab5-4fbb-879e-34e99b6657e6",
     "position": 15,
     "filepath": "src/pages/slides/Trust.tsx",
-    "title": "Useful records. Scoped access.",
-    "description": "Privacy, separate portals and nonpartisan service delivery",
+    "title": "Multi-Tenant Portal and Role-Based Access",
+    "description": "Branding, isolation, privacy",
     "speakerNotes": ""
   },
   {
     "id": "bce1357e-58c4-4c11-a658-2ce65ad0fb40",
     "position": 16,
     "filepath": "src/pages/slides/Close.tsx",
-    "title": "Bring the constituency view together",
-    "description": "JanSetu contact information",
+    "title": "Contact",
+    "description": "Benefit and contact numbers",
     "speakerNotes": ""
   }
 ]
