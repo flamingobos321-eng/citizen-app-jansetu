@@ -4,7 +4,7 @@ const base = import.meta.env.BASE_URL;
 
 export default function ElectoralRolls() {
   return (
-    <PagePanel tone="cobalt" eyebrow="START WITH A USEFUL RECORD" title="Build the citizen record once.">
+    <PagePanel tone="cobalt" eyebrow="Citizen CRM" title="Build the citizen record once.">
       <p className="page-copy mt-[3vh]">
         Separate person records from electoral PDFs. English / Marathi detection; office + EPIC dedupe.
       </p>
@@ -19,7 +19,7 @@ export default function ElectoralRolls() {
           alt="JanSetu mobile app citizen profile screen"
         />
       </div>
-      <p className="page-detail absolute bottom-[5.5vh] left-[5.2vh]">Record activation is citizen-led and mobile-verified.</p>
+      <p className="page-detail absolute bottom-[5.5vh] left-[5.2vh]">Activation is citizen-led, mobile-verified.</p>
     </PagePanel>
   );
 }

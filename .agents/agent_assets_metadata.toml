@@ -28,3 +28,17 @@ mtime_ms = 1793808830009
 storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:8d357184-36b8-488d-9e00-0dccd44544d1/5507c3ea-1517-4d8e-a554-86de36518ae6/a0637008-a0aa-46fa-8f37-3498bd860f93"
 storage_version_token = "1793808842067197"
 content_type = "application/pdf"
+
+[[outputs]]
+id = "Ordr4XRcmdHpQ_MKlSpg_"
+uri = "file://generated-artifacts/JanSetu-Mobile-A4-Presentation.pdf"
+type = "pdf"
+title = "JanSetu — Mobile-First Presentation (A4 PDF)"
+description = "A16-page problem-to-solution presentation with real mobile-app screens, your demo representative portrait, the full feature set, and a clean navy/cobalt-blue palette. No prices, website or email; includes your two phone numbers."
+logical_id = "9432e41d-b4ae-463f-bbf2-0d4a9ada9756"
+content_hash = "sha256:3df5a18888b3abc68d59eb37fbc4d301ecca7c6b50761b2d94cfeb5677b87cfd"
+size = 3293401
+mtime_ms = 1793810717553
+storage_uri = "gcs://replit-rams-assets-pike/rams/assets/repl:8d357184-36b8-488d-9e00-0dccd44544d1/9432e41d-b4ae-463f-bbf2-0d4a9ada9756/8a662c2a-e779-404f-bd53-56935b8ed4a1"
+storage_version_token = "1793810735385833"
+content_type = "application/pdf"

@@ -4,9 +4,9 @@ const base = import.meta.env.BASE_URL;
 
 export default function OfficeTeams() {
   return (
-    <PagePanel eyebrow="A TEAM WITH DEFINED ROLES" title="Give each role a useful view and a clear remit.">
+    <PagePanel eyebrow="Staff & Worker Management" title="Give each role a useful view and a clear remit.">
       <div className="mt-[4vh] space-y-[2.8vh]">
-        <p className="page-copy"><strong>Field workers</strong> — record visits and local follow-up.</p>
+        <p className="page-copy"><strong>Field workers</strong> — visits, campaign forms and tasks.</p>
         <p className="page-copy"><strong>Office staff &amp; PA</strong> — coordinate requests and assignments.</p>
         <p className="page-copy"><strong>Politician &amp; admin</strong> — review constituency work and access.</p>
       </div>

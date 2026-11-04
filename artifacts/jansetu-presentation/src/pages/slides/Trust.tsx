@@ -2,9 +2,9 @@ import PagePanel from "../../components/PagePanel";
 
 export default function Trust() {
   return (
-    <PagePanel tone="navy" eyebrow="TRUST IS PART OF THE SERVICE" title="Useful records. Scoped access.">
+    <PagePanel tone="navy" eyebrow="Multi-Tenant Portal · Role-Based Access" title="Useful records. Scoped access.">
       <div className="mt-[4vh]">
-        <p className="page-copy">Separate, branded portals for each representative.</p>
+        <p className="page-copy">Branded portals; each constituency’s data kept isolated.</p>
         <div className="page-rule my-[2.2vh]" />
         <p className="page-copy">Role-scoped visibility and write access — need to know.</p>
         <div className="page-rule my-[2.2vh]" />

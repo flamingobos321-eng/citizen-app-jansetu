@@ -2,7 +2,7 @@ import PagePanel from "../../components/PagePanel";
 
 export default function Reports() {
   return (
-    <PagePanel tone="blue" eyebrow="FROM RECORDS TO A WORKING VIEW" title="See what needs attention nearby.">
+    <PagePanel tone="blue" eyebrow="Reports & Analytics" title="See what needs attention nearby.">
       <div className="mt-[4vh]">
         <div className="flex items-center justify-between gap-[2vh]">
           <span className="font-display text-[3.3vw] font-bold">Issue MIS</span>

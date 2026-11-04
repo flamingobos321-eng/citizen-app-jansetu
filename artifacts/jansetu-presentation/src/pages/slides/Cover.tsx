@@ -22,9 +22,9 @@ export default function Cover() {
                 src={representativePortrait}
                 crossOrigin="anonymous"
                 className="portrait-image"
-                alt="Representative portrait supplied for this presentation"
+                alt="Demo representative portrait"
               />
-              <span className="page-detail text-center">Representative portrait</span>
+              <span className="page-detail text-center">Demo representative</span>
             </div>
             <div className="flex flex-col items-center gap-[1.4vh]">
               <img

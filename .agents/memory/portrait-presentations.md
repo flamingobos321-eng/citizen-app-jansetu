@@ -9,8 +9,8 @@ description: Why portrait presentation handouts retain a landscape editor frame.
 
 **How to apply:** Treat the landscape editor gutters as non-deliverable space. Verify the final PDF's portrait page dimensions, page count and content separately. A standard viewer export is not automatically the A4 handout.
 
-**Product presentation requirement:** Use JanSetu's actual website theme and real product screenshots. Cover electoral-roll imports, voter records, family linking and dedicated representative webpages, not only generic citizen-service benefits.
+**Product presentation requirement:** Lead with problems solved for representatives and their teams, not a feature catalogue. Use actual mobile app screens and the approved demo portrait, without website screenshots or technical screenshot captions. Use navy/cobalt/light neutrals, not the rejected green/teal palette.
 
-**Why:** The user rejected a generic presentation that omitted these features and lacked screenshots.
+**Why:** The user rejected generic feature-list presentations, desktop website imagery with “website screenshot” labels, and the green accent.
 
-**How to apply:** Verify feature descriptions against the website before writing. Use genuine accessible screens, hide private citizen details, and never invent authenticated office screenshots or populated records.
+**How to apply:** Tell the voter-record → mobile verification → household/family → service-history → team follow-up/reporting story. Cover Person 360, transfers, area-targeted visits/notices and karyakarta birthdays. Verify claims, hide private citizen details, and never invent authenticated office screenshots, live voter location or populated records.

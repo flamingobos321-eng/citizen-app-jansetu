@@ -4,7 +4,7 @@ const base = import.meta.env.BASE_URL;
 
 export default function VoterDatabase() {
   return (
-    <PagePanel eyebrow="WHEN A CITIZEN MOVES" title="A move changes context, not the record.">
+    <PagePanel eyebrow="Constituency Transfer" title="A move changes context, not the record.">
       <div className="mt-[3vh] flex items-center gap-[4vh]">
         <div className="flex-1">
           <p className="page-copy">Service histories remain useful when a citizen moves between constituencies.</p>

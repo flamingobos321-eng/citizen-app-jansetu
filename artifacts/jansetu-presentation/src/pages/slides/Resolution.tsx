@@ -4,7 +4,7 @@ const base = import.meta.env.BASE_URL;
 
 export default function Resolution() {
   return (
-    <PagePanel tone="cobalt" eyebrow="ISSUES WITH AN OWNER" title="Move each request toward a clear next step.">
+    <PagePanel tone="cobalt" eyebrow="Issue Management" title="Move each request toward a clear next step.">
       <div className="mt-[3vh] flex items-center gap-[4vh]">
         <div className="flex-1">
           <p className="font-display text-[3.1vw] font-bold leading-tight">New <span className="text-[#c9dbff]">→</span> Verified</p>

@@ -4,7 +4,7 @@ const base = import.meta.env.BASE_URL;
 
 export default function Informed() {
   return (
-    <PagePanel eyebrow="LOCAL UPDATES, CLEARLY DELIVERED" title="Keep citizens informed about what matters nearby.">
+    <PagePanel eyebrow="Targeted Notifications" title="Keep citizens informed about what matters nearby.">
       <div className="mt-[3vh] flex items-center gap-[4vh]">
         <div className="flex-1">
           <p className="page-copy">Publish announcements for selected wards, villages or the whole constituency.</p>

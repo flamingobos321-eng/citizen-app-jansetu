@@ -4,7 +4,7 @@ const base = import.meta.env.BASE_URL;
 
 export default function VisitsWorks() {
   return (
-    <PagePanel tone="blue" eyebrow="SHOW UP WHERE THE WORK IS" title="Plan visits. Let selected communities know.">
+    <PagePanel tone="blue" eyebrow="Visit Management" title="Plan visits. Let selected communities know.">
       <div className="mt-[3vh] flex items-center gap-[4vh]">
         <div className="flex-1">
           <p className="page-copy">Schedule representative visits, public camps and ward inspections.</p>

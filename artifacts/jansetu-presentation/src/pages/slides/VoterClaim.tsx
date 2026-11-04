@@ -4,7 +4,7 @@ const base = import.meta.env.BASE_URL;
 
 export default function VoterClaim() {
   return (
-    <PagePanel eyebrow="A CITIZEN, IN CONTEXT" title="One person. One service history.">
+    <PagePanel eyebrow="Person 360" title="One person. One service history.">
       <div className="mt-[3vh] flex items-start gap-[4vh]">
         <div className="flex-1">
           <p className="page-copy">A Person 360 timeline keeps the working context together:</p>

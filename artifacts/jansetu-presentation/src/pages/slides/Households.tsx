@@ -4,7 +4,7 @@ const base = import.meta.env.BASE_URL;
 
 export default function Households() {
   return (
-    <PagePanel eyebrow="PUBLIC WORK, PUBLIC PROGRESS" title="Keep development work visible and understandable.">
+    <PagePanel eyebrow="Development Works" title="Keep development work visible and understandable.">
       <div className="mt-[4vh] flex items-center gap-[4vh]">
         <div className="flex-1">
           <p className="page-copy">Show the project status, location and timeline in a citizen-facing view.</p>
