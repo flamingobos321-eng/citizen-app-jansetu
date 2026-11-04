@@ -1,6 +1,8 @@
 // craco.config.js
 const path = require("path");
 require("dotenv").config();
+// CRA's bare PostCSS plugin name can resolve Tailwind from a sibling workspace package.
+const tailwindPostCssPlugin = require("tailwindcss");
 
 // Check if we're in development/preview mode (not production build)
 // Craco sets NODE_ENV=development for start, NODE_ENV=production for build
@@ -84,6 +86,21 @@ let webpackConfig = {
       '@': path.resolve(__dirname, 'src'),
     },
     configure: (webpackConfig) => {
+      const updateTailwindPlugin = (rules = []) => {
+        for (const rule of rules) {
+          if (rule.oneOf) updateTailwindPlugin(rule.oneOf);
+          if (rule.rules) updateTailwindPlugin(rule.rules);
+          const uses = Array.isArray(rule.use) ? rule.use : rule.use ? [rule.use] : [];
+          for (const use of uses) {
+            if (!String(use?.loader || "").includes("postcss-loader")) continue;
+            const plugins = use.options?.postcssOptions?.plugins;
+            if (!Array.isArray(plugins)) continue;
+            const tailwindIndex = plugins.indexOf("tailwindcss");
+            if (tailwindIndex >= 0) plugins[tailwindIndex] = tailwindPostCssPlugin;
+          }
+        }
+      };
+      updateTailwindPlugin(webpackConfig.module?.rules);
 
       // Add ignored patterns to reduce watched directories
         webpackConfig.watchOptions = {

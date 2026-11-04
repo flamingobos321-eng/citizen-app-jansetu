@@ -5,3 +5,4 @@
 - [Cross-constituency family links](family-links.md) — keep family relationships global while each person's account and service records stay constituency-local.
 - [Mobile UI review](mobile-ui-review.md) — check signed-in readability and back navigation; a working login preview alone is insufficient.
 - [Portrait presentation exports](portrait-presentations.md) — preserve the slide platform’s landscape contract; extract portrait artwork into A4 only after export.
+- [CRA Tailwind resolution](cra-tailwind-resolution.md) — bind CRA's PostCSS Tailwind plugin to the web artifact's installed major version in this pnpm workspace.

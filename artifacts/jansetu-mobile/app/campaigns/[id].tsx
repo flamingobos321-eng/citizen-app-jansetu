@@ -23,6 +23,14 @@ type FormField = {
   max_val?: number;
   order?: number;
 };
+type CampaignAnalytics = {
+  daily_responses?: Array<{ date: string; responses: number }>;
+  worker_performance?: Array<{ worker: string; responses: number }>;
+  task_status_counts?: Record<string, number>;
+  total_responses?: number;
+  completed_responses?: number;
+  active_workers?: number;
+};
 type Campaign = {
   id: string;
   name: string;
@@ -73,13 +81,36 @@ type ResponsePayload = {
 const OFFICE_ROLES = ['admin', 'pa', 'politician'];
 const CAMPAIGN_ROLES = [...OFFICE_ROLES, 'worker'];
 const TASK_STATUSES = ['accepted', 'in_progress', 'on_hold', 'completed'];
+const FIELD_TYPES = [
+  ['short_text', 'Short text'],
+  ['long_text', 'Long text'],
+  ['number', 'Number'],
+  ['mobile', 'Mobile'],
+  ['email', 'Email'],
+  ['date', 'Date'],
+  ['time', 'Time'],
+  ['address', 'Address'],
+  ['yes_no', 'Yes / No'],
+  ['single_choice', 'Single choice'],
+  ['multiple_choice', 'Multiple choice'],
+  ['dropdown', 'Dropdown'],
+  ['rating', 'Rating'],
+  ['photo', 'Photo upload'],
+  ['file', 'File upload'],
+  ['gps', 'GPS location'],
+] as const;
+const OPTION_FIELD_TYPES = ['single_choice', 'multiple_choice', 'dropdown'];
+
+function createFieldId() {
+  return `${Date.now().toString()}${Math.random().toString(36).slice(2, 11)}`;
+}
 
 export default function CampaignDetailScreen() {
   const colors = useColors();
   const queryClient = useQueryClient();
   const { user, token, loading } = useAuth();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [tab, setTab] = useState<'overview' | 'tasks' | 'responses'>('overview');
+  const [tab, setTab] = useState<'overview' | 'tasks' | 'form' | 'responses' | 'analytics'>('overview');
   const [workerSelection, setWorkerSelection] = useState<string[] | null>(null);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDescription, setTaskDescription] = useState('');
@@ -105,6 +136,11 @@ export default function CampaignDetailScreen() {
     queryFn: () => apiRequest<{ total: number; items: CampaignResponse[] }>(`/campaigns/${encodeURIComponent(id)}/responses`, { token }),
     enabled: !!token && !!id && !!user && CAMPAIGN_ROLES.includes(user.role),
   });
+  const analyticsQuery = useQuery({
+    queryKey: ['campaign-analytics', token, id],
+    queryFn: () => apiRequest<CampaignAnalytics>(`/campaigns/${encodeURIComponent(id)}/analytics`, { token }),
+    enabled: !!token && !!id && !!user && isStaff && tab === 'analytics',
+  });
   const workersQuery = useQuery({
     queryKey: ['campaign-workers', token],
     queryFn: () => apiRequest<Worker[]>('/users?role=worker', { token }),
@@ -123,8 +159,21 @@ export default function CampaignDetailScreen() {
       responsesQuery.refetch(),
       queryClient.invalidateQueries({ queryKey: ['campaigns', token] }),
       queryClient.invalidateQueries({ queryKey: ['campaign-stats', token] }),
+      queryClient.invalidateQueries({ queryKey: ['campaign-analytics', token, id] }),
     ]);
   };
+  const saveFormFields = useMutation({
+    mutationFn: (formFields: FormField[]) =>
+      apiRequest<Campaign>(`/campaigns/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        token,
+        body: { form_fields: formFields.map((field, order) => ({ ...field, order })) },
+      }),
+    onSuccess: async () => {
+      await campaignQuery.refetch();
+      await queryClient.invalidateQueries({ queryKey: ['campaigns', token] });
+    },
+  });
   const updateCampaign = useMutation({
     mutationFn: (status: string) =>
       apiRequest<Campaign>(`/campaigns/${encodeURIComponent(id)}`, { method: 'PUT', token, body: { status } }),
@@ -160,6 +209,7 @@ export default function CampaignDetailScreen() {
       setTaskLocation('');
       setTaskError('');
       await tasksQuery.refetch();
+      await queryClient.invalidateQueries({ queryKey: ['campaign-analytics', token, id] });
     },
   });
   const updateTask = useMutation({
@@ -169,7 +219,10 @@ export default function CampaignDetailScreen() {
         token,
         body: { status },
       }),
-    onSuccess: () => tasksQuery.refetch(),
+    onSuccess: async () => {
+      await tasksQuery.refetch();
+      await queryClient.invalidateQueries({ queryKey: ['campaign-analytics', token, id] });
+    },
   });
   const submitResponse = useMutation({
     mutationFn: (payload: ResponsePayload) =>
@@ -179,6 +232,7 @@ export default function CampaignDetailScreen() {
       await campaignQuery.refetch();
       await queryClient.invalidateQueries({ queryKey: ['campaigns', token] });
       await queryClient.invalidateQueries({ queryKey: ['campaign-stats', token] });
+      await queryClient.invalidateQueries({ queryKey: ['campaign-analytics', token, id] });
     },
   });
 
@@ -218,12 +272,12 @@ export default function CampaignDetailScreen() {
       ) : (
         <>
           <View style={styles.tabRow}>
-            {(['overview', 'tasks', 'responses'] as const).map((key) => {
+            {(isStaff ? ['overview', 'tasks', 'form', 'responses', 'analytics'] as const : ['overview', 'tasks', 'responses'] as const).map((key) => {
               const active = tab === key;
               return (
                 <Pressable key={key} accessibilityRole="button" accessibilityState={{ selected: active }} onPress={() => setTab(key)} style={[styles.tab, { backgroundColor: active ? colors.primary : colors.card, borderColor: active ? colors.primary : colors.border }]}>
                   <Text style={{ color: active ? colors.primaryForeground : colors.foreground, fontFamily: 'Manrope_700Bold', fontSize: 12 }}>
-                    {key === 'overview' ? 'Overview' : key === 'tasks' ? `Tasks (${tasksQuery.data?.length || 0})` : `Responses (${responsesQuery.data?.total || 0})`}
+                    {key === 'overview' ? 'Overview' : key === 'tasks' ? `Tasks (${tasksQuery.data?.length || 0})` : key === 'form' ? 'Form' : key === 'analytics' ? 'Analytics' : `Responses (${responsesQuery.data?.total || 0})`}
                   </Text>
                 </Pressable>
               );
@@ -281,6 +335,16 @@ export default function CampaignDetailScreen() {
             </>
           ) : null}
 
+          {tab === 'form' && isStaff ? (
+            <CampaignFormBuilder
+              key={campaign.id}
+              fields={campaign.form_fields || []}
+              onSave={(fields) => saveFormFields.mutateAsync(fields)}
+              saving={saveFormFields.isPending}
+              saveError={saveFormFields.error instanceof Error ? saveFormFields.error.message : saveFormFields.isError ? 'Could not save campaign questions.' : ''}
+            />
+          ) : null}
+
           {tab === 'tasks' ? (
             <View style={{ gap: 10 }}>
               {isStaff ? (
@@ -321,6 +385,12 @@ export default function CampaignDetailScreen() {
 
           {tab === 'responses' ? (
             <View style={{ gap: 10 }}>
+              {!isWorker ? (
+                <View style={styles.statsRow}>
+                  <Stat label="Responses" value={responsesQuery.data?.total || 0} />
+                  <Stat label="Completed" value={campaign.completed_responses || 0} />
+                </View>
+              ) : null}
               {isWorker && campaign.status === 'active' ? (
                 <CampaignResponseForm
                   campaign={campaign}
@@ -360,9 +430,373 @@ export default function CampaignDetailScreen() {
               ) : null}
             </View>
           ) : null}
+
+          {tab === 'analytics' && isStaff ? (
+            <CampaignAnalyticsPanel
+              analytics={analyticsQuery.data}
+              loading={analyticsQuery.isLoading}
+              error={analyticsQuery.error instanceof Error ? analyticsQuery.error.message : analyticsQuery.isError ? 'Could not load campaign analytics.' : ''}
+              onRetry={() => void analyticsQuery.refetch()}
+            />
+          ) : null}
         </>
       )}
     </Screen>
+  );
+}
+
+function CampaignFormBuilder({
+  fields: initialFields,
+  onSave,
+  saving,
+  saveError,
+}: {
+  fields: FormField[];
+  onSave: (fields: FormField[]) => Promise<unknown>;
+  saving: boolean;
+  saveError: string;
+}) {
+  const colors = useColors();
+  const [fields, setFields] = useState<FormField[]>(() => [...initialFields].sort((a, b) => (a.order || 0) - (b.order || 0)));
+  const [editingField, setEditingField] = useState<FormField | null>(null);
+  const [formError, setFormError] = useState('');
+
+  const moveField = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= fields.length) return;
+    setFields((current) => {
+      const next = [...current];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next.map((field, order) => ({ ...field, order }));
+    });
+  };
+  const saveQuestion = (field: FormField) => {
+    const label = field.label.trim();
+    if (!label) {
+      setFormError('Enter a question label before saving.');
+      return;
+    }
+    if (field.type === 'rating' && (field.min_val ?? 1) > (field.max_val ?? 5)) {
+      setFormError('The minimum rating must be lower than the maximum rating.');
+      return;
+    }
+    if (OPTION_FIELD_TYPES.includes(field.type) && (field.options || []).some((option) => !option.label.trim() || !option.value.trim())) {
+      setFormError('Complete or remove each blank option before saving.');
+      return;
+    }
+    setFields((current) => {
+      const index = current.findIndex((item) => item.id === field.id);
+      const next = [...current];
+      if (index < 0) next.push({ ...field, label, order: next.length });
+      else next[index] = { ...field, label };
+      return next.map((item, order) => ({ ...item, order }));
+    });
+    setEditingField(null);
+    setFormError('');
+  };
+  const save = async () => {
+    setFormError('');
+    if (editingField) {
+      setFormError('Save or cancel the question you are editing first.');
+      return;
+    }
+    try {
+      await onSave(fields.map((field, order) => ({ ...field, order })));
+    } catch {
+      // The mutation error is rendered below so users can retry without losing edits.
+    }
+  };
+  const addField = () => {
+    if (editingField) {
+      setFormError('Save or cancel the question you are editing first.');
+      return;
+    }
+    setFormError('');
+    setEditingField({
+      id: createFieldId(),
+      type: 'short_text',
+      label: 'New Field',
+      required: false,
+      options: [],
+      order: fields.length,
+    });
+  };
+
+  return (
+    <View style={{ gap: 10 }}>
+      <Card style={{ gap: 10 }}>
+        <View style={styles.builderHeader}>
+          <View style={{ flex: 1, gap: 3 }}>
+            <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Response form</Text>
+            <Text style={[styles.body, { color: colors.mutedForeground }]}>{fields.length} {fields.length === 1 ? 'question' : 'questions'}</Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Add question"
+            testID="add-campaign-question"
+            onPress={addField}
+            style={styles.iconButton}
+          >
+            <Feather name="plus" size={20} color={colors.primary} />
+          </Pressable>
+        </View>
+        {fields.length ? fields.map((field, index) => (
+          <View key={field.id} style={[styles.questionRow, { borderColor: colors.border }]}>
+            <View style={styles.orderControls}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Move ${field.label} up`}
+                testID={`move-question-up-${field.id}`}
+                disabled={index === 0}
+                onPress={() => moveField(index, -1)}
+                style={[styles.iconButton, index === 0 && styles.disabledIconButton]}
+              >
+                <Feather name="chevron-up" size={19} color={index === 0 ? colors.mutedForeground : colors.foreground} />
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Move ${field.label} down`}
+                testID={`move-question-down-${field.id}`}
+                disabled={index === fields.length - 1}
+                onPress={() => moveField(index, 1)}
+                style={[styles.iconButton, index === fields.length - 1 && styles.disabledIconButton]}
+              >
+                <Feather name="chevron-down" size={19} color={index === fields.length - 1 ? colors.mutedForeground : colors.foreground} />
+              </Pressable>
+            </View>
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text style={[styles.memberName, { color: colors.foreground }]} numberOfLines={2}>{field.label}</Text>
+              <Text style={[styles.body, { color: colors.mutedForeground }]}>{field.type.replace(/_/g, ' ')}{field.required ? ' · Required' : ''}</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Edit ${field.label}`}
+              testID={`edit-question-${field.id}`}
+              onPress={() => { setFormError(''); setEditingField({ ...field, options: [...(field.options || [])] }); }}
+              style={styles.iconButton}
+            >
+              <Feather name="edit-2" size={17} color={colors.primary} />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Remove ${field.label}`}
+              testID={`remove-question-${field.id}`}
+              onPress={() => {
+                setFields((current) => current.filter((item) => item.id !== field.id).map((item, order) => ({ ...item, order })));
+                if (editingField?.id === field.id) setEditingField(null);
+              }}
+              style={styles.iconButton}
+            >
+              <Feather name="trash-2" size={17} color={colors.destructive} />
+            </Pressable>
+          </View>
+        )) : (
+          <EmptyState icon="file-text" title="No questions yet" body="Add questions to define what field teams collect." />
+        )}
+        {formError ? <ErrorNotice message={formError} /> : null}
+        {saveError ? <ErrorNotice message={saveError} /> : null}
+        <ActionButton
+          title="Save response form"
+          icon="save"
+          onPress={() => void save()}
+          loading={saving}
+          testID="save-campaign-form"
+        />
+      </Card>
+      {editingField ? (
+        <CampaignQuestionEditor
+          key={editingField.id}
+          field={editingField}
+          isNew={!fields.some((field) => field.id === editingField.id)}
+          onCancel={() => { setEditingField(null); setFormError(''); }}
+          onSave={saveQuestion}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function CampaignQuestionEditor({
+  field,
+  isNew,
+  onCancel,
+  onSave,
+}: {
+  field: FormField;
+  isNew: boolean;
+  onCancel: () => void;
+  onSave: (field: FormField) => void;
+}) {
+  const colors = useColors();
+  const [draft, setDraft] = useState<FormField>(() => ({ ...field, options: [...(field.options || [])] }));
+  const updateOption = (index: number, label: string) => {
+    setDraft((current) => {
+      const options = [...(current.options || [])];
+      const value = label.toLowerCase().trim().replace(/\s+/g, '_');
+      options[index] = { label, value };
+      return { ...current, options };
+    });
+  };
+  const optionFields = OPTION_FIELD_TYPES.includes(draft.type);
+
+  return (
+    <Card style={{ gap: 11 }}>
+      <Text style={[styles.sectionTitle, { color: colors.foreground }]}>{isNew ? 'Add question' : 'Edit question'}</Text>
+      <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>Question type</Text>
+      <View style={styles.chips}>
+        {FIELD_TYPES.map(([value, label]) => {
+          const selected = draft.type === value;
+          return (
+            <Pressable
+              key={value}
+              accessibilityRole="button"
+              accessibilityState={{ selected }}
+              testID={`question-type-${value}`}
+              onPress={() => setDraft((current) => ({ ...current, type: value, options: [] }))}
+              style={[styles.chip, { backgroundColor: selected ? colors.primary : colors.card, borderColor: selected ? colors.primary : colors.border }]}
+            >
+              <Text style={{ color: selected ? colors.primaryForeground : colors.foreground, fontFamily: 'Manrope_700Bold', fontSize: 11 }}>{label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <Field label="Question label *" value={draft.label} onChangeText={(label) => setDraft((current) => ({ ...current, label }))} />
+      <Field label="Placeholder" value={draft.placeholder || ''} onChangeText={(placeholder) => setDraft((current) => ({ ...current, placeholder }))} />
+      <Field label="Help text" value={draft.help_text || ''} onChangeText={(help_text) => setDraft((current) => ({ ...current, help_text }))} />
+      <Pressable
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: !!draft.required }}
+        onPress={() => setDraft((current) => ({ ...current, required: !current.required }))}
+        style={styles.requiredToggle}
+      >
+        <Feather name={draft.required ? 'check-square' : 'square'} size={19} color={draft.required ? colors.primary : colors.mutedForeground} />
+        <Text style={[styles.body, { color: colors.foreground }]}>Required question</Text>
+      </Pressable>
+      {optionFields ? (
+        <View style={{ gap: 8 }}>
+          <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>Options</Text>
+          {(draft.options || []).map((option, index) => (
+            <View key={`${draft.id}-option-${index}`} style={styles.optionRow}>
+              <TextInput
+                value={option.label}
+                onChangeText={(label) => updateOption(index, label)}
+                placeholder={`Option ${index + 1}`}
+                placeholderTextColor={colors.mutedForeground}
+                accessibilityLabel={`Option ${index + 1} label`}
+                testID={`campaign-option-${index}`}
+                style={[styles.input, { flex: 1, backgroundColor: colors.card, borderColor: colors.input, color: colors.foreground }]}
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Remove option ${index + 1}`}
+                onPress={() => setDraft((current) => ({ ...current, options: (current.options || []).filter((_, optionIndex) => optionIndex !== index) }))}
+                style={styles.iconButton}
+              >
+                <Feather name="x" size={19} color={colors.destructive} />
+              </Pressable>
+            </View>
+          ))}
+          <ActionButton
+            title="Add option"
+            icon="plus"
+            variant="outline"
+            onPress={() => setDraft((current) => ({ ...current, options: [...(current.options || []), { label: '', value: '' }] }))}
+          />
+        </View>
+      ) : null}
+      {draft.type === 'rating' ? (
+        <View style={styles.ratingRow}>
+          <View style={{ flex: 1 }}>
+            <Field label="Minimum rating" value={String(draft.min_val ?? 1)} keyboardType="numeric" onChangeText={(value) => setDraft((current) => ({ ...current, min_val: Number(value) }))} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Field label="Maximum rating" value={String(draft.max_val ?? 5)} keyboardType="numeric" onChangeText={(value) => setDraft((current) => ({ ...current, max_val: Number(value) }))} />
+          </View>
+        </View>
+      ) : null}
+      <View style={styles.editorActions}>
+        <ActionButton title="Cancel" icon="x" variant="outline" onPress={onCancel} style={{ flex: 1 }} />
+        <ActionButton title="Save question" icon="check" onPress={() => onSave(draft)} style={{ flex: 1 }} />
+      </View>
+    </Card>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: number }) {
+  const colors = useColors();
+  return (
+    <Card style={{ flex: 1, alignItems: 'center', paddingVertical: 10, gap: 2 }}>
+      <Text style={[styles.statValue, { color: colors.foreground }]}>{value}</Text>
+      <Text style={[styles.hint, { color: colors.mutedForeground }]}>{label}</Text>
+    </Card>
+  );
+}
+
+function CampaignAnalyticsPanel({
+  analytics,
+  loading,
+  error,
+  onRetry,
+}: {
+  analytics?: CampaignAnalytics;
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+}) {
+  const colors = useColors();
+  if (loading && !analytics) return <Card><Text style={[styles.body, { color: colors.mutedForeground }]}>Loading campaign analytics…</Text></Card>;
+  if (error && !analytics) return <ErrorNotice message={error} onRetry={onRetry} />;
+  if (!analytics) return null;
+  const dailyResponses = [...(analytics.daily_responses || [])].sort((a, b) => b.date.localeCompare(a.date));
+  const workerPerformance = analytics.worker_performance || [];
+  const taskStatuses = Object.entries(analytics.task_status_counts || {});
+  const hasActivity = dailyResponses.length > 0 || workerPerformance.length > 0 || taskStatuses.length > 0;
+
+  return (
+    <View style={{ gap: 10 }}>
+      {error ? <ErrorNotice message={error} onRetry={onRetry} /> : null}
+      <View style={styles.statsRow}>
+        <Stat label="Responses" value={analytics.total_responses || 0} />
+        <Stat label="Completed" value={analytics.completed_responses || 0} />
+        <Stat label="Active workers" value={analytics.active_workers || 0} />
+      </View>
+      {dailyResponses.length ? (
+        <Card style={{ gap: 9 }}>
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Daily responses</Text>
+          {dailyResponses.map((day) => (
+            <View key={day.date} style={styles.analyticsRow}>
+              <Text style={[styles.body, { color: colors.foreground }]}>{day.date}</Text>
+              <Text style={[styles.analyticsValue, { color: colors.primary }]}>{day.responses}</Text>
+            </View>
+          ))}
+        </Card>
+      ) : null}
+      {workerPerformance.length ? (
+        <Card style={{ gap: 9 }}>
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Worker performance</Text>
+          {workerPerformance.map((worker) => (
+            <View key={worker.worker} style={styles.analyticsRow}>
+              <Text style={[styles.body, { color: colors.foreground, flex: 1 }]} numberOfLines={1}>{worker.worker}</Text>
+              <Text style={[styles.analyticsValue, { color: colors.primary }]}>{worker.responses}</Text>
+            </View>
+          ))}
+        </Card>
+      ) : null}
+      {taskStatuses.length ? (
+        <Card style={{ gap: 9 }}>
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Task status</Text>
+          {taskStatuses.map(([status, count]) => (
+            <View key={status} style={styles.analyticsRow}>
+              <Text style={[styles.body, { color: colors.foreground, textTransform: 'capitalize' }]}>{status.replace(/_/g, ' ')}</Text>
+              <Text style={[styles.analyticsValue, { color: colors.primary }]}>{count}</Text>
+            </View>
+          ))}
+        </Card>
+      ) : null}
+      {!hasActivity ? (
+        <EmptyState icon="bar-chart-2" title="No campaign activity yet" body="Response and task analytics will appear here as field work comes in." />
+      ) : null}
+    </View>
   );
 }
 
@@ -692,12 +1126,12 @@ function TaskCard({ task, isWorker, onUpdate, pending }: { task: CampaignTask; i
   );
 }
 
-function Field({ label, value, onChangeText, placeholder, multiline = false }: { label: string; value: string; onChangeText: (value: string) => void; placeholder?: string; multiline?: boolean }) {
+function Field({ label, value, onChangeText, placeholder, multiline = false, keyboardType = 'default' }: { label: string; value: string; onChangeText: (value: string) => void; placeholder?: string; multiline?: boolean; keyboardType?: 'default' | 'numeric' }) {
   const colors = useColors();
   return (
     <View style={{ gap: 5 }}>
       <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>{label}</Text>
-      <TextInput value={value} onChangeText={onChangeText} placeholder={placeholder || label} placeholderTextColor={colors.mutedForeground} multiline={multiline} textAlignVertical={multiline ? 'top' : 'center'} accessibilityLabel={label} style={[styles.input, multiline && styles.multilineInput, { backgroundColor: colors.card, borderColor: colors.input, color: colors.foreground }]} />
+      <TextInput value={value} onChangeText={onChangeText} placeholder={placeholder || label} placeholderTextColor={colors.mutedForeground} keyboardType={keyboardType} multiline={multiline} textAlignVertical={multiline ? 'top' : 'center'} accessibilityLabel={label} style={[styles.input, multiline && styles.multilineInput, { backgroundColor: colors.card, borderColor: colors.input, color: colors.foreground }]} />
     </View>
   );
 }
@@ -713,6 +1147,8 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
+  statValue: { fontFamily: 'Outfit_700Bold', fontSize: 20 },
+  statsRow: { flexDirection: 'row', gap: 8 },
   tabRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
   tab: { flexGrow: 1, minHeight: 44, paddingHorizontal: 12, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderRadius: 11 },
   statusRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
@@ -732,4 +1168,15 @@ const styles = StyleSheet.create({
   responseIcon: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   selectedCitizen: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10 },
   citizenChoice: { borderWidth: 1, borderRadius: 10, padding: 9, gap: 2 },
+  builderHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  questionRow: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderRadius: 11, padding: 6 },
+  orderControls: { gap: 0 },
+  iconButton: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center' },
+  disabledIconButton: { opacity: 0.4 },
+  requiredToggle: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 44 },
+  optionRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  ratingRow: { flexDirection: 'row', gap: 9 },
+  editorActions: { flexDirection: 'row', gap: 9 },
+  analyticsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 },
+  analyticsValue: { fontFamily: 'Outfit_600SemiBold', fontSize: 15 },
 });

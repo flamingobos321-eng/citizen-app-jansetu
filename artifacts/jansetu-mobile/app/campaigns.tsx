@@ -173,9 +173,6 @@ export default function CampaignsScreen() {
             <View style={{ flex: 1 }}><Field label="Start date" value={form.start_date} onChangeText={(value) => updateForm('start_date', value)} placeholder="YYYY-MM-DD" /></View>
             <View style={{ flex: 1 }}><Field label="End date" value={form.end_date} onChangeText={(value) => updateForm('end_date', value)} placeholder="YYYY-MM-DD" /></View>
           </View>
-          <Text style={[styles.hint, { color: colors.mutedForeground }]}>
-            Build or edit the campaign response form from the web portal after creating it.
-          </Text>
           {formError ? <ErrorNotice message={formError} /> : null}
           {createCampaign.isError ? <ErrorNotice message={createCampaign.error instanceof Error ? createCampaign.error.message : 'Could not create campaign.'} /> : null}
           <ActionButton title="Create campaign" icon="plus" onPress={submit} loading={createCampaign.isPending} />
