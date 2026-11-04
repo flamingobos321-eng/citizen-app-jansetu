@@ -1,0 +1,28 @@
+kind = "slides"
+previewPath = "/jansetu-presentation/"
+title = "JanSetu — Constituency Services"
+description = "A 16-page A4 portrait presentation introducing JanSetu for citizens, representatives and office teams. Designed for PDF sharing, without pricing, website or email."
+version = "1.0.0"
+id = "artifacts/jansetu-presentation"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/jansetu-presentation/" ]
+localPort = 20416
+
+[services.development]
+run = "pnpm --filter @workspace/jansetu-presentation run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/jansetu-presentation", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/jansetu-presentation/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20416"
+BASE_PATH = "/jansetu-presentation/"

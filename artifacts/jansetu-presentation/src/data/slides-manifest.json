@@ -1,0 +1,130 @@
+[
+  {
+    "id": "a6918ba2-9ac0-4950-a89f-b55c8293a879",
+    "position": 1,
+    "filepath": "src/pages/slides/Cover.tsx",
+    "title": "JanSetu",
+    "description": "JanSetu",
+    "speakerNotes": ""
+  },
+  {
+    "id": "7859a517-d06e-492b-a3cc-640ddca84183",
+    "position": 2,
+    "filepath": "src/pages/slides/Requests.tsx",
+    "title": "Every citizen request deserves a clear next step",
+    "description": "Every citizen request deserves a clear next step",
+    "speakerNotes": ""
+  },
+  {
+    "id": "631c7154-73cf-4b82-83c2-8cb73c531168",
+    "position": 3,
+    "filepath": "src/pages/slides/Workspace.tsx",
+    "title": "One connected workspace",
+    "description": "One connected workspace",
+    "speakerNotes": ""
+  },
+  {
+    "id": "d3759128-3bb4-45b5-bf54-d03cdf8bc246",
+    "position": 4,
+    "filepath": "src/pages/slides/People.tsx",
+    "title": "Built around people and their responsibilities",
+    "description": "Built around people and their responsibilities",
+    "speakerNotes": ""
+  },
+  {
+    "id": "229cdec7-a17d-4735-bcc2-02a24c1352e3",
+    "position": 5,
+    "filepath": "src/pages/slides/Citizens.tsx",
+    "title": "A simpler experience for citizens",
+    "description": "A simpler experience for citizens",
+    "speakerNotes": ""
+  },
+  {
+    "id": "d61beeee-1329-4211-ad68-a834757f8f00",
+    "position": 6,
+    "filepath": "src/pages/slides/Resolution.tsx",
+    "title": "From request to resolution",
+    "description": "From request to resolution",
+    "speakerNotes": ""
+  },
+  {
+    "id": "bd1da4a5-4a5c-4560-804e-ee6dd0b831a3",
+    "position": 7,
+    "filepath": "src/pages/slides/OfficeTeams.tsx",
+    "title": "Give office teams a clearer working day",
+    "description": "Give office teams a clearer working day",
+    "speakerNotes": ""
+  },
+  {
+    "id": "de46f920-9a21-4e76-8ce2-ad37a1c55821",
+    "position": 8,
+    "filepath": "src/pages/slides/Representatives.tsx",
+    "title": "Help representatives stay informed",
+    "description": "Help representatives stay informed",
+    "speakerNotes": ""
+  },
+  {
+    "id": "4825cdf2-fa29-4b51-b968-8aca8c238c9f",
+    "position": 9,
+    "filepath": "src/pages/slides/Staff.tsx",
+    "title": "Support staff in the office and in the field",
+    "description": "Support staff in the office and in the field",
+    "speakerNotes": ""
+  },
+  {
+    "id": "4c733dfe-9b41-41a0-844d-e146a0d6a849",
+    "position": 10,
+    "filepath": "src/pages/slides/Families.tsx",
+    "title": "Families remain connected",
+    "description": "Families remain connected",
+    "speakerNotes": ""
+  },
+  {
+    "id": "79f49de0-f063-428f-88bf-0fbc883d207e",
+    "position": 11,
+    "filepath": "src/pages/slides/Outreach.tsx",
+    "title": "Coordinate outreach and local work",
+    "description": "Coordinate outreach and local work",
+    "speakerNotes": ""
+  },
+  {
+    "id": "b84f2dfe-ff35-4d64-a806-182b89a7ef2f",
+    "position": 12,
+    "filepath": "src/pages/slides/Informed.tsx",
+    "title": "Keep citizens informed",
+    "description": "Keep citizens informed",
+    "speakerNotes": ""
+  },
+  {
+    "id": "cd56b554-4ab5-4fbb-879e-34e99b6657e6",
+    "position": 13,
+    "filepath": "src/pages/slides/WebMobile.tsx",
+    "title": "Web and mobile, with a shared purpose",
+    "description": "Web and mobile, with a shared purpose",
+    "speakerNotes": ""
+  },
+  {
+    "id": "d97ea67d-18ad-4479-858c-07c1bf8b5b54",
+    "position": 14,
+    "filepath": "src/pages/slides/Trust.tsx",
+    "title": "Trust is part of the service",
+    "description": "Trust is part of the service",
+    "speakerNotes": ""
+  },
+  {
+    "id": "bae6c332-0ce7-4f43-974f-d50860c6c762",
+    "position": 15,
+    "filepath": "src/pages/slides/Rollout.tsx",
+    "title": "Begin with a focused office rollout",
+    "description": "Begin with a focused office rollout",
+    "speakerNotes": ""
+  },
+  {
+    "id": "bce1357e-58c4-4c11-a658-2ce65ad0fb40",
+    "position": 16,
+    "filepath": "src/pages/slides/Close.tsx",
+    "title": "Bring your constituency office together",
+    "description": "Bring your constituency office together",
+    "speakerNotes": ""
+  }
+]
